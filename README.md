@@ -2,17 +2,6 @@
 This program generates Side-by-Side (SBS) 3D videos with enhanced visual effects such as the Pulfrich effect, black bar removal, and scene change handling. It processes input video and depth map data to create immersive 3D content, with options for user-controlled parameters.
 
 --
-## Guide Sheet: Install
-Installation Steps
-
-### Step 1: Download the VisionDepth3D Program
-- Download the VisionDepth3D.zip file from the official download source.
-- Extract the zip file to your desired folder (e.g., C:\VisionDepth3D).
-
-### Step 2: Install Required Dependencies
-If Using the Standalone Executable:
-
-- No additional dependencies are needed. Skip to Step 3.
   
 If Running from Source Code:
 - 
