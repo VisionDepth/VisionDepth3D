@@ -129,7 +129,7 @@ plus 3D render time
   - Adjust `blend_factor` and `delay_time` for smoother transitions between scenes. this effect is supposed to 
 - **Audio Issues**:
   - Verify that the source video contains an audio stream, if not video will be generated with no audio
-- **GPU Memory Errors
+- **GPU Memory Errors**:
  - Reduce the batch_size or vram_limit to avoid exceeding GPU memory limits.
 ---
 
@@ -139,21 +139,21 @@ plus 3D render time
 
 ## Pulfrich Effect Explained
 - **How to Use the Pulfrich Effect in Your Program**
--- The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
+- The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
 
 - **Enable Pulfrich Effect**:
 
 The effect is automatically applied when generating Half-SBS 3D videos.
 It works by blending current and delayed frames to enhance depth perception during motion.
 
--- **Adjust Blend Factor**:
--- Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
--- Higher values increase the blending between delayed and current frames, while lower values reduce it.
+- **Adjust Blend Factor**:
+- Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
+- Higher values increase the blending between delayed and current frames, while lower values reduce it.
 
 - **Scene Change Handling**:
--- the program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
--- No manual intervention is required for smooth scene transitions.
+- the program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
+- No manual intervention is required for smooth scene transitions.
 
 - **Delay Time Control**:
--- Modify the Delay Time parameter to fine-tune the temporal offset.
--- A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
+- Modify the Delay Time parameter to fine-tune the temporal offset.
+- A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
