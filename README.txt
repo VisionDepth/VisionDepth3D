@@ -99,6 +99,13 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - Default: 10
 - Effect: Larger batch sizes may improve performance but require more VRAM.
 
+## 12. IPD (Interpupillary Distance)
+- Description: Controls the horizontal separation between the left and right images to simulate depth perception in 3D rendering.
+- Default: 3.0
+-Effect:
+-- Higher IPD: Enhances depth perception but may cause excessive separation if set too high.
+-- Lower IPD: Reduces depth effect, making the scene appear flatter.
+-- Dynamic Mode: Automatically adjusts IPD based on depth map analysis for a more natural 3D experience.
 
 ## Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
