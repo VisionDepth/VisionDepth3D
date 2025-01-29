@@ -29,12 +29,15 @@ If Running from Source Code:
 here you can download Backwards warp model and put it in ".\weights\" folder 
 https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing
 
+### Guide Sheet: GUI Inputs
+Below is a guide to help you understand and adjust each parameter in the GUI.
+
 ### 1. Codec
 - **Description**: Specifies the codec used for encoding the output video.
 - **Default**: `mp4v`
 - **Options**: 
   - `mp4v` (MP4 format)
-  - `XVID` (AVI format)
+  - `XVID` (MKV format)
   - Others supported by OpenCV.
 
 
@@ -99,10 +102,6 @@ https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=shari
 - Description: A trained deep learning model that corrects divergence shifts in stereoscopic 3D rendering. It predicts and applies warp transformations to align left and right frames, ensuring a more natural depth perception.
 - Default: Enabled
 - Effect: Reduces visual artifacts caused by divergence shifts, improving overall 3D depth consistency. Uses inpainting to fill black regions after warping for a seamless result.
-
-## Guide Sheet: GUI Inputs
-Below is a guide to help you understand and adjust each parameter in the GUI.
-
 
 ## Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
