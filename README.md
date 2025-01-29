@@ -1,5 +1,5 @@
-# 3D SBS Video Generator
-This program generates Half Side-by-Side (Half-SBS) 3D videos with advanced visual enhancements. It features the Pulfrich effect, black bar removal, and adaptive scene change handling. By processing input video alongside depth map data, it dynamically adjusts depth-based shifts and convergence for a more immersive 3D experience. The backward warping model corrects divergence shifts, and an inpainting process fills black regions left by warping to ensure seamless visuals. User-controlled parameters allow fine-tuning of VRAM usage, batch processing size, and depth effects for optimized performance and quality.
+# 3D HSBS Video Generator
+This program generates Half Side-by-Side (H-SBS) 3D videos with advanced visual enhancements. It features the Pulfrich effect, black bar removal, and adaptive scene change handling. By processing input video alongside depth map data, it dynamically adjusts depth-based shifts and convergence for a more immersive 3D experience. The backward warping model corrects divergence shifts, and an inpainting process fills black regions left by warping to ensure seamless visuals. User-controlled parameters allow fine-tuning of VRAM usage, batch processing size, and depth effects for optimized performance and quality.
 
 ## Guide Sheet: Install
 Installation Steps
