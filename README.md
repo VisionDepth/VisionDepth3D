@@ -145,14 +145,15 @@ The Pulfrich effect in your program creates a dynamic 3D experience by introduci
 
 The effect is automatically applied when generating Half-SBS 3D videos.
 It works by blending current and delayed frames to enhance depth perception during motion.
-Adjust Blend Factor:
 
-Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
-Higher values increase the blending between delayed and current frames, while lower values reduce it.
-Scene Change Handling:
+-**Adjust Blend Factor**:
+-- **Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect**.
+-- Higher values increase the blending between delayed and current frames, while lower values reduce it.
 
-The program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
-No manual intervention is required for smooth scene transitions.
-Delay Time Control:
+- **Scene Change Handling**:
+-- the program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
+-- No manual intervention is required for smooth scene transitions.
 
-Modify the Delay Time parameter to fine-tune the temporal offset. A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
+- **Delay Time Control**:
+-- Modify the Delay Time parameter to fine-tune the temporal offset.
+-- A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
