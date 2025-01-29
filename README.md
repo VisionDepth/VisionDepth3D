@@ -85,7 +85,7 @@ https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=shari
 - **Effect: Positive values will push the images apart, creating a wider perspective.
 
 ## 10. VRAM Limit
-- Description: Sets the maximum GPU mmory usage tooptimize performance and prevent out-of-memore errors. 
+- Description: Sets the maximum GPU memory usage to optimize performance and prevent out-of-memore errors. 
 - Default: 0.0
 - Effect: Controls batch processing size to balance speed and stability during rendering.
 
