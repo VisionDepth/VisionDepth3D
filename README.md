@@ -27,8 +27,9 @@ Install required dependencies using pip:
 
 pip install -r requirements.txt
 
-## Guide Sheet: GUI Inputs
-Below is a guide to help you understand and adjust each parameter in the GUI.
+### Step 3: Download Backwards Warp Model
+here you can download Backwards warp model and put it in ".\weights\" folder 
+https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing
 
 ### 1. Codec
 - **Description**: Specifies the codec used for encoding the output video.
@@ -95,6 +96,14 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - Description: Specifies the number of frames processed in each batch.
 - Default: 10
 - Effect: Larger batch sizes may improve performance but require more VRAM.
+
+### Backward Warping Model
+- Description: A trained deep learning model that corrects divergence shifts in stereoscopic 3D rendering. It predicts and applies warp transformations to align left and right frames, ensuring a more natural depth perception.
+- Default: Enabled
+- Effect: Reduces visual artifacts caused by divergence shifts, improving overall 3D depth consistency. Uses inpainting to fill black regions after warping for a seamless result.
+
+## Guide Sheet: GUI Inputs
+Below is a guide to help you understand and adjust each parameter in the GUI.
 
 
 ## Depth Map File Requirements
