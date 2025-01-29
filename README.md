@@ -87,9 +87,9 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Effect: Positive values will push the images apart, creating a wider perspective.
 
 ## 10. VRAM Limit
-- Description: Adjusts the pixel shift to diverge the left and right images. 
+- Description: Sets the maximum GPU mmory usage tooptimize performance and prevent out-of-memore errors. 
 - Default: 0.0
-- Effect: Helps manage GPU memory usage for smoother processing.
+- Effect: Controls batch processing size to balance speed and stability during rendering.
 
 ## 11. Batch Size
 - Description: Specifies the number of frames processed in each batch.
