@@ -3,6 +3,7 @@ This program generates Half Side-by-Side (H-SBS) 3D videos with advanced visual 
 
 ## Guide Sheet: Install
 Installation Steps
+This program runs on python 3.9 - 3.10
 
 ### Step 1: Download the VisionDepth3D Program
 - Download the VisionDepth3D.zipfile from the official download source.
