@@ -1,7 +1,5 @@
 # 3D SBS Video Generator
-This program generates Side-by-Side (SBS) 3D videos with enhanced visual effects such as the Pulfrich effect, black bar removal, and scene change handling. It processes input video and depth map data to create immersive 3D content, with options for user-controlled parameters.
-
---
+This program generates Half Side-by-Side (Half-SBS) 3D videos with advanced visual enhancements. It features the Pulfrich effect, black bar removal, and adaptive scene change handling. By processing input video alongside depth map data, it dynamically adjusts depth-based shifts and convergence for a more immersive 3D experience. The backward warping model corrects divergence shifts, and an inpainting process fills black regions left by warping to ensure seamless visuals. User-controlled parameters allow fine-tuning of VRAM usage, batch processing size, and depth effects for optimized performance and quality.
 
 ## Guide Sheet: Install
 Installation Steps
@@ -16,22 +14,19 @@ If Using the Standalone Executable:
 - No additional dependencies are needed. Skip to Step 3.
   
 If Running from Source Code:
-- 
 
-Open a terminal or command prompt.
-Navigate to the program directory:
-bash
-Copy
-Edit
-cd path\to\VisionDepth3D
-Install required dependencies using pip:
-bash
-Copy
-Edit
-pip install -r requirements.txt
+- Open a terminal or command prompt and enter:
 
-## Guide Sheet: GUI Inputs
-Below is a guide to help you understand and adjust each parameter in the GUI.
+- git clone https://github.com/VisionDepth/VisionDepth3D.git
+- cd VisionDepth3D
+- pip install -r requirements.txt
+
+- or alternatively you can use pip
+- pip install git+https://github.com/VisionDepth/VisionDepth3D.git
+
+### Step 3: Download Backwards Warp Model
+here you can download Backwards warp model and put it in ".\weights\" folder 
+https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing
 
 ### 1. Codec
 - **Description**: Specifies the codec used for encoding the output video.
@@ -42,20 +37,20 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
   - Others supported by OpenCV.
 
 
-### 2. Foreground Shift (fg_shift)
+### 2. Foreground Shift
 - **Description**: Controls the amount of pixel shift for objects in the foreground.
 - **Default**: `4.8`
 - **Recommended Range**: `3.0` to `8.0`
 - **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
 
 
-### 3. Midground Shift (mg_shift)
+### 3. Midground Shift
 - **Description**: Controls the amount of pixel shift for midground objects.
 - **Default**: `1.9`
 - **Recommended Range**: `1.0` to `5.0`
 - **Effect**: Fine-tune this value to balance the depth effect between foreground and background.
 
-### 4. Background Shift (bg_shift)
+### 4. Background Shift
 - **Description**: Controls the amount of pixel shift for background objects.
 - **Default**: `-2.8`
 - **Recommended Range**: `-5.0` to `0.0`
@@ -90,22 +85,23 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Effect: Positive values will push the images apart, creating a wider perspective.
 
 ## 10. VRAM Limit
-- Description: Adjusts the pixel shift to diverge the left and right images. 
+- Description: Sets the maximum GPU mmory usage tooptimize performance and prevent out-of-memore errors. 
 - Default: 0.0
-- Effect: Helps manage GPU memory usage for smoother processing.
+- Effect: Controls batch processing size to balance speed and stability during rendering.
 
 ## 11. Batch Size
 - Description: Specifies the number of frames processed in each batch.
 - Default: 10
 - Effect: Larger batch sizes may improve performance but require more VRAM.
 
-## 12. IPD (Interpupillary Distance)
-- Description: Controls the horizontal separation between the left and right images to simulate depth perception in 3D rendering.
-- Default: 3.0
--Effect:
--- Higher IPD: Enhances depth perception but may cause excessive separation if set too high.
--- Lower IPD: Reduces depth effect, making the scene appear flatter.
--- Dynamic Mode: Automatically adjusts IPD based on depth map analysis for a more natural 3D experience.
+### Backward Warping Model
+- Description: A trained deep learning model that corrects divergence shifts in stereoscopic 3D rendering. It predicts and applies warp transformations to align left and right frames, ensuring a more natural depth perception.
+- Default: Enabled
+- Effect: Reduces visual artifacts caused by divergence shifts, improving overall 3D depth consistency. Uses inpainting to fill black regions after warping for a seamless result.
+
+## Guide Sheet: GUI Inputs
+Below is a guide to help you understand and adjust each parameter in the GUI.
+
 
 ## Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
@@ -140,3 +136,23 @@ plus 3D render time
 ## Notes
 - Ensure `ffmpeg` is installed and available in your system's PATH for audioprocessing. or put ffmpeg.exe in assets folder 
 - Depth maps must match the input video dimensions and frame rate.
+
+## Pulfrich Effect Explained
+- **How to Use the Pulfrich Effect in Your Program**
+The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
+
+- **Enable Pulfrich Effect**:
+
+The effect is automatically applied when generating Half-SBS 3D videos.
+It works by blending current and delayed frames to enhance depth perception during motion.
+Adjust Blend Factor:
+
+Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
+Higher values increase the blending between delayed and current frames, while lower values reduce it.
+Scene Change Handling:
+
+The program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
+No manual intervention is required for smooth scene transitions.
+Delay Time Control:
+
+Modify the Delay Time parameter to fine-tune the temporal offset. A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
