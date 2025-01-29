@@ -14,16 +14,15 @@ If Using the Standalone Executable:
 - No additional dependencies are needed. Skip to Step 3.
   
 If Running from Source Code:
-- 
 
-Open a terminal or command prompt.
-Navigate to the program directory:
+- Open a terminal or command prompt and enter:
 
-cd path\to\VisionDepth3D
-
-Install required dependencies using pip:
-
+git clone https://github.com/VisionDepth/VisionDepth3D.git
+cd VisionDepth3D
 pip install -r requirements.txt
+
+- or alternatively you can use pip
+pip install git+https://github.com/VisionDepth/VisionDepth3D.git
 
 ### Step 3: Download Backwards Warp Model
 here you can download Backwards warp model and put it in ".\weights\" folder 
@@ -38,20 +37,20 @@ https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=shari
   - Others supported by OpenCV.
 
 
-### 2. Foreground Shift (fg_shift)
+### 2. Foreground Shift
 - **Description**: Controls the amount of pixel shift for objects in the foreground.
 - **Default**: `4.8`
 - **Recommended Range**: `3.0` to `8.0`
 - **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
 
 
-### 3. Midground Shift (mg_shift)
+### 3. Midground Shift
 - **Description**: Controls the amount of pixel shift for midground objects.
 - **Default**: `1.9`
 - **Recommended Range**: `1.0` to `5.0`
 - **Effect**: Fine-tune this value to balance the depth effect between foreground and background.
 
-### 4. Background Shift (bg_shift)
+### 4. Background Shift
 - **Description**: Controls the amount of pixel shift for background objects.
 - **Default**: `-2.8`
 - **Recommended Range**: `-5.0` to `0.0`
@@ -137,3 +136,23 @@ plus 3D render time
 ## Notes
 - Ensure `ffmpeg` is installed and available in your system's PATH for audioprocessing. or put ffmpeg.exe in assets folder 
 - Depth maps must match the input video dimensions and frame rate.
+
+## Pulfrich Effect Explained
+- **How to Use the Pulfrich Effect in Your Program**
+The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
+
+- **Enable Pulfrich Effect**:
+
+The effect is automatically applied when generating Half-SBS 3D videos.
+It works by blending current and delayed frames to enhance depth perception during motion.
+Adjust Blend Factor:
+
+Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
+Higher values increase the blending between delayed and current frames, while lower values reduce it.
+Scene Change Handling:
+
+The program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
+No manual intervention is required for smooth scene transitions.
+Delay Time Control:
+
+Modify the Delay Time parameter to fine-tune the temporal offset. A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
