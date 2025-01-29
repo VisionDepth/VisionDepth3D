@@ -17,9 +17,9 @@ If Running from Source Code:
 
 - Open a terminal or command prompt and enter:
 
-git clone https://github.com/VisionDepth/VisionDepth3D.git
-cd VisionDepth3D
-pip install -r requirements.txt
+- git clone https://github.com/VisionDepth/VisionDepth3D.git
+- cd VisionDepth3D
+- pip install -r requirements.txt
 
 - or alternatively you can use pip
 pip install git+https://github.com/VisionDepth/VisionDepth3D.git
