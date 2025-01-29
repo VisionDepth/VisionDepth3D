@@ -6,30 +6,47 @@ echo.
 
 :: Check if Conda is installed
 where conda >nul 2>nul
-if %errorlevel% neq 0 (
-    echo Error: Conda is not installed or not in PATH.
-    echo Please install Anaconda or Miniconda first: https://docs.conda.io/en/latest/miniconda.html
-    exit /b 1
+if %errorlevel% equ 0 (
+    echo Detected Conda. Setting up in a Conda environment...
+    goto conda_setup
+) else (
+    echo Conda not found. Using standard Python installation...
+    goto pip_setup
 )
 
-:: Create a Conda environment
+:: Setup with Conda
+:conda_setup
 echo Creating Conda environment 'vd3d'...
 conda create --name vd3d python=3.9 -y
 
-:: Activate the environment
 echo Activating Conda environment...
 call conda activate vd3d
 
-:: Install dependencies
 echo Installing dependencies...
 pip install --upgrade pip
 pip install -r requirements.txt
 
-:: Verify installation
 echo.
 echo ===========================================
-echo    Installation Complete!
+echo    Installation Complete (Conda)!
 echo ===========================================
 echo Use 'conda activate vd3d' before running the program.
+pause
+exit
+
+:: Setup with Standard Python
+:pip_setup
+echo Installing dependencies globally or in your virtual environment...
+python -m venv vd3d_env
+call vd3d_env\Scripts\activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
+
+echo.
+echo ===========================================
+echo    Installation Complete (Standard Python)!
+echo ===========================================
+echo Use 'vd3d_env\Scripts\activate' before running the program.
 pause
 exit
