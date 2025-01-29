@@ -22,7 +22,7 @@ If Running from Source Code:
 - pip install -r requirements.txt
 
 - or alternatively you can use pip
-pip install git+https://github.com/VisionDepth/VisionDepth3D.git
+- pip install git+https://github.com/VisionDepth/VisionDepth3D.git
 
 ### Step 3: Download Backwards Warp Model
 here you can download Backwards warp model and put it in ".\weights\" folder 
