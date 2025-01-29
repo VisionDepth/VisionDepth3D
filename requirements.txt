@@ -3,5 +3,5 @@ tensorflow==2.12.1
 pillow==10.3.0
 numpy==1.26.4
 psutil==5.9.8
-tqdm==4.66.1
+tqdm==4.66.3
 multiprocessing-logging==0.3.1
