@@ -20,14 +20,11 @@ If Running from Source Code:
 
 Open a terminal or command prompt.
 Navigate to the program directory:
-bash
-Copy
-Edit
+
 cd path\to\VisionDepth3D
+
 Install required dependencies using pip:
-bash
-Copy
-Edit
+
 pip install -r requirements.txt
 
 ## Guide Sheet: GUI Inputs
