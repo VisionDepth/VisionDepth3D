@@ -1,5 +1,7 @@
-opencv-python
-numpy
-Pillow
-tqdm
-tk
+opencv-python==4.9.0.80
+tensorflow==2.10
+pillow==10.2.0
+numpy==1.26.4
+psutil==5.9.8
+tqdm==4.66.1
+multiprocessing-logging==0.3.1
