@@ -2,6 +2,18 @@
 This program generates Side-by-Side (SBS) 3D videos with enhanced visual effects such as the Pulfrich effect, black bar removal, and scene change handling. It processes input video and depth map data to create immersive 3D content, with options for user-controlled parameters.
 
 --
+
+## Guide Sheet: Install
+Installation Steps
+
+### Step 1: Download the VisionDepth3D Program
+- Download the VisionDepth3D.zipfile from the official download source.
+- Extract the zip file to your desired folder (e.g., C:\VisionDepth3D).
+
+### Step 2: Install Required Dependencies
+
+If Using the Standalone Executable:
+- No additional dependencies are needed. Skip to Step 3.
   
 If Running from Source Code:
 - 
@@ -18,7 +30,6 @@ Copy
 Edit
 pip install -r requirements.txt
 
-
 ## Guide Sheet: GUI Inputs
 Below is a guide to help you understand and adjust each parameter in the GUI.
 
@@ -30,11 +41,13 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
   - `XVID` (AVI format)
   - Others supported by OpenCV.
 
+
 ### 2. Foreground Shift (fg_shift)
 - **Description**: Controls the amount of pixel shift for objects in the foreground.
 - **Default**: `4.8`
 - **Recommended Range**: `3.0` to `8.0`
 - **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
+
 
 ### 3. Midground Shift (mg_shift)
 - **Description**: Controls the amount of pixel shift for midground objects.
@@ -66,62 +79,57 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Recommended Range**: `1/50` to `1/20`
 - **Effect**: Lower values (e.g., `1/50`) reduce the delay, creating a more subtle effect.
 
----
+### 8. Convergence Shift
+- **Description: Adjusts the pixel shift to converge the left and right images for better depth perception.
+- **Default: 0.0
+- **Effect: Positive values will bring the images closer, enhancing depth perception.
+
+### 9. Divergence Shift
+- **Description: Adjusts the pixel shift to diverge the left and right images.
+- **Default: 0.0
+- **Effect: Positive values will push the images apart, creating a wider perspective.
+
+## 10. VRAM Limit
+- Description: Adjusts the pixel shift to diverge the left and right images. 
+- Default: 0.0
+- Effect: Helps manage GPU memory usage for smoother processing.
+
+## 11. Batch Size
+- Description: Specifies the number of frames processed in each batch.
+- Default: 10
+- Effect: Larger batch sizes may improve performance but require more VRAM.
+
 
 ## Depth Map File Requirements
-### 1. File Naming Convention
-- Depth maps must follow the naming pattern: `depth_<input_video_name>.mp4`.
-- Example: For input video `my_video.mp4`, the depth map should be named `depth_my_video.mp4`.
+### 1. Just Have a Depth map Generated I suggest looking at
+- **Depth Anything V2
+- **Midas Models
+- **DPT Models
 
-### 2. File Location
-- Place the depth map in the same folder as your input video, or specify the full path when prompted.
-
-### 3. Processing Times
-- Depth map generation can take time, depending on the video's resolution and length.
+## Processing Times
 - **Estimated Times**:
   - A 30-second clip: ~15-30 minutes.
   - Full-length videos: ~5-24 hours+.
-
----
-
-## Functions Overview
-### 1. **transferAudio(sourceVideo, targetVideo)**
-- Transfers audio from the source video to the output SBS video.
-
-### 2. **remove_black_bars(frame)**
-- Removes black bars from the video frames to focus on content.
-
-### 3. **render_sbs_3d(...)**
-- Core function that processes video and depth map data to create SBS 3D video.
-
-### 4. **select_input_video()**
-- Opens a file dialog to select the input video.
-
-### 5. **select_output_video()**
-- Opens a file dialog to specify the output SBS video path.
-
-### 6. **process_video()**
-- Main driver function triggered by the GUI.
+plus 3D render time	
 
 ---
 
 ## Example Workflow
 1. Select your input video (`.mp4`, `.avi`, `.mkv`) and output file path.
-2. If using a depth map, ensure it follows the naming convention (e.g., `depth_my_video.mp4`).
+2. Select your Depth map Video, make sure both video files are same width and  height and FPS 
 3. Adjust rendering parameters for the desired 3D effect.
 4. Click "Generate 3D SBS Video" to process.
-
----
 
 ## Troubleshooting
 - **Black Screens or Artifacts**:
   - Ensure the depth map matches the input video's resolution and frame rate.
-  - Adjust `blend_factor` and `delay_time` for smoother transitions.
+  - Adjust `blend_factor` and `delay_time` for smoother transitions between scenes. this effect is supposed to 
 - **Audio Issues**:
   - Verify that the source video contains an audio stream, if not video will be generated with no audio
-
+- **GPU Memory Errors
+ - Reduce the batch_size or vram_limit to avoid exceeding GPU memory limits.
 ---
 
 ## Notes
-- Ensure `ffmpeg` is installed and available in your system's PATH for audio processing.
+- Ensure `ffmpeg` is installed and available in your system's PATH for audioprocessing. or put ffmpeg.exe in assets folder 
 - Depth maps must match the input video dimensions and frame rate.
