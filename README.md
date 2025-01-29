@@ -19,10 +19,11 @@ If Running from Source Code:
 
 - git clone https://github.com/VisionDepth/VisionDepth3D.git
 - cd VisionDepth3D
-- pip install -r requirements.txt
+- install_visiondepth3d.bat
 
 - or alternatively you can use pip
 - pip install git+https://github.com/VisionDepth/VisionDepth3D.git
+- pip install -r requirements.txt
 
 ### Step 3: Download Backwards Warp Model
 here you can download Backwards warp model and put it in ".\weights\" folder 
