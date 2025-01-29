@@ -139,15 +139,15 @@ plus 3D render time
 
 ## Pulfrich Effect Explained
 - **How to Use the Pulfrich Effect in Your Program**
-The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
+-- The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
 
 - **Enable Pulfrich Effect**:
 
 The effect is automatically applied when generating Half-SBS 3D videos.
 It works by blending current and delayed frames to enhance depth perception during motion.
 
--**Adjust Blend Factor**:
--- **Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect**.
+-- **Adjust Blend Factor**:
+-- Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
 -- Higher values increase the blending between delayed and current frames, while lower values reduce it.
 
 - **Scene Change Handling**:
