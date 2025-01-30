@@ -109,14 +109,42 @@ def apply_convergence_shift(image, shift_value, direction='left'):
         return shifted_image[:, :width - shift_value]
     else:
         return shifted_image[:, shift_value:]
+        
+def inpaint_white_artifacts(image):
+    """
+    Detects and inpaints only white pixel artifacts using a refined dual-pass inpainting approach.
+    """
+    # Convert to grayscale for mask creation
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-def correct_divergence_shift(left_frame, right_frame, divergence_value):
-    # Ensure divergence value is within trained range
-    divergence_value = max(0.0, min(divergence_value, 5.0))  
-    
+    # **Adaptive threshold to isolate white pixels**
+    _, mask = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)  # Detects near-white pixels
+
+    # **Expand the mask slightly** to cover edge artifacts better
+    kernel = np.ones((3, 3), np.uint8)  # Small dilation kernel
+    mask = cv2.dilate(mask, kernel, iterations=2)  # Expand to cover tiny white artifacts
+
+    # **Apply first-pass inpainting (TELEA)**
+    inpainted = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
+
+    # **Apply a second-pass inpainting (Navier-Stokes) for better texture blending**
+    inpainted = cv2.inpaint(inpainted, mask, 3, cv2.INPAINT_NS)
+
+    # **Apply a light bilateral filter to smooth out inpainted areas**
+    inpainted = cv2.bilateralFilter(inpainted, d=5, sigmaColor=50, sigmaSpace=50)
+
+    return inpainted
+
+# MG shift smoothing with gradual transition
+previous_mg_shifts = []
+
+def correct_divergence_shift(left_frame, right_frame, divergence_shift):
+    # Ensure divergence value is within a safe range
+    divergence_shift = max(0.0, min(divergence_shift, 0.7))  # Keep safe limit
+
     # Prepare input for the model
-    divergence_input = np.array([[divergence_value]])
-    
+    divergence_input = np.array([[divergence_shift]])
+
     # Predict warp parameters
     warp_params = model.predict(divergence_input).reshape(3, 3)
 
@@ -126,23 +154,31 @@ def correct_divergence_shift(left_frame, right_frame, divergence_value):
     corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
 
     # Create a mask for black regions after warping
-    mask_left = cv2.cvtColor(corrected_left, cv2.COLOR_BGR2GRAY) == 0
-    mask_right = cv2.cvtColor(corrected_right, cv2.COLOR_BGR2GRAY) == 0
+    mask_left = (cv2.cvtColor(corrected_left, cv2.COLOR_BGR2GRAY) == 0).astype(np.uint8)
+    mask_right = (cv2.cvtColor(corrected_right, cv2.COLOR_BGR2GRAY) == 0).astype(np.uint8)
 
-    # Increase dilation to cover missed edges
-    kernel = np.ones((5,5), np.uint8)  # Increase kernel size for stronger effect
-    mask_left = cv2.dilate(mask_left.astype(np.uint8), kernel, iterations=3)
-    mask_right = cv2.dilate(mask_right.astype(np.uint8), kernel, iterations=3)
+    # Enhance the mask for better inpainting
+    kernel = np.ones((9,9), np.uint8)  # Stronger dilation
+    mask_left = cv2.dilate(mask_left.astype(np.uint8), kernel, iterations=5)
+    mask_right = cv2.dilate(mask_right.astype(np.uint8), kernel, iterations=5)
 
-    # Apply inpainting with adjusted mask
-    corrected_left = cv2.inpaint(corrected_left, mask_left, 5, cv2.INPAINT_TELEA)
-    corrected_right = cv2.inpaint(corrected_right, mask_right, 5, cv2.INPAINT_TELEA)
+    # Apply Gaussian blur to mask edges to reduce harsh transitions
+    mask_left = cv2.GaussianBlur(mask_left, (5, 5), 0)
+    mask_right = cv2.GaussianBlur(mask_right, (5, 5), 0)
+
+    # Dual inpainting pass: TELEA first, then Navier-Stokes
+    corrected_left = cv2.inpaint(corrected_left, mask_left, 7, cv2.INPAINT_TELEA)
+    corrected_right = cv2.inpaint(corrected_right, mask_right, 7, cv2.INPAINT_TELEA)
+
+    corrected_left = cv2.inpaint(corrected_left, mask_left, 7, cv2.INPAINT_NS)
+    corrected_right = cv2.inpaint(corrected_right, mask_right, 7, cv2.INPAINT_NS)
 
     return corrected_left, corrected_right
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
                   sharpness_factor, convergence_shift=0, divergence_shift=0, ipd_offset=0.0, ipd_mode='manual',
                   delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None, batch_size=10, vram_limit=4):
+    
     frame_delay = int(fps * delay_time)  # Number of frames corresponding to the delay time
     frame_buffer = []  # Buffer to store frames for temporal delay
     out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
@@ -154,11 +190,7 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
     max_rolling_frames = 5  # Number of frames to average for adaptive threshold
 
     print("Creating Half SBS video with Pulfrich effect, blending, and black bar removal")
-  
-    # Start tracking time
     start_time = time.time()
-
-    # Get total number of frames
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Batch processing
@@ -180,25 +212,27 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             original_frame = batch_frames[i]
             depth_frame = batch_depth_frames[i]
 
-            # Calculate percentage
-            percentage = ((frame_idx + i) / total_frames) * 100
+            # Static divergence shift (No more dynamic changes)
+            static_divergence = max(0.0, min(divergence_shift, 0.7))  # Controlled via GUI
+
+            # Apply divergence correction & inpainting
+            corrected_left, corrected_right = correct_divergence_shift(original_frame, original_frame, divergence_shift)
 
             # Update progress bar
             if progress:
+                percentage = ((frame_idx + i) / total_frames) * 100
                 progress["value"] = percentage
                 progress.update()
-
-            # Update percentage label
             if progress_label:
                 progress_label.config(text=f"{percentage:.2f}%")
 
-            # Calculate elapsed time and time remaining
+            # Calculate elapsed time and remaining time
             elapsed_time = time.time() - start_time
             if frame_idx + i > 0:
                 time_per_frame = elapsed_time / (frame_idx + i)
                 time_remaining = time_per_frame * (total_frames - (frame_idx + i))
             else:
-                time_remaining = 0  # No estimate initially
+                time_remaining = 0  
 
             # Format time values as MM:SS
             elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
@@ -248,11 +282,7 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
                 ipd_value = dynamic_ipd_adjustment(depth_frame_resized)
             else:
                 ipd_value = ipd_offset  # Use manual slider value
-
-            # Apply divergence correction using the trained model and inpainting
-            corrected_left, corrected_right = correct_divergence_shift(
-                cropped_resized_frame, cropped_resized_frame, divergence_shift)
-
+        
             # Apply IPD shift to left and right frames
             corrected_left, corrected_right = apply_ipd_offset(corrected_left, corrected_right, ipd_value)
             
@@ -263,8 +293,14 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
             depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-            depth_normalized = depth_filtered / 255.0             
+            depth_normalized = depth_filtered / 255.0 
             
+            # Prevent sudden changes
+            max_mg_shift_change = 0.1
+            if len(previous_mg_shifts) > 0:
+                mg_shift = max(previous_mg_shifts[-1] - max_mg_shift_change, 
+                               min(mg_shift, previous_mg_shifts[-1] + max_mg_shift_change))
+
             # Apply depth-based shifts
             left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
             for y in range(height):
@@ -274,7 +310,7 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
                 if convergence_shift > 0:
                     bg_shift_val += int(bg_shift_val * convergence_shift)
                 if divergence_shift > 0:
-                    fg_shift_val += int(fg_shift_val * divergence_shift)
+                    mg_shift_val += int(mg_shift_val * divergence_shift)  # Still applied but static
 
                 shift_vals_fg = (depth_normalized[y, :] * fg_shift_val).astype(np.int32)
                 shift_vals_mg = (depth_normalized[y, :] * mg_shift_val).astype(np.int32)
@@ -297,11 +333,8 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             left_sharp = cv2.filter2D(blended_left_frame, -1, sharpen_kernel)
             right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
 
-            left_sharp_resized = cv2.resize(left_sharp, (width // 2, height))
-            right_sharp_resized = cv2.resize(right_sharp, (width // 2, height))
-
             # Combine into SBS format
-            sbs_frame = np.hstack((left_sharp_resized, right_sharp_resized))
+            sbs_frame = np.hstack((left_sharp, right_sharp))
             out.write(sbs_frame)
 
     original_cap.release()
