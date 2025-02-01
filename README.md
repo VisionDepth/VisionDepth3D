@@ -1,5 +1,5 @@
 # 3D HSBS Video Generator
-This program generates Half Side-by-Side (H-SBS) 3D videos with advanced visual enhancements. It features the Pulfrich effect, black bar removal, and adaptive scene change handling. By processing input video alongside depth map data, it dynamically adjusts depth-based shifts and convergence for a more immersive 3D experience. The backward warping model corrects divergence shifts, and an inpainting process fills black regions left by warping to ensure seamless visuals. User-controlled parameters allow fine-tuning of VRAM usage, batch processing size, and depth effects for optimized performance and quality.
+The 3D HSBS Video Generator is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground blending, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
 
 ## Guide Sheet: Install
 Installation Steps
@@ -42,24 +42,24 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
   - Others supported by OpenCV.
 
 
-### 2. Foreground Shift
+### 2. Divergence Shift
 - **Description**: Controls the amount of pixel shift for objects in the foreground.
 - **Default**: `4.8`
 - **Recommended Range**: `3.0` to `8.0`
 - **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
 
 
-### 3. Midground Shift
+### 3. Depth Transition 
 - **Description**: Controls the amount of pixel shift for midground objects.
 - **Default**: `1.9`
 - **Recommended Range**: `1.0` to `5.0`
-- **Effect**: Fine-tune this value to balance the depth effect between foreground and background.
+- **Effect**: Fine-tune this value to balance the depth effect between divergence and convergence.
 
-### 4. Background Shift
-- **Description**: Controls the amount of pixel shift for background objects.
+### 4. Convergence Shift
+- **Description**: Controls the amount of pixel shift for Depth.
 - **Default**: `-2.8`
 - **Recommended Range**: `-5.0` to `0.0`
-- **Effect**: Negative values pull background objects farther back, creating more depth.
+- **Effect**: Use Negative values to push objects farther back, creating more depth.
 
 ### 5. Sharpness Factor
 - **Description**: Adjusts the sharpness of the final output video.
@@ -79,16 +79,6 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Recommended Range**: `1/50` to `1/20`
 - **Effect**: Lower values (e.g., `1/50`) reduce the delay, creating a more subtle effect.
 
-### 8. Convergence Shift
-- **Description: Adjusts the pixel shift to converge the left and right images for better depth perception.
-- **Default: 0.0
-- **Effect: Positive values will bring the images closer, enhancing depth perception.
-
-### 9. Divergence Shift
-- **Description: Adjusts the pixel shift to diverge the left and right images.
-- **Default: 0.0
-- **Effect: Positive values will push the images apart, creating a wider perspective.
-
 ## 10. VRAM Limit
 - Description: Sets the maximum GPU memory usage to optimize performance and prevent out-of-memore errors. 
 - Default: 0.0
@@ -98,11 +88,6 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - Description: Specifies the number of frames processed in each batch.
 - Default: 10
 - Effect: Larger batch sizes may improve performance but require more VRAM.
-
-### Backward Warping Model
-- Description: A trained deep learning model that corrects divergence shifts in stereoscopic 3D rendering. It predicts and applies warp transformations to align left and right frames, ensuring a more natural depth perception.
-- Default: Enabled
-- Effect: Reduces visual artifacts caused by divergence shifts, improving overall 3D depth consistency. Uses inpainting to fill black regions after warping for a seamless result.
 
 ## Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
