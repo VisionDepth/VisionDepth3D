@@ -10,6 +10,9 @@ import cv2
 import numpy as np
 import time
 from threading import Thread
+import webbrowser
+from moviepy.editor import VideoFileClip
+import json
 
 
 def resource_path(relative_path):
@@ -17,37 +20,39 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS2
-    except Exception:
+    except AttributeError:
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
 
 
-# Audio Transfer Function
-def transferAudio(sourceVideo, targetVideo):
-    tempAudioFileName = "./temp/audio.mkv"
-    if os.path.isdir("temp"):
-        shutil.rmtree("temp")
-    os.makedirs("temp")
-    os.system(f'ffmpeg -y -i "{sourceVideo}" -c:a copy -vn "{tempAudioFileName}"')
+def transfer_audio(source_video, target_video):
+    """Transfers audio from source_video to target_video using MoviePy."""
+    try:
+        # Load the original video and extract its audio
+        source_clip = VideoFileClip(source_video)
+        
+        if source_clip.audio is None:
+            print("No audio track found in the source video. Skipping audio transfer.")
+            return
+        
+        # Save the extracted audio
+        audio = source_clip.audio
 
-    targetNoAudio = os.path.splitext(targetVideo)[0] + "_noaudio" + os.path.splitext(targetVideo)[1]
-    os.rename(targetVideo, targetNoAudio)
-    os.system(f'ffmpeg -y -i "{targetNoAudio}" -i "{tempAudioFileName}" -c copy "{targetVideo}"')
+        # Load the final processed video
+        target_clip = VideoFileClip(target_video)
 
-    if os.path.getsize(targetVideo) == 0:
-        tempAudioFileName = "./temp/audio.m4a"
-        os.system(f'ffmpeg -y -i "{sourceVideo}" -c:a aac -b:a 160k -vn "{tempAudioFileName}"')
-        os.system(f'ffmpeg -y -i "{targetNoAudio}" -i "{tempAudioFileName}" -c copy "{targetVideo}"')
-        if os.path.getsize(targetVideo) == 0:
-            os.rename(targetNoAudio, targetVideo)
-            print("Audio transfer failed. Interpolated video will have no audio.")
-        else:
-            os.remove(targetNoAudio)
-    else:
-        os.remove(targetNoAudio)
+        # Attach the extracted audio to the final video
+        final_clip = target_clip.set_audio(audio)
 
-    shutil.rmtree("temp")  # Cleanup temp files
+        # Save the final video with audio
+        output_path = target_video.replace(".mp4", "_with_audio.mp4")  # Avoid overwriting
+        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", threads=4, preset="ultrafast")
+
+        print(f"✅ Audio successfully transferred to {output_path}")
+    
+    except Exception as e:
+        print(f"⚠ Error transferring audio: {e}")
 
 
 # Function to detect and remove black bars
@@ -378,20 +383,64 @@ def process_video():
     
     # Add Audio to the Generated SBS Video
     try:
-        transferAudio(input_video_path.get(), output_sbs_video_path.get())
+        transfer_audio(input_video_path.get(), output_sbs_video_path.get())  # Updated function call
         progress_label.config(text="Complete")  # Indicate completion
-        print("Audio transfer complete.")
+        print("✅ Audio transfer complete.")
     except Exception as e:
-        print(f"Audio transfer failed: {e}")
+        print(f"⚠ Audio transfer failed: {e}")
         progress_label.config(text="Audio Error")  # Indicate an error
         messagebox.showwarning("Warning", "The video was generated without audio.")
 
+SETTINGS_FILE = "settings.json"
+
+def save_settings():
+    """ Saves all current settings to a JSON file """
+    settings = {
+        "fg_shift": fg_shift.get(),
+        "mg_shift": mg_shift.get(),
+        "bg_shift": bg_shift.get(),
+        "sharpness_factor": sharpness_factor.get(),
+        "blend_factor": blend_factor.get(),
+        "delay_time": delay_time.get(),
+    }
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
+def load_settings():
+    """ Loads settings from the JSON file, if available """
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+            fg_shift.set(settings.get("fg_shift", 6.0))
+            mg_shift.set(settings.get("mg_shift", 3.0))
+            bg_shift.set(settings.get("bg_shift", -4.0))
+            sharpness_factor.set(settings.get("sharpness_factor", 0.2))
+            blend_factor.set(settings.get("blend_factor", 0.6))
+            delay_time.set(settings.get("delay_time", 1/30))
+
+
+
+def open_github():
+    """Opens the GitHub repository in a web browser."""
+    webbrowser.open_new("https://github.com/VisionDepth/VisionDepth3D")  # Replace with your actual GitHub URL
+
+def reset_settings():
+    """ Resets all sliders and settings to default values """
+    fg_shift.set(6.0)  # Default divergence shift
+    mg_shift.set(3.0)  # Default depth transition
+    bg_shift.set(-4.0)  # Default convergence shift
+    sharpness_factor.set(0.2)
+    blend_factor.set(0.6)
+    delay_time.set(1/30)
+
+    messagebox.showinfo("Settings Reset", "All values have been restored to defaults!")
+
 root = tk.Tk()
 root.title("VisionDepth3D Video Generator")
-root.geometry("1080x720")
+root.geometry("1080x780")
 
-background_image = Image.open(resource_path("assets\\Background.png"))
-background_image = background_image.resize((1080, 720), Image.LANCZOS)
+background_image = Image.open(resource_path("assets/Background.png"))
+background_image = background_image.resize((1080, 780), Image.LANCZOS)
 bg_image = ImageTk.PhotoImage(background_image)
 
 background_label = tk.Label(root, image=bg_image)
@@ -447,22 +496,25 @@ codec_menu = tk.OptionMenu(options_frame, selected_codec, *codec_options)
 codec_menu.grid(row=0, column=1, sticky="ew")
 
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
-tk.Entry(options_frame, textvariable=fg_shift, width=8).grid(row=1, column=1, sticky="w")
-
-tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
-tk.Entry(options_frame, textvariable=mg_shift, width=8).grid(row=2, column=1, sticky="w")
-
-tk.Label(options_frame, text="Convergence Shift").grid(row=3, column=0, sticky="w")
-tk.Entry(options_frame, textvariable=bg_shift, width=8).grid(row=3, column=1, sticky="w")
+tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift).grid(row=1, column=1, sticky="ew")
 
 tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
-tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor).grid(row=1, column=3)
+tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor).grid(row=1, column=3, sticky="ew")
+
+tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
+tk.Scale(options_frame, from_=0, to=8, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift).grid(row=2, column=1, sticky="ew")
 
 tk.Label(options_frame, text="Blend Factor").grid(row=2, column=2, sticky="w")
-tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor).grid(row=2, column=3)
+tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor).grid(row=2, column=3, sticky="ew")
+
+tk.Label(options_frame, text="Convergence Shift").grid(row=3, column=0, sticky="w")
+tk.Scale(options_frame, from_=-5, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift).grid(row=3, column=1, sticky="ew")
 
 tk.Label(options_frame, text="Delay Time (seconds)").grid(row=3, column=2, sticky="w")
-tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=3, column=3)
+tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=3, column=3, sticky="ew")
+
+reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
+reset_button.grid(row=4, column=0, columnspan=1, pady=5)
 
 # File Selection
 tk.Button(content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
@@ -473,5 +525,22 @@ tk.Entry(content_frame, textvariable=selected_depth_map, width=50).grid(row=4, c
 
 tk.Button(content_frame, text="Select Output Video", command=select_output_video).grid(row=5, column=0, pady=5, sticky="ew")
 tk.Entry(content_frame, textvariable=output_sbs_video_path, width=50).grid(row=5, column=1, pady=5, padx=5)
+
+# Load the GitHub icon from assets
+github_icon_path = resource_path("assets/github_Logo.png")
+github_icon = Image.open(github_icon_path)
+github_icon = github_icon.resize((15, 15), Image.LANCZOS)  # Resize to fit UI
+github_icon_tk = ImageTk.PhotoImage(github_icon)
+
+# Create the clickable GitHub icon button
+github_button = tk.Button(content_frame, image=github_icon_tk, command=open_github, borderwidth=0, bg="white", cursor="hand2")
+github_button.image = github_icon_tk  # Keep a reference to prevent garbage collection
+github_button.grid(row=6, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
+
+# Load previous settings (if they exist)
+load_settings()
+
+# Ensure settings are saved when the program closes
+root.protocol("WM_DELETE_WINDOW", lambda: (save_settings(), root.destroy()))
 
 root.mainloop()
