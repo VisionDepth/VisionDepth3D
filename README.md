@@ -1,5 +1,5 @@
-# 3D HSBS Video Generator
-The 3D HSBS Video Generator is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground blending, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
+# VisionDepth3D HSBS Video Generator
+VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground blending, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
 
 ## Guide Sheet: Install
 Installation Steps
