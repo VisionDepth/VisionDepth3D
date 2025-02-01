@@ -1,0 +1,32 @@
+Copyright (c) 2025 Johnathan Carpenter. All rights reserved 
+
+This License Agreement ("Agreement") is a legal agreement between you ("User") and VisionDepth ("Licensor") regarding the use of VisionDepth3D ("Software"). By downloading, installing, or using the Software, you acknowledge and agree to be bound by the terms of this Agreement.
+
+1. Grant of License
+Licensor grants User a non-exclusive, non-transferable, revocable license to use the Software free of charge for personal and non-commercial purposes. Any use of the Software for business, professional, or revenue-generating activities requires prior written permission from the Licensor.
+
+2. Restrictions
+User shall not:
+
+Modify, alter, or create derivative works based on the Software.
+Distribute, sublicense, or share the Software with any third party.
+Reverse engineer, decompile, or disassemble the Software.
+Use the Software for any commercial purposes without express written permission from Licensor.
+Sell, rent, lease, or otherwise commercially exploit the Software.
+3. Ownership
+Licensor retains all ownership, rights, title, and interest in and to the Software, including all copyrights and intellectual property rights. This Agreement does not transfer any ownership rights to the User.
+
+4. No Warranty
+The Software is provided "as is" and "as available", without warranties of any kind, whether express or implied. Licensor makes no guarantees regarding performance, reliability, security, accuracy, or fitness for any particular purpose. User assumes all risks associated with using the Software.
+
+5. Limitation of Liability
+To the fullest extent permitted by law, Licensor shall not be liable for any damages, including but not limited to direct, indirect, incidental, consequential, special, or punitive damages arising from or related to the use or inability to use the Software, even if Licensor has been advised of the possibility of such damages.
+
+6. Termination
+This Agreement is effective until terminated. The license granted herein automatically terminates if User violates any terms of this Agreement. Licensor reserves the right to revoke access to the Software at any time, for any reason, without notice.
+
+7. Governing Law
+This Agreement shall be governed by and interpreted in accordance with the laws of the Province of Ontario and the applicable federal laws of Canada, without regard to conflict of law principles.
+
+8. Contact
+For inquiries regarding this Agreement, contact: redsky90@gmail.com
