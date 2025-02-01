@@ -1,5 +1,5 @@
 # VisionDepth3D HSBS Video Generator
-VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground blending, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
+VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
 
 ## Guide Sheet: Install
 Installation Steps
@@ -25,10 +25,6 @@ If Running from Source Code:
 - or alternatively you can use pip
 - pip install git+https://github.com/VisionDepth/VisionDepth3D.git
 - pip install -r requirements.txt
-
-### Step 3: Download Backwards Warp Model
-here you can download Backwards warp model and put it in ".\weights\" folder 
-https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing
 
 ### Guide Sheet: GUI Inputs
 Below is a guide to help you understand and adjust each parameter in the GUI.
