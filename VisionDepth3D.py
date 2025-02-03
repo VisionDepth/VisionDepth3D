@@ -66,7 +66,13 @@ def apply_cinemascope_crop(frame):
     
     if target_height < height:
         crop_y = (height - target_height) // 2  # Center crop
-        return frame[crop_y:crop_y + target_height, :]
+        cropped_frame = frame[crop_y:crop_y + target_height, :]
+        
+        # If Half-OU, ensure aspect ratio matches expected dimensions
+        if output_format.get() == "Half-OU":
+            cropped_frame = cv2.resize(cropped_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
+        
+        return cropped_frame
     return frame  # Return unchanged if already 2.39:1
 
 # Function to detect and remove black bars
@@ -95,19 +101,27 @@ def remove_white_edges(image):
     image[mask.astype(bool)] = blurred[mask.astype(bool)]
     return image
 
+# Store previous frames for averaging scene detection
+previous_scene_types = []
+
 def detect_closeup(frame):
+    """Detects if the scene is a close-up using face detection."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
 
-    if len(faces) > 0:
-        return "close-up"
-    else:
-        return "wide"
+    return "close-up" if len(faces) > 0 else "wide"
 
-previous_scene_types = []
+def calculate_depth_intensity(depth_map):
+    """Analyzes depth variance to classify close-up vs. wide shots."""
+    depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
+    avg_depth = np.mean(depth_gray)
+    depth_variance = np.var(depth_gray)
+
+    return "close-up" if depth_variance < 500 else "wide"
 
 def smooth_scene_type(scene_type):
+    """Applies rolling average smoothing to prevent rapid scene changes."""
     global previous_scene_types
     previous_scene_types.append(scene_type)
     
@@ -116,16 +130,22 @@ def smooth_scene_type(scene_type):
     
     return max(set(previous_scene_types), key=previous_scene_types.count)
 
-def calculate_depth_intensity(depth_map):
-    depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
-    avg_depth = np.mean(depth_gray)
-    depth_variance = np.var(depth_gray)
+def detect_scene_change(prev_frame, current_frame):
+    """Detects scene changes based on frame difference."""
+    gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    gray_current = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
     
-    # Define threshold for close-ups vs. wide shots
-    if depth_variance < 500:  
-        return "close-up"
+    diff = cv2.absdiff(gray_prev, gray_current)
+    diff_score = np.sum(diff) / (gray_prev.shape[0] * gray_prev.shape[1])
+
+    return diff_score
+
+def update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift):
+    """Dynamically adjust pixel shifts based on scene classification."""
+    if scene_type == "close-up":
+        return fg_shift * 1.2, mg_shift * 1.1, bg_shift * 0.8  # More depth in foreground
     else:
-        return "wide"
+        return fg_shift * 0.9, mg_shift * 0.95, bg_shift * 1.2  # Less aggressive depth
 
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
@@ -136,27 +156,28 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
-    prev_frame_gray = None
+    prev_frame_gray = None  # Initialize previous frame storage
     rolling_diff = []
-    max_rolling_frames = 5  # Number of frames to average for adaptive threshold
-
+    scene_change_detected = False
+    scene_stability_counter = 0  # Helps prevent false positives
+    scene_type = "wide"  # Default scene type
+    
     print("Creating Half SBS video with Pulfrich effect, blending, and black bar removal")
   
     # Start tracking time
     start_time = time.time()
-
-    # Get total number of frames
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     for frame_idx in range(total_frames):
+        # Read frame
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
-
+        
         # Calculate percentage
         percentage = (frame_idx / total_frames) * 100
-
+           
         # Update progress bar
         if progress:
             progress["value"] = percentage
@@ -183,6 +204,50 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             progress_label.config(
                 text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
             )
+          
+        # 🎯 Scene classification (close-up or wide)
+        scene_type = smooth_scene_type(detect_closeup(original_frame))
+        depth_scene_type = calculate_depth_intensity(depth_frame)
+
+        # 🛠 Update depth shifts dynamically
+        fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
+        
+        # Convert frame to grayscale for scene detection
+        current_frame_gray = cv2.cvtColor(original_frame, cv2.COLOR_BGR2GRAY)       
+
+        # Scene change detection using rolling frame difference
+        if prev_frame_gray is not None:
+            diff = cv2.absdiff(current_frame_gray, prev_frame_gray)
+            diff_score = np.mean(diff)  # Normalized mean difference
+            
+            # Store differences in a rolling buffer
+            rolling_diff.append(diff_score)
+            if len(rolling_diff) > 8:  # Keep last 8 frames for smoothing
+                rolling_diff.pop(0)
+        
+            avg_diff_score = np.mean(rolling_diff)
+              
+            # 🎯 Dynamically adjust scene change threshold
+            adaptive_threshold = 40 if avg_diff_score < 80 else 70
+            scene_change_detected = avg_diff_score > adaptive_threshold
+        
+            # 🎬 Handle detected scene change
+            if scene_change_detected and scene_stability_counter > 5:
+                print(f"🎬 Scene change detected at frame {frame_idx}, diff: {avg_diff_score:.2f}")
+                frame_buffer.clear()  # Reset Pulfrich buffer for clean effect
+
+                # Gradually reduce blending instead of an abrupt change
+                blend_factor = np.clip(blend_factor * 0.8, 0.3, 0.7)  # Keeps blend factor stable
+
+                # **Update depth shift settings dynamically**
+                fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
+
+                scene_stability_counter = 0  # Reset stability counter
+            else:
+                scene_stability_counter += 1  # Increase stability count
+
+        # Store the current frame as previous frame for next iteration
+        prev_frame_gray = current_frame_gray.copy()
 
         # Remove black bars
         cropped_frame, x, y, w, h = remove_black_bars(original_frame)
@@ -190,53 +255,22 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         depth_frame_resized = cv2.resize(depth_frame, (width, height))
 
         left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
-
-        # Convert to grayscale for scene change detection
-        current_frame_gray = cv2.cvtColor(cropped_resized_frame, cv2.COLOR_BGR2GRAY)
-
-        # Scene change detection
-        if prev_frame_gray is not None:
-            diff = cv2.absdiff(current_frame_gray, prev_frame_gray)
-            diff_score = np.sum(diff) / (width * height)
-
-            rolling_diff.append(diff_score)
-            if len(rolling_diff) > max_rolling_frames:
-                rolling_diff.pop(0)
-            avg_diff_score = np.mean(rolling_diff)
-
-            adaptive_threshold = 50 if avg_diff_score < 100 else 75
-            if avg_diff_score > adaptive_threshold:
-                print(f"Scene change detected at frame {frame_idx} with diff {avg_diff_score:.2f}")
-                frame_buffer.clear()  # Clear buffer for Pulfrich effect
-                blend_factor = max(0.1, blend_factor - 0.2)  # Reduce blending for scene change
-
-        prev_frame_gray = current_frame_gray       
-
-         # Scene classification (close-up or wide)
-        scene_type = smooth_scene_type(detect_closeup(original_frame))
-        # Ensure corrected_left and corrected_right are assigned before using them
-        corrected_left, corrected_right = left_frame, right_frame  # This guarantees they exist
-
-         # Depth analysis
-        depth_scene_type = calculate_depth_intensity(depth_frame)     
         
-        corrected_left, corrected_right = left_frame, right_frame  # No IPD adjustment
-        
-        # Pulfrich effect adjustments
-        blend_factor = min(0.5, blend_factor + 0.05) if len(frame_buffer) else blend_factor
-
         # Process Depth frame
         depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
         depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
         depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
-        depth_normalized = depth_filtered / 255.0             
+        depth_normalized = depth_filtered / 255.0      
+
+        # Pulfrich effect adjustments
+        blend_factor = min(0.5, blend_factor + 0.05) if len(frame_buffer) else blend_factor          
+        
+        # Generate y-coordinate mapping
+        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32) 
         
         # Ensure left and right frames are fresh copies of the cropped frame
         left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
-
-        # Generate y-coordinate mapping
-        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
         # Depth-based pixel shift
         for y in range(height):
@@ -258,9 +292,13 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
 
             # Apply remapping (ensuring correct interpolation)
-            left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-        
+            left_frame[y] = cv2.remap(
+                cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+            )
+            right_frame[y] = cv2.remap(
+                cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+            )
+
         if cinemascope_enabled.get():
             left_frame = apply_cinemascope_crop(left_frame)
             right_frame = apply_cinemascope_crop(right_frame)
@@ -290,126 +328,130 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
     print("Half SBS video generated successfully.")
 
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                 sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None):
-    frame_delay = int(fps * delay_time)  # Pulfrich effect frame delay
-    frame_buffer = []  # Store frames for temporal delay
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height * 2))  # Adjusted for Over-Under
+                  sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None):
+
+    frame_delay = int(fps * delay_time)  # Number of frames corresponding to the delay time
+    frame_buffer = []  # Buffer to store frames for temporal delay
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
+    prev_frame_gray = None
+    rolling_diff = []
+    scene_change_detected = False
+    scene_stability_counter = 0  # Helps prevent false positives
+
     print("Creating Over-Under 3D video with Pulfrich effect, blending, and black bar removal")
-    
+
     # Start tracking time
     start_time = time.time()
-
-    # Get total number of frames
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    for frame_idx in range(int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))):
+
+    for frame_idx in range(total_frames):
+        # Read frame
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
-        # Calculate percentage
-        percentage = (frame_idx / total_frames) * 100
+
+        # 🎯 Scene classification (close-up or wide)
+        scene_type = smooth_scene_type(detect_closeup(original_frame))
+        depth_scene_type = calculate_depth_intensity(depth_frame)
+
+        # 🛠 Update depth shifts dynamically
+        fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
 
         # Update progress bar
+        percentage = (frame_idx / total_frames) * 100
         if progress:
             progress["value"] = percentage
             progress.update()
-
-        # Update percentage label
         if progress_label:
             progress_label.config(text=f"{percentage:.2f}%")
 
-        # Calculate elapsed time and time remaining
-        elapsed_time = time.time() - start_time
-        if frame_idx > 0:
-            time_per_frame = elapsed_time / frame_idx
-            time_remaining = time_per_frame * (total_frames - frame_idx)
-        else:
-            time_remaining = 0  # No estimate initially
+        # Scene change detection
+        current_frame_gray = cv2.cvtColor(original_frame, cv2.COLOR_BGR2GRAY)
+        if prev_frame_gray is not None:
+            diff = cv2.absdiff(current_frame_gray, prev_frame_gray)
+            diff_score = np.mean(diff)
 
-        # Format time values as MM:SS
-        elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
-        time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
+            rolling_diff.append(diff_score)
+            if len(rolling_diff) > 8:  # Keep rolling buffer size at 8
+                rolling_diff.pop(0)
 
-        # Update the progress bar and label
-        if progress_label:
-            progress_label.config(
-                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
-            )       
-        
-        # Remove black bars & Resize
-        cropped_frame, x, y, w, h = remove_black_bars(original_frame)
-        cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
-        depth_frame_resized = cv2.resize(depth_frame, (width, height))
+            avg_diff_score = np.mean(rolling_diff)
+            adaptive_threshold = 40 if avg_diff_score < 80 else 70
+            scene_change_detected = avg_diff_score > adaptive_threshold
+
+            # 🎬 Handle scene change
+            if scene_change_detected and scene_stability_counter > 5:
+                print(f"🎬 Scene change detected at frame {frame_idx}, diff: {avg_diff_score:.2f}")
+                frame_buffer.clear()  # Reset Pulfrich buffer
+
+                # Smooth blending instead of abrupt cuts
+                blend_factor = np.clip(blend_factor * 0.9, 0.3, 0.7)  # Adjust transition smoothness
+
+                # **Update depth shifts dynamically**
+                fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
+
+                scene_stability_counter = 0  # Reset stability counter
+            else:
+                scene_stability_counter += 1  # Increase stability count
+
+        prev_frame_gray = current_frame_gray.copy()
 
         # Process Depth frame
-        depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
+        depth_map_gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
         depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-        depth_normalized = cv2.GaussianBlur(depth_filtered / 255.0, (5, 5), 0)  # Normalize and smooth
+        depth_normalized = depth_filtered / 255.0
 
-        # Initialize top and bottom frames
-        top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
+        # Prepare top and bottom frames
+        top_frame, bottom_frame = original_frame.copy(), original_frame.copy()
 
-        # Generate y-coordinate mapping
-        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
-
+        # Apply depth-based shifts
         for y in range(height):
-            # Depth-based pixel shifts
-            shift_vals_fg = (-depth_normalized[y, :] * fg_shift).astype(np.int32)
-            shift_vals_mg = (-depth_normalized[y, :] * mg_shift).astype(np.int32)
-            shift_vals_bg = (depth_normalized[y, :] * bg_shift).astype(np.int32)  # BG remains negative
+            shift_vals_fg = (-depth_normalized[y, :] * fg_shift).astype(np.float32)
+            shift_vals_mg = (-depth_normalized[y, :] * mg_shift).astype(np.float32)
+            shift_vals_bg = (depth_normalized[y, :] * bg_shift).astype(np.float32)
 
-            # Final x-mapping
             new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
             new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
 
-            # Reshape for remapping
             map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
             map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
 
-            # Apply remapping
-            top_frame[y] = cv2.remap(cropped_resized_frame, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            bottom_frame[y] = cv2.remap(cropped_resized_frame, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-        
-        # 🎬 **Apply Cinemascope Cropping if Enabled**
-        if cinemascope_enabled.get():
-            top_frame = apply_cinemascope_crop(top_frame)
-            bottom_frame = apply_cinemascope_crop(bottom_frame)
-        
-        # Pulfrich effect: Introduce frame delay for one eye
+            top_frame[y] = cv2.remap(original_frame, map_x_top, np.full_like(map_x_top, y), 
+                                     interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            bottom_frame[y] = cv2.remap(original_frame, map_x_bottom, np.full_like(map_x_bottom, y), 
+                                        interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+        # Pulfrich effect
         frame_buffer.append((top_frame, bottom_frame))
         if len(frame_buffer) > frame_delay:
             delayed_top_frame, delayed_bottom_frame = frame_buffer.pop(0)
         else:
             delayed_top_frame, delayed_bottom_frame = top_frame, bottom_frame
 
-        # Apply Pulfrich effect
-        blended_top_frame = cv2.addWeighted(delayed_top_frame, 0.5, top_frame, 0.5, 0)
-
-        # Apply sharpening
+        blended_top_frame = cv2.addWeighted(delayed_top_frame, blend_factor, top_frame, 1 - blend_factor, 0)
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
         top_sharp = cv2.filter2D(blended_top_frame, -1, sharpen_kernel)
         bottom_sharp = cv2.filter2D(bottom_frame, -1, sharpen_kernel)
 
-        # Resize to Over-Under format
-        top_resized = cv2.resize(top_sharp, (width, height))
-        bottom_resized = cv2.resize(bottom_sharp, (width, height))
+        # Apply Cinemascope crop if enabled
+        if cinemascope_enabled.get():
+            top_sharp = apply_cinemascope_crop(top_sharp)
+            bottom_sharp = apply_cinemascope_crop(bottom_sharp)
 
-        # Format the frames according to the selected 3D output format
+        # Format the 3D output properly
         ou_frame = format_3d_output(top_sharp, bottom_sharp, output_format.get())
 
-        # Write the processed OU frame
         out.write(ou_frame)
 
     original_cap.release()
     depth_cap.release()
     out.release()
     print("✅ Over-Under 3D video generated successfully.")
-
 
 def start_processing_thread():
     thread = Thread(target=process_video)
@@ -607,6 +649,7 @@ blend_factor = tk.DoubleVar(value=0.6)
 delay_time = tk.DoubleVar(value=1/30)
 output_format = tk.StringVar(value="SBS")
 cinemascope_enabled = tk.BooleanVar(value=False)  # Checkbox variable
+ou_type = tk.StringVar(value="Half-OU")
 
 # Codec options
 codec_options = ["mp4v", "H264", "XVID", "DIVX"]
