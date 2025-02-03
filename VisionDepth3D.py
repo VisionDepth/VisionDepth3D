@@ -9,10 +9,12 @@ from PIL import Image, ImageTk
 import cv2
 import numpy as np
 import time
+import threading
 from threading import Thread
 import webbrowser
-from moviepy.editor import VideoFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip
 import json
+import subprocess
 
 
 def resource_path(relative_path):
@@ -25,35 +27,47 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
+def format_3d_output(left_frame, right_frame, output_format):
+    """Formats the 3D output according to the user's selection."""
+    if output_format == "SBS":
+        return np.hstack((left_frame, right_frame))  # Standard Side-by-Side
 
-def transfer_audio(source_video, target_video):
-    """Transfers audio from source_video to target_video using MoviePy."""
-    try:
-        # Load the original video and extract its audio
-        source_clip = VideoFileClip(source_video)
-        
-        if source_clip.audio is None:
-            print("No audio track found in the source video. Skipping audio transfer.")
-            return
-        
-        # Save the extracted audio
-        audio = source_clip.audio
+    elif output_format == "Over-Under":
+        if ou_type.get() == "Half-OU":
+            # Resize frames to Half-OU size while keeping proper scaling
+            top_half = cv2.resize(left_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
+            bottom_half = cv2.resize(right_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
 
-        # Load the final processed video
-        target_clip = VideoFileClip(target_video)
+            # Ensure the padding bar is always present in Half-OU
+            padding_height = int(height * 0.02)  # Adjust percentage to control black bar size
+            padding_bar = np.zeros((padding_height, width, 3), dtype=np.uint8)  # Black bar
 
-        # Attach the extracted audio to the final video
-        final_clip = target_clip.set_audio(audio)
+            # Stack the frames with the black bar in the middle
+            return np.vstack((top_half, padding_bar, bottom_half))
 
-        # Save the final video with audio
-        output_path = target_video.replace(".mp4", "_with_audio.mp4")  # Avoid overwriting
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", threads=4, preset="ultrafast")
+        else:  # Full-OU
+            return np.vstack((left_frame, right_frame))  # Full frames, no padding bar
+     # Stack top and bottom frames
 
-        print(f"✅ Audio successfully transferred to {output_path}")
+    elif output_format == "Interlaced 3D":
+        interlaced_frame = np.zeros_like(left_frame)
+        interlaced_frame[::2] = left_frame[::2]  # Odd lines from left eye
+        interlaced_frame[1::2] = right_frame[1::2]  # Even lines from right eye
+        return interlaced_frame
+
+    else:
+        print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
+        return np.hstack((left_frame, right_frame))  # Default to SBS
+
+def apply_cinemascope_crop(frame):
+    """ Crops frame to 2.39:1 aspect ratio while keeping width the same. """
+    height, width = frame.shape[:2]
+    target_height = int(width / 2.39)  # Maintain width, crop height
     
-    except Exception as e:
-        print(f"⚠ Error transferring audio: {e}")
-
+    if target_height < height:
+        crop_y = (height - target_height) // 2  # Center crop
+        return frame[crop_y:crop_y + target_height, :]
+    return frame  # Return unchanged if already 2.39:1
 
 # Function to detect and remove black bars
 def remove_black_bars(frame):
@@ -246,7 +260,11 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             # Apply remapping (ensuring correct interpolation)
             left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
             right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-
+        
+        if cinemascope_enabled.get():
+            left_frame = apply_cinemascope_crop(left_frame)
+            right_frame = apply_cinemascope_crop(right_frame)
+            
         # Buffer logic
         frame_buffer.append((left_frame, right_frame))
         if len(frame_buffer) > frame_delay:
@@ -259,18 +277,139 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
         left_sharp = cv2.filter2D(blended_left_frame, -1, sharpen_kernel)
         right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
-
+        
         left_sharp_resized = cv2.resize(left_sharp, (width // 2, height))
         right_sharp_resized = cv2.resize(right_sharp, (width // 2, height))
 
-        # Combine into SBS format
-        sbs_frame = np.hstack((left_sharp_resized, right_sharp_resized))
+        sbs_frame = format_3d_output(left_sharp_resized, right_sharp_resized, output_format.get())
         out.write(sbs_frame)
 
     original_cap.release()
     depth_cap.release()
     out.release()
     print("Half SBS video generated successfully.")
+
+def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
+                 sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None):
+    frame_delay = int(fps * delay_time)  # Pulfrich effect frame delay
+    frame_buffer = []  # Store frames for temporal delay
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height * 2))  # Adjusted for Over-Under
+    original_cap = cv2.VideoCapture(input_video)
+    depth_cap = cv2.VideoCapture(depth_video)
+
+    print("Creating Over-Under 3D video with Pulfrich effect, blending, and black bar removal")
+    
+    # Start tracking time
+    start_time = time.time()
+
+    # Get total number of frames
+    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    for frame_idx in range(int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))):
+        ret1, original_frame = original_cap.read()
+        ret2, depth_frame = depth_cap.read()
+        if not ret1 or not ret2:
+            break
+        # Calculate percentage
+        percentage = (frame_idx / total_frames) * 100
+
+        # Update progress bar
+        if progress:
+            progress["value"] = percentage
+            progress.update()
+
+        # Update percentage label
+        if progress_label:
+            progress_label.config(text=f"{percentage:.2f}%")
+
+        # Calculate elapsed time and time remaining
+        elapsed_time = time.time() - start_time
+        if frame_idx > 0:
+            time_per_frame = elapsed_time / frame_idx
+            time_remaining = time_per_frame * (total_frames - frame_idx)
+        else:
+            time_remaining = 0  # No estimate initially
+
+        # Format time values as MM:SS
+        elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
+        time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
+
+        # Update the progress bar and label
+        if progress_label:
+            progress_label.config(
+                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
+            )       
+        
+        # Remove black bars & Resize
+        cropped_frame, x, y, w, h = remove_black_bars(original_frame)
+        cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
+        depth_frame_resized = cv2.resize(depth_frame, (width, height))
+
+        # Process Depth frame
+        depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
+        depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
+        depth_normalized = cv2.GaussianBlur(depth_filtered / 255.0, (5, 5), 0)  # Normalize and smooth
+
+        # Initialize top and bottom frames
+        top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
+
+        # Generate y-coordinate mapping
+        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
+
+        for y in range(height):
+            # Depth-based pixel shifts
+            shift_vals_fg = (-depth_normalized[y, :] * fg_shift).astype(np.int32)
+            shift_vals_mg = (-depth_normalized[y, :] * mg_shift).astype(np.int32)
+            shift_vals_bg = (depth_normalized[y, :] * bg_shift).astype(np.int32)  # BG remains negative
+
+            # Final x-mapping
+            new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
+            new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
+
+            # Reshape for remapping
+            map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
+            map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
+
+            # Apply remapping
+            top_frame[y] = cv2.remap(cropped_resized_frame, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+            bottom_frame[y] = cv2.remap(cropped_resized_frame, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+        
+        # 🎬 **Apply Cinemascope Cropping if Enabled**
+        if cinemascope_enabled.get():
+            top_frame = apply_cinemascope_crop(top_frame)
+            bottom_frame = apply_cinemascope_crop(bottom_frame)
+        
+        # Pulfrich effect: Introduce frame delay for one eye
+        frame_buffer.append((top_frame, bottom_frame))
+        if len(frame_buffer) > frame_delay:
+            delayed_top_frame, delayed_bottom_frame = frame_buffer.pop(0)
+        else:
+            delayed_top_frame, delayed_bottom_frame = top_frame, bottom_frame
+
+        # Apply Pulfrich effect
+        blended_top_frame = cv2.addWeighted(delayed_top_frame, 0.5, top_frame, 0.5, 0)
+
+        # Apply sharpening
+        sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
+        top_sharp = cv2.filter2D(blended_top_frame, -1, sharpen_kernel)
+        bottom_sharp = cv2.filter2D(bottom_frame, -1, sharpen_kernel)
+
+        # Resize to Over-Under format
+        top_resized = cv2.resize(top_sharp, (width, height))
+        bottom_resized = cv2.resize(bottom_sharp, (width, height))
+
+        # Format the frames according to the selected 3D output format
+        ou_frame = format_3d_output(top_sharp, bottom_sharp, output_format.get())
+
+        # Write the processed OU frame
+        out.write(ou_frame)
+
+    original_cap.release()
+    depth_cap.release()
+    out.release()
+    print("✅ Over-Under 3D video generated successfully.")
+
 
 def start_processing_thread():
     thread = Thread(target=process_video)
@@ -357,39 +496,47 @@ def process_video():
     progress_label.config(text="0%")
     progress.update()
 
-    # Render the video
-    render_sbs_3d(
-        input_video_path.get(),
-        selected_depth_map.get(),
-        output_sbs_video_path.get(),
-        selected_codec.get(),
-        fps,
-        width,
-        height,
-        fg_shift.get(),
-        mg_shift.get(),
-        bg_shift.get(),
-        sharpness_factor.get(),
-        delay_time=delay_time.get(),
-        blend_factor=blend_factor.get(),
-        progress=progress,
-        progress_label=progress_label
-    )
-        
+    if output_format.get() == "Over-Under":
+        render_ou_3d(
+            input_video_path.get(),
+            selected_depth_map.get(),
+            output_sbs_video_path.get(),
+            selected_codec.get(),
+            fps,
+            width,
+            height,
+            fg_shift.get(),
+            mg_shift.get(),
+            bg_shift.get(),
+            sharpness_factor.get(),
+            delay_time=delay_time.get(),
+            blend_factor=blend_factor.get(),
+            progress=progress,
+            progress_label=progress_label
+        )
+    else:
+        render_sbs_3d(
+            input_video_path.get(),
+            selected_depth_map.get(),
+            output_sbs_video_path.get(),
+            selected_codec.get(),
+            fps,
+            width,
+            height,
+            fg_shift.get(),
+            mg_shift.get(),
+            bg_shift.get(),
+            sharpness_factor.get(),
+            delay_time=delay_time.get(),
+            blend_factor=blend_factor.get(),
+            progress=progress,
+            progress_label=progress_label
+        )
+            
     # Set progress bar to 100% after rendering
     progress["value"] = 100
     progress_label.config(text="100%")
     progress.update()
-    
-    # Add Audio to the Generated SBS Video
-    try:
-        transfer_audio(input_video_path.get(), output_sbs_video_path.get())  # Updated function call
-        progress_label.config(text="Complete")  # Indicate completion
-        print("✅ Audio transfer complete.")
-    except Exception as e:
-        print(f"⚠ Audio transfer failed: {e}")
-        progress_label.config(text="Audio Error")  # Indicate an error
-        messagebox.showwarning("Warning", "The video was generated without audio.")
 
 SETTINGS_FILE = "settings.json"
 
@@ -417,7 +564,6 @@ def load_settings():
             sharpness_factor.set(settings.get("sharpness_factor", 0.2))
             blend_factor.set(settings.get("blend_factor", 0.6))
             delay_time.set(settings.get("delay_time", 1/30))
-
 
 
 def open_github():
@@ -452,13 +598,15 @@ content_frame.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight
 input_video_path = tk.StringVar()
 selected_depth_map = tk.StringVar()
 output_sbs_video_path = tk.StringVar()
-selected_codec = tk.StringVar(value="mp4v")
+selected_codec = tk.StringVar(value="mp4v")  
 fg_shift = tk.DoubleVar(value=6.0)
 mg_shift = tk.DoubleVar(value=3.0)
 bg_shift = tk.DoubleVar(value=-4.0)
 sharpness_factor = tk.DoubleVar(value=0.2)
 blend_factor = tk.DoubleVar(value=0.6)
 delay_time = tk.DoubleVar(value=1/30)
+output_format = tk.StringVar(value="SBS")
+cinemascope_enabled = tk.BooleanVar(value=False)  # Checkbox variable
 
 # Codec options
 codec_options = ["mp4v", "H264", "XVID", "DIVX"]
@@ -495,6 +643,10 @@ tk.Label(options_frame, text="Codec").grid(row=0, column=0, sticky="w")
 codec_menu = tk.OptionMenu(options_frame, selected_codec, *codec_options)
 codec_menu.grid(row=0, column=1, sticky="ew")
 
+cinemascope_checkbox = tk.Checkbutton(options_frame, text="CinemaScope Mode (2.39:1)", variable=cinemascope_enabled)
+cinemascope_checkbox.grid(row=0, column=2, columnspan=2, pady=5, sticky="w")
+
+
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift).grid(row=1, column=1, sticky="ew")
 
@@ -513,9 +665,6 @@ tk.Scale(options_frame, from_=-5, to=0, resolution=0.5, orient=tk.HORIZONTAL, va
 tk.Label(options_frame, text="Delay Time (seconds)").grid(row=3, column=2, sticky="w")
 tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=3, column=3, sticky="ew")
 
-reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
-reset_button.grid(row=4, column=0, columnspan=1, pady=5)
-
 # File Selection
 tk.Button(content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
 tk.Entry(content_frame, textvariable=input_video_path, width=50).grid(row=3, column=1, pady=5, padx=5)
@@ -526,6 +675,11 @@ tk.Entry(content_frame, textvariable=selected_depth_map, width=50).grid(row=4, c
 tk.Button(content_frame, text="Select Output Video", command=select_output_video).grid(row=5, column=0, pady=5, sticky="ew")
 tk.Entry(content_frame, textvariable=output_sbs_video_path, width=50).grid(row=5, column=1, pady=5, padx=5)
 
+tk.Label(content_frame, text="3D Format").grid(row=6, column=0, sticky="w")
+option_menu = tk.OptionMenu(content_frame, output_format, "SBS", "Half-OU", "Full-OU", "Interlaced 3D",)
+option_menu.config(width=12)  # Adjust width to fit the text without stretching
+option_menu.grid(row=6, column=1, pady=5, padx=5, sticky="w")  # Align left without stretching
+
 # Load the GitHub icon from assets
 github_icon_path = resource_path("assets/github_Logo.png")
 github_icon = Image.open(github_icon_path)
@@ -535,7 +689,10 @@ github_icon_tk = ImageTk.PhotoImage(github_icon)
 # Create the clickable GitHub icon button
 github_button = tk.Button(content_frame, image=github_icon_tk, command=open_github, borderwidth=0, bg="white", cursor="hand2")
 github_button.image = github_icon_tk  # Keep a reference to prevent garbage collection
-github_button.grid(row=6, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
+github_button.grid(row=7, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
+
+reset_button = tk.Button(content_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
+reset_button.grid(row=6, column=1, columnspan=2, pady=10)
 
 # Load previous settings (if they exist)
 load_settings()
