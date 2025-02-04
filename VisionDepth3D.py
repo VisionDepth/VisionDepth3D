@@ -15,6 +15,8 @@ import webbrowser
 import json
 import subprocess
 from tensorflow import keras
+from moviepy.editor import VideoFileClip, AudioFileClip
+
 
 # Load the trained divergence correction model
 MODEL_PATH = 'weights/backward_warping_model.keras'
