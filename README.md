@@ -1,4 +1,4 @@
-# VisionDepth3D HSBS Video Generator
+# VisionDepth3D Video Converter
 VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
 
 With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects.
