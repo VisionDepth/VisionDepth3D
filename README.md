@@ -1,5 +1,18 @@
 # VisionDepth3D HSBS Video Generator
-VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. By leveraging depth maps, it dynamically adjusts foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. Featuring black bar removal, real-time motion depth enhancements, and intelligent edge blending, this tool eliminates artifacts while maintaining sharp, natural depth perception. Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, it offers fine-tuned control over depth parameters for professional-quality results with optimized performance.
+VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
+
+With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects.
+
+Key features include:
+✅ Black bar removal for a cleaner 3D presentation
+✅ AI-powered backward warp correction to eliminate visual artifacts
+✅ Real-time motion depth enhancements for accurate shifting
+✅ Intelligent edge blending for seamless object transitions
+✅ Cinemascope mode (2.39:1) for a professional widescreen effect
+✅ Optimized performance with GPU-accelerated depth processing
+
+Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
+![Gui Layout](https://github.com/user-attachments/assets/6090b55c-fa58-42aa-b778-ba6739059f70)
 
 ## Guide Sheet: Install
 Installation Steps
