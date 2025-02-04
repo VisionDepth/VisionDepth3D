@@ -1,15 +1,15 @@
 # VisionDepth3D Video Converter
 VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
 
-With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects.
+With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware, optimized for efficiency!
 
 Key features include:
-✅ Black bar removal for a cleaner 3D presentation
-✅ AI-powered backward warp correction to eliminate visual artifacts
-✅ Real-time motion depth enhancements for accurate shifting
-✅ Intelligent edge blending for seamless object transitions
-✅ Cinemascope mode (2.39:1) for a professional widescreen effect
-✅ Optimized performance with GPU-accelerated depth processing
+- ✅ Black bar removal for a cleaner 3D presentation
+- ✅ AI-powered backward warp correction to eliminate visual artifacts
+- ✅ Real-time motion depth enhancements for accurate shifting
+- ✅ Intelligent edge blending for seamless object transitions
+- ✅ Cinemascope mode (2.39:1) for a professional widescreen effect
+- ✅ Leverages AI-based GPU acceleration for warp correction and optimized rendering.
 
 Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
 
@@ -21,11 +21,10 @@ GUI Layout
 Installation Steps
 This program runs on python 3.9 - 3.10
 
-Download Backwards warp model [Here](https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing) and put in weights folder
-
 ### Step 1: Download the VisionDepth3D Program
 - Download the VisionDepth3D.zipfile from the official download source.
 - Extract the zip file to your desired folder (e.g., C:\VisionDepth3D).
+- Download Backwards warp model [Here](https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing) and put in weights folder
 
 ### Step 2: Install Required Dependencies
 
