@@ -15,7 +15,11 @@ import webbrowser
 from moviepy.editor import VideoFileClip, AudioFileClip
 import json
 import subprocess
+from tensorflow import keras
 
+# Load the trained divergence correction model
+MODEL_PATH = 'weights/backward_warping_model.keras'
+model = keras.models.load_model(MODEL_PATH)
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -106,12 +110,45 @@ def calculate_depth_intensity(depth_map):
     avg_depth = np.mean(depth_gray)
     depth_variance = np.var(depth_gray)
     
-    # Define threshold for close-ups vs. wide shots
-    if depth_variance < 500:  
-        return "close-up"
-    else:
-        return "wide"
 
+def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
+    """
+    Applies backward warping correction to background objects to enhance depth perception.
+    
+    - Uses the trained model to simulate depth by warping background regions inward.
+    - Applies correction only to background areas.
+    
+    Parameters:
+        left_frame (numpy array): Left eye frame.
+        right_frame (numpy array): Right eye frame.
+        depth_map (numpy array): Depth map normalized between 0-1.
+        model (Keras model): Trained warp correction model.
+        bg_threshold (float): Depth threshold to define the background.
+        
+    Returns:
+        corrected_left, corrected_right (numpy arrays): Frames with corrected convergence shift.
+    """
+
+    # Ensure depth is normalized
+    depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
+
+    # Create a binary mask for foreground (where depth is close)
+    background_mask = (depth_map >= bg_threshold).astype(np.uint8)
+
+    # Prepare input for the warp model
+    warp_input = np.array([[bg_threshold]])  # Using depth threshold as input
+    warp_params = model.predict(warp_input).reshape(3, 3)
+
+    # Apply warp transformation ONLY to background areas
+    h, w = left_frame.shape[:2]
+    corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h))
+    corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
+
+    # Mask out non-foreground areas to prevent unnecessary corrections
+    corrected_left = np.where(background_mask[..., None], corrected_left, left_frame)
+    corrected_right = np.where(background_mask[..., None], corrected_right, right_frame)
+
+    return corrected_left, corrected_right
 
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
@@ -133,13 +170,13 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
 
     # Get total number of frames
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    
     for frame_idx in range(total_frames):
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
-
+                      
         # Calculate percentage
         percentage = (frame_idx / total_frames) * 100
 
@@ -197,10 +234,13 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         
         # Ensure left and right frames are fresh copies of the cropped frame
         left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
-
+        
+        # Correct foreground artifacts before applying 3D shifts
+        left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, model)
+               
         # Generate y-coordinate mapping
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
-
+        
         # Depth-based pixel shift
         for y in range(height):
             fg_shift_val = fg_shift  # Foreground shift (e.g. 12)
@@ -333,6 +373,9 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
 
         # Prepare top and bottom frames
         top_frame, bottom_frame = original_frame.copy(), original_frame.copy()
+
+        # Correct foreground artifacts before applying 3D shifts
+        top_frame, bottom_frame = correct_convergence_shift(top_frame, bottom_frame, depth_normalized, model)
 
         # Apply depth-based shifts
         for y in range(height):
