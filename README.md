@@ -5,7 +5,7 @@ VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) 
 Installation Steps
 This program runs on python 3.9 - 3.10
 
-Download Backwards warp model [![Here](https://img.shields.io/badge/GitHub-Visit-blue?style=for-the-badge&logo=github)](https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing) and put in weights folder
+Download Backwards warp model [Here](https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing) and put in weights folder
 
 ### Step 1: Download the VisionDepth3D Program
 - Download the VisionDepth3D.zipfile from the official download source.
