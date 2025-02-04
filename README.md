@@ -12,6 +12,7 @@ Key features include:
 ✅ Optimized performance with GPU-accelerated depth processing
 
 Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
+--
 ![Gui Layout](https://github.com/user-attachments/assets/6090b55c-fa58-42aa-b778-ba6739059f70)
 
 ## Guide Sheet: Install
