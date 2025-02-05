@@ -178,49 +178,50 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
 
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_time = time.time()
+    prev_time = start_time
+    fps_values = []  # Store last few FPS values for smoothing
 
     for frame_idx in range(total_frames):
-        # Check for cancel flag
         if cancel_flag and cancel_flag.is_set():
             print("❌ Rendering canceled.")
             break
 
-        # Check for suspend flag
         while suspend_flag and suspend_flag.is_set():
             print("⏸ Rendering paused...")
-            time.sleep(0.5)  # Sleep to avoid high CPU usage
+            time.sleep(0.5)  
 
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
 
-        # Update progress (existing code)
         percentage = (frame_idx / total_frames) * 100
+        elapsed_time = time.time() - start_time
+
+        # ✅ **Calculate FPS with Moving Average**
+        curr_time = time.time()
+        frame_time = curr_time - prev_time  # Time taken for one frame
+
+        if frame_time > 0:
+            fps_calc = 1.0 / frame_time  # FPS based on actual frame time
+            fps_values.append(fps_calc)
+
+        if len(fps_values) > 10:  # Keep last 10 FPS values for smoothing
+            fps_values.pop(0)
+
+        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0  # Compute average FPS
+
+        # ✅ **Update Progress Bar and FPS Display**
         if progress:
             progress["value"] = percentage
             progress.update()
         if progress_label:
-            progress_label.config(text=f"{percentage:.2f}%")
-
-
-        # Calculate elapsed time and time remaining
-        elapsed_time = time.time() - start_time
-        if frame_idx > 0:
-            time_per_frame = elapsed_time / frame_idx
-            time_remaining = time_per_frame * (total_frames - frame_idx)
-        else:
-            time_remaining = 0  # No estimate initially
-
-        # Format time values as MM:SS
-        elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
-        time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
-
-        # Update the progress bar and label
-        if progress_label:
             progress_label.config(
-                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
+                text=f"{percentage:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed_time))}"
             )
+
+        prev_time = curr_time  # Update previous frame time
+
 
         # Remove black bars
         cropped_frame, x, y, w, h = remove_black_bars(original_frame)
@@ -320,30 +321,50 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
 
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_time = time.time()
+    prev_time = start_time
+    fps_values = []  # Store last few FPS values for smoothing
 
     for frame_idx in range(total_frames):
-        # Check for cancel flag
         if cancel_flag and cancel_flag.is_set():
             print("❌ Rendering canceled.")
             break
 
-        # Check for suspend flag
         while suspend_flag and suspend_flag.is_set():
             print("⏸ Rendering paused...")
-            time.sleep(0.5)  # Sleep to avoid high CPU usage
+            time.sleep(0.5)  
 
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
 
-        # Update progress (existing code)
         percentage = (frame_idx / total_frames) * 100
+        elapsed_time = time.time() - start_time
+
+        # ✅ **Calculate FPS with Moving Average**
+        curr_time = time.time()
+        frame_time = curr_time - prev_time  # Time taken for one frame
+
+        if frame_time > 0:
+            fps_calc = 1.0 / frame_time  # FPS based on actual frame time
+            fps_values.append(fps_calc)
+
+        if len(fps_values) > 10:  # Keep last 10 FPS values for smoothing
+            fps_values.pop(0)
+
+        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0  # Compute average FPS
+
+        # ✅ **Update Progress Bar and FPS Display**
         if progress:
             progress["value"] = percentage
             progress.update()
         if progress_label:
-            progress_label.config(text=f"{percentage:.2f}%")
+            progress_label.config(
+                text=f"{percentage:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed_time))}"
+            )
+
+        prev_time = curr_time  # Update previous frame time
+
 
         # 🎯 Scene classification (close-up or wide)
         scene_type = smooth_scene_type(detect_closeup(original_frame))
