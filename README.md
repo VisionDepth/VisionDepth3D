@@ -1,7 +1,7 @@
-# VisionDepth3D Video Converter
-VisionDepth3D is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
+# VisionDepth3D - 3D Video Conversion with AI Depth Mapping & Pulfrich Effect
+VisionDepth3D AI-powered 3D converter is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
 
-With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware, optimized for efficiency!
+With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware, this open-source 3D tool is optimized for efficiency!
 
 Key features include:
 - ✅ Black bar removal for a cleaner 3D presentation
