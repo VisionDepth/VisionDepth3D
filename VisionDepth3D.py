@@ -15,12 +15,15 @@ import webbrowser
 import json
 import subprocess
 from tensorflow import keras
-from moviepy.editor import VideoFileClip, AudioFileClip
-
 
 # Load the trained divergence correction model
 MODEL_PATH = 'weights/backward_warping_model.keras'
 model = keras.models.load_model(MODEL_PATH)
+
+# Define global flags
+suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
+cancel_flag = threading.Event()
+suspend_flag = threading.Event()
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -38,21 +41,19 @@ def format_3d_output(left_frame, right_frame, output_format):
         return np.hstack((left_frame, right_frame))  # Standard Side-by-Side
 
     elif output_format == "Over-Under":
-        if ou_type.get() == "Half-OU":
-            # Resize frames to Half-OU size while keeping proper scaling
-            top_half = cv2.resize(left_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
-            bottom_half = cv2.resize(right_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
+        return np.vstack((left_frame, right_frame))  # Full-OU
 
-            # Ensure the padding bar is always present in Half-OU
-            padding_height = int(height * 0.02)  # Adjust percentage to control black bar size
-            padding_bar = np.zeros((padding_height, width, 3), dtype=np.uint8)  # Black bar
+    elif output_format == "Half-OU":
+        # Resize frames to Half-OU size while keeping proper scaling
+        top_half = cv2.resize(left_frame, (left_frame.shape[1], left_frame.shape[0] // 2), interpolation=cv2.INTER_LANCZOS4)
+        bottom_half = cv2.resize(right_frame, (right_frame.shape[1], right_frame.shape[0] // 2), interpolation=cv2.INTER_LANCZOS4)
 
-            # Stack the frames with the black bar in the middle
-            return np.vstack((top_half, padding_bar, bottom_half))
+        # Ensure the padding bar is always present in Half-OU
+        padding_height = int(left_frame.shape[0] * 0.02)  # Adjust percentage to control black bar size
+        padding_bar = np.zeros((padding_height, left_frame.shape[1], 3), dtype=np.uint8)  # Black bar
 
-        else:  # Full-OU
-            return np.vstack((left_frame, right_frame))  # Full frames, no padding bar
-     # Stack top and bottom frames
+        # Stack the frames with the black bar in the middle
+        return np.vstack((top_half, padding_bar, bottom_half))
 
     elif output_format == "Interlaced 3D":
         interlaced_frame = np.zeros_like(left_frame)
@@ -69,16 +70,26 @@ def apply_cinemascope_crop(frame):
     height, width = frame.shape[:2]
     target_height = int(width / 2.39)  # Maintain width, crop height
     
+    print(f"Original Frame Size: {width}x{height}, Target Height: {target_height}")
+
     if target_height < height:
         crop_y = (height - target_height) // 2  # Center crop
         cropped_frame = frame[crop_y:crop_y + target_height, :]
-        
+
+        # Check and print the format
+        print(f"Applying cinemascope, output format: {output_format.get()}")
+
         # If Half-OU, ensure aspect ratio matches expected dimensions
         if output_format.get() == "Half-OU":
             cropped_frame = cv2.resize(cropped_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
+
+        # **Fix to avoid dimension mismatch**
+        cropped_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
         
         return cropped_frame
+
     return frame  # Return unchanged if already 2.39:1
+
 
 # Function to detect and remove black bars
 def remove_black_bars(frame):
@@ -115,17 +126,17 @@ def calculate_depth_intensity(depth_map):
 def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
     """
     Applies backward warping correction to background objects to enhance depth perception.
-    
+
     - Uses the trained model to simulate depth by warping background regions inward.
     - Applies correction only to background areas.
-    
+
     Parameters:
         left_frame (numpy array): Left eye frame.
         right_frame (numpy array): Right eye frame.
         depth_map (numpy array): Depth map normalized between 0-1.
         model (Keras model): Trained warp correction model.
         bg_threshold (float): Depth threshold to define the background.
-        
+
     Returns:
         corrected_left, corrected_right (numpy arrays): Frames with corrected convergence shift.
     """
@@ -133,62 +144,65 @@ def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_thre
     # Ensure depth is normalized
     depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
 
-    # Create a binary mask for foreground (where depth is close)
+    # Create a binary mask for background (where depth is farther)
     background_mask = (depth_map >= bg_threshold).astype(np.uint8)
 
-    # Prepare input for the warp model
-    warp_input = np.array([[bg_threshold]])  # Using depth threshold as input
-    warp_params = model.predict(warp_input).reshape(3, 3)
+    # ✅ OPTIMIZATION: Call the model only once (since `bg_threshold` doesn't change)
+    if not hasattr(correct_convergence_shift, "warp_params"):
+        warp_input = np.array([[bg_threshold]])  # Using depth threshold as input
+        correct_convergence_shift.warp_params = model.predict(warp_input).reshape(3, 3)
+
+    warp_params = correct_convergence_shift.warp_params
 
     # Apply warp transformation ONLY to background areas
     h, w = left_frame.shape[:2]
     corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h))
     corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
 
-    # Mask out non-foreground areas to prevent unnecessary corrections
+    # Mask out non-background areas to prevent unnecessary corrections
     corrected_left = np.where(background_mask[..., None], corrected_left, left_frame)
     corrected_right = np.where(background_mask[..., None], corrected_right, right_frame)
 
     return corrected_left, corrected_right
 
 
+
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                  sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None):
-    frame_delay = int(fps * delay_time)  # Number of frames corresponding to the delay time
-    frame_buffer = []  # Buffer to store frames for temporal delay
+                  sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None,
+                  suspend_flag=None, cancel_flag=None):
+    frame_delay = int(fps * delay_time)
+    frame_buffer = []
     out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
-    prev_frame_gray = None
-    rolling_diff = []
-    max_rolling_frames = 5  # Number of frames to average for adaptive threshold
-
-    print("Creating Half SBS video with Pulfrich effect, blending, and black bar removal")
-  
-    # Start tracking time
+    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_time = time.time()
 
-    # Get total number of frames
-    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
     for frame_idx in range(total_frames):
+        # Check for cancel flag
+        if cancel_flag and cancel_flag.is_set():
+            print("❌ Rendering canceled.")
+            break
+
+        # Check for suspend flag
+        while suspend_flag and suspend_flag.is_set():
+            print("⏸ Rendering paused...")
+            time.sleep(0.5)  # Sleep to avoid high CPU usage
+
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
-                      
-        # Calculate percentage
-        percentage = (frame_idx / total_frames) * 100
 
-        # Update progress bar
+        # Update progress (existing code)
+        percentage = (frame_idx / total_frames) * 100
         if progress:
             progress["value"] = percentage
             progress.update()
-
-        # Update percentage label
         if progress_label:
             progress_label.config(text=f"{percentage:.2f}%")
+
 
         # Calculate elapsed time and time remaining
         elapsed_time = time.time() - start_time
@@ -214,7 +228,8 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         depth_frame_resized = cv2.resize(depth_frame, (width, height))
 
         left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
-
+        
+        
         # Convert to grayscale for scene change detection
         current_frame_gray = cv2.cvtColor(cropped_resized_frame, cv2.COLOR_BGR2GRAY)
 
@@ -236,8 +251,9 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         # Ensure left and right frames are fresh copies of the cropped frame
         left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
         
-        # Correct foreground artifacts before applying 3D shifts
+        # Apply convergence correction BEFORE doing depth-based shifts
         left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, model)
+
                
         # Generate y-coordinate mapping
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
@@ -292,33 +308,42 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
     depth_cap.release()
     out.release()
     print("Half SBS video generated successfully.")
-
+    
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                  sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None):
-
-    frame_delay = int(fps * delay_time)  # Number of frames corresponding to the delay time
-    frame_buffer = []  # Buffer to store frames for temporal delay
+                 sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None,
+                 suspend_flag=None, cancel_flag=None):
+    frame_delay = int(fps * delay_time)
+    frame_buffer = []
     out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
-    prev_frame_gray = None
-    rolling_diff = []
-    scene_change_detected = False
-    scene_stability_counter = 0  # Helps prevent false positives
-
-    print("Creating Over-Under 3D video with Pulfrich effect, blending, and black bar removal")
-
-    # Start tracking time
-    start_time = time.time()
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    start_time = time.time()
 
     for frame_idx in range(total_frames):
-        # Read frame
+        # Check for cancel flag
+        if cancel_flag and cancel_flag.is_set():
+            print("❌ Rendering canceled.")
+            break
+
+        # Check for suspend flag
+        while suspend_flag and suspend_flag.is_set():
+            print("⏸ Rendering paused...")
+            time.sleep(0.5)  # Sleep to avoid high CPU usage
+
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
+
+        # Update progress (existing code)
+        percentage = (frame_idx / total_frames) * 100
+        if progress:
+            progress["value"] = percentage
+            progress.update()
+        if progress_label:
+            progress_label.config(text=f"{percentage:.2f}%")
 
         # 🎯 Scene classification (close-up or wide)
         scene_type = smooth_scene_type(detect_closeup(original_frame))
@@ -326,14 +351,6 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
 
         # 🛠 Update depth shifts dynamically
         fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
-
-        # Update progress bar
-        percentage = (frame_idx / total_frames) * 100
-        if progress:
-            progress["value"] = percentage
-            progress.update()
-        if progress_label:
-            progress_label.config(text=f"{percentage:.2f}%")
 
         # Scene change detection
         current_frame_gray = cv2.cvtColor(original_frame, cv2.COLOR_BGR2GRAY)
@@ -423,8 +440,11 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
     print("✅ Over-Under 3D video generated successfully.")
 
 def start_processing_thread():
-    thread = Thread(target=process_video)
-    thread.start()
+    global process_thread
+    cancel_flag.clear()  # Reset cancel state
+    suspend_flag.clear()  # Ensure it's not paused
+    process_thread = threading.Thread(target=process_video, daemon=True)
+    process_thread.start()
 
 def select_input_video():
     video_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
@@ -507,6 +527,7 @@ def process_video():
     progress_label.config(text="0%")
     progress.update()
 
+    # Call rendering function based on format
     if output_format.get() == "Over-Under":
         render_ou_3d(
             input_video_path.get(),
@@ -523,7 +544,9 @@ def process_video():
             delay_time=delay_time.get(),
             blend_factor=blend_factor.get(),
             progress=progress,
-            progress_label=progress_label
+            progress_label=progress_label,
+            suspend_flag=suspend_flag,  # Pass suspend_flag
+            cancel_flag=cancel_flag     # Pass cancel_flag
         )
     else:
         render_sbs_3d(
@@ -541,41 +564,36 @@ def process_video():
             delay_time=delay_time.get(),
             blend_factor=blend_factor.get(),
             progress=progress,
-            progress_label=progress_label
+            progress_label=progress_label,
+            suspend_flag=suspend_flag,  # Pass suspend_flag
+            cancel_flag=cancel_flag     # Pass cancel_flag
         )
-            
-    # Set progress bar to 100% after rendering
-    progress["value"] = 100
-    progress_label.config(text="100%")
-    progress.update()
 
+    if not cancel_flag.is_set():
+        progress["value"] = 100
+        progress_label.config(text="100%")
+        progress.update()
+        print("✅ Processing complete.")
+
+def suspend_processing():
+    """ Pauses the processing loop safely. """
+    suspend_flag.set()  # This will cause processing to pause
+    print("⏸ Processing Suspended!")
+
+def resume_processing():
+    """ Resumes the processing loop safely. """
+    suspend_flag.clear()  # Processing will continue from where it left off
+    print("▶ Processing Resumed!")
+
+
+def cancel_processing():
+    """ Cancels processing completely. """
+    cancel_flag.set()
+    suspend_flag.clear()  # Ensure no accidental resume
+    print("❌ Processing canceled.")
+    
+# Define SETTINGS_FILE at the top of the script
 SETTINGS_FILE = "settings.json"
-
-def save_settings():
-    """ Saves all current settings to a JSON file """
-    settings = {
-        "fg_shift": fg_shift.get(),
-        "mg_shift": mg_shift.get(),
-        "bg_shift": bg_shift.get(),
-        "sharpness_factor": sharpness_factor.get(),
-        "blend_factor": blend_factor.get(),
-        "delay_time": delay_time.get(),
-    }
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
-
-def load_settings():
-    """ Loads settings from the JSON file, if available """
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            settings = json.load(f)
-            fg_shift.set(settings.get("fg_shift", 6.0))
-            mg_shift.set(settings.get("mg_shift", 3.0))
-            bg_shift.set(settings.get("bg_shift", -4.0))
-            sharpness_factor.set(settings.get("sharpness_factor", 0.2))
-            blend_factor.set(settings.get("blend_factor", 0.6))
-            delay_time.set(settings.get("delay_time", 1/30))
-
 
 def open_github():
     """Opens the GitHub repository in a web browser."""
@@ -620,6 +638,35 @@ output_format = tk.StringVar(value="SBS")
 cinemascope_enabled = tk.BooleanVar(value=False)  # Checkbox variable
 ou_type = tk.StringVar(value="Half-OU")
 
+def save_settings():
+    """ Saves all current settings to a JSON file """
+    settings = {
+        "fg_shift": fg_shift.get(),
+        "mg_shift": mg_shift.get(),
+        "bg_shift": bg_shift.get(),
+        "sharpness_factor": sharpness_factor.get(),
+        "blend_factor": blend_factor.get(),
+        "delay_time": delay_time.get(),
+    }
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
+def load_settings():
+    """ Loads settings from the JSON file, if available """
+    if os.path.exists(SETTINGS_FILE):  # Now SETTINGS_FILE is properly defined
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+            fg_shift.set(settings.get("fg_shift", 6.0))
+            mg_shift.set(settings.get("mg_shift", 3.0))
+            bg_shift.set(settings.get("bg_shift", -4.0))
+            sharpness_factor.set(settings.get("sharpness_factor", 0.2))
+            blend_factor.set(settings.get("blend_factor", 0.6))
+            delay_time.set(settings.get("delay_time", 1/30))
+
+# Ensure SETTINGS_FILE is defined before calling load_settings()
+load_settings()
+
+
 # Codec options
 codec_options = ["mp4v", "H264", "XVID", "DIVX"]
 
@@ -643,9 +690,6 @@ progress.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
 progress_label = tk.Label(top_widgets_frame, text="0%", font=("Arial", 10))
 progress_label.grid(row=1, column=2, padx=10, pady=5, sticky="ew")
 
-# Start Processing Button
-start_button = tk.Button(top_widgets_frame, text="Generate 3D SBS Video", command=process_video, bg="green", fg="white")
-start_button.grid(row=2, column=2, columnspan=2, pady=10)
 
 # Processing Options
 options_frame = tk.LabelFrame(content_frame, text="Processing Options", padx=10, pady=10)
@@ -655,8 +699,11 @@ tk.Label(options_frame, text="Codec").grid(row=0, column=0, sticky="w")
 codec_menu = tk.OptionMenu(options_frame, selected_codec, *codec_options)
 codec_menu.grid(row=0, column=1, sticky="ew")
 
-cinemascope_checkbox = tk.Checkbutton(options_frame, text="CinemaScope Mode (2.39:1)", variable=cinemascope_enabled)
+cinemascope_checkbox = tk.Checkbutton(options_frame, text="CinemaScope", variable=cinemascope_enabled)
 cinemascope_checkbox.grid(row=0, column=2, columnspan=2, pady=5, sticky="w")
+
+reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
+reset_button.grid(row=0, column=3, columnspan=2, pady=10)
 
 
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
@@ -687,10 +734,29 @@ tk.Entry(content_frame, textvariable=selected_depth_map, width=50).grid(row=4, c
 tk.Button(content_frame, text="Select Output Video", command=select_output_video).grid(row=5, column=0, pady=5, sticky="ew")
 tk.Entry(content_frame, textvariable=output_sbs_video_path, width=50).grid(row=5, column=1, pady=5, padx=5)
 
-tk.Label(content_frame, text="3D Format").grid(row=6, column=0, sticky="w")
-option_menu = tk.OptionMenu(content_frame, output_format, "SBS", "Half-OU", "Full-OU", "Interlaced 3D",)
-option_menu.config(width=12)  # Adjust width to fit the text without stretching
-option_menu.grid(row=6, column=1, pady=5, padx=5, sticky="w")  # Align left without stretching
+# Frame to Hold Buttons and Format Selection in a Single Row
+button_frame = tk.Frame(content_frame)
+button_frame.grid(row=6, column=0, columnspan=5, pady=10, sticky="w")
+
+# 3D Format Label and Dropdown (Inside button_frame)
+tk.Label(button_frame, text="3D Format").pack(side="left", padx=5)
+
+option_menu = tk.OptionMenu(button_frame, output_format, "SBS", "Half-OU", "Full-OU", "Interlaced 3D")
+option_menu.config(width=10)  # Adjust width to keep consistent look
+option_menu.pack(side="left", padx=5)
+
+# Buttons Inside button_frame to Keep Everything on One Line
+start_button = tk.Button(button_frame, text="Generate 3D Video", command=process_video, bg="green", fg="white")
+start_button.pack(side="left", padx=5)
+
+suspend_button = tk.Button(button_frame, text="Suspend", command=suspend_processing, bg="orange", fg="black")
+suspend_button.pack(side="left", padx=5)
+
+resume_button = tk.Button(button_frame, text="Resume", command=resume_processing, bg="blue", fg="white")
+resume_button.pack(side="left", padx=5)
+
+cancel_button = tk.Button(button_frame, text="Cancel", command=cancel_processing, bg="red", fg="white")
+cancel_button.pack(side="left", padx=5)
 
 # Load the GitHub icon from assets
 github_icon_path = resource_path("assets/github_Logo.png")
@@ -703,8 +769,6 @@ github_button = tk.Button(content_frame, image=github_icon_tk, command=open_gith
 github_button.image = github_icon_tk  # Keep a reference to prevent garbage collection
 github_button.grid(row=7, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
 
-reset_button = tk.Button(content_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
-reset_button.grid(row=6, column=1, columnspan=2, pady=10)
 
 # Load previous settings (if they exist)
 load_settings()
