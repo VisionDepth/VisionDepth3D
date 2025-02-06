@@ -93,16 +93,6 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Recommended Range**: `1/50` to `1/20`
 - **Effect**: Lower values (e.g., `1/50`) reduce the delay, creating a more subtle effect.
 
-## 10. VRAM Limit
-- Description: Sets the maximum GPU memory usage to optimize performance and prevent out-of-memore errors. 
-- Default: 0.0
-- Effect: Controls batch processing size to balance speed and stability during rendering.
-
-## 11. Batch Size
-- Description: Specifies the number of frames processed in each batch.
-- Default: 10
-- Effect: Larger batch sizes may improve performance but require more VRAM.
-
 ## Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
 - **Depth Anything V2
@@ -121,7 +111,7 @@ plus 3D render time
 1. Select your input video (`.mp4`, `.avi`, `.mkv`) and output file path.
 2. Select your Depth map Video, make sure both video files are same width and  height and FPS 
 3. Adjust rendering parameters for the desired 3D effect.
-4. Click "Generate 3D SBS Video" to process.
+4. Click "Generate 3D Video" to process.
 
 ## Troubleshooting
 - **Black Screens or Artifacts**:
