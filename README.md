@@ -25,16 +25,16 @@ This program runs on python 3.9 - 3.10
 
 ### Step 2: Install Required Dependencies
 
-- **Open a terminal or command prompt and enter:**
+### Open a terminal or command prompt and enter:
 - git clone https://github.com/VisionDepth/VisionDepth3D.git
 - cd VisionDepth3D
 - install_visiondepth3d.bat
 
-- **or alternatively you can use pip**
+### or alternatively you can use pip**
 - pip install git+https://github.com/VisionDepth/VisionDepth3D.git
 - pip install -r requirements.txt
 
-- **you can use conda by setting up an environment (best method)**
+### use conda by setting up an environment (best method)
 - open conda
 - enter cd Path/To/Visiondepth3D
 - enter conda create --name VisionDepth3D python=3.10
