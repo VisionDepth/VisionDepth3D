@@ -14,11 +14,9 @@ from threading import Thread
 import webbrowser
 import json
 import subprocess
-from tensorflow import keras
-
-# Load the trained divergence correction model
-MODEL_PATH = 'weights/backward_warping_model.keras'
-model = keras.models.load_model(MODEL_PATH)
+from moviepy.editor import VideoFileClip, AudioFileClip
+import imageio
+from collections import deque
 
 # Define global flags
 suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
@@ -37,23 +35,37 @@ def resource_path(relative_path):
 
 def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
-    if output_format == "SBS":
-        return np.hstack((left_frame, right_frame))  # Standard Side-by-Side
+    height, width = left_frame.shape[:2]
 
-    elif output_format == "Over-Under":
-        return np.vstack((left_frame, right_frame))  # Full-OU
+    if output_format == "SBS":
+        return np.hstack((left_frame, right_frame))  # Full Side-by-Side
+
+    elif output_format == "Half-SBS":
+        # ✅ Resize both frames to HALF WIDTH while keeping full height
+        half_width = width // 2
+        left_resized = cv2.resize(left_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+
+        # ✅ Stack resized frames into Half-SBS format
+        return np.hstack((left_resized, right_resized))
+
+    elif output_format == "Full-OU":
+        return np.vstack((left_frame, right_frame))  # Full Over-Under
 
     elif output_format == "Half-OU":
-        # Resize frames to Half-OU size while keeping proper scaling
-        top_half = cv2.resize(left_frame, (left_frame.shape[1], left_frame.shape[0] // 2), interpolation=cv2.INTER_LANCZOS4)
-        bottom_half = cv2.resize(right_frame, (right_frame.shape[1], right_frame.shape[0] // 2), interpolation=cv2.INTER_LANCZOS4)
+        # ✅ Force exact 16:9 scaling for Half-OU
+        target_height = width * 9 // 16 // 2  # Half the correct height
 
-        # Ensure the padding bar is always present in Half-OU
-        padding_height = int(left_frame.shape[0] * 0.02)  # Adjust percentage to control black bar size
-        padding_bar = np.zeros((padding_height, left_frame.shape[1], 3), dtype=np.uint8)  # Black bar
+        # ✅ Resize both frames
+        left_resized = cv2.resize(left_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
 
-        # Stack the frames with the black bar in the middle
-        return np.vstack((top_half, padding_bar, bottom_half))
+        # ✅ Ensure black padding is present (Bigscreen VR requires it)
+        padding_height = int(target_height * 0.02)  # 2% padding
+        padding_bar = np.zeros((padding_height, width, 3), dtype=np.uint8)
+
+        # ✅ Stack frames with padding
+        return np.vstack((left_resized, padding_bar, right_resized))
 
     elif output_format == "Interlaced 3D":
         interlaced_frame = np.zeros_like(left_frame)
@@ -65,48 +77,32 @@ def format_3d_output(left_frame, right_frame, output_format):
         print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
         return np.hstack((left_frame, right_frame))  # Default to SBS
 
-def apply_cinemascope_crop(frame):
-    """ Crops frame to 2.39:1 aspect ratio while keeping width the same. """
+def apply_cinemascope_crop(frame, format_type):
+    """ 
+    Crops frame to 2.39:1 aspect ratio while keeping width the same.
+    Applies ONLY to Full-SBS and Half-SBS formats.
+    """
+    if format_type not in ["SBS", "Half-SBS"]:
+        return frame  # ❌ Skip for Over-Under formats
+
     height, width = frame.shape[:2]
     target_height = int(width / 2.39)  # Maintain width, crop height
-    
-    print(f"Original Frame Size: {width}x{height}, Target Height: {target_height}")
+
+    print(f"🎬 Applying Cinemascope | Format: {format_type} | Original: {width}x{height} → Target: {width}x{target_height}")
 
     if target_height < height:
         crop_y = (height - target_height) // 2  # Center crop
         cropped_frame = frame[crop_y:crop_y + target_height, :]
 
-        # Check and print the format
-        print(f"Applying cinemascope, output format: {output_format.get()}")
+        # ✅ Special handling for Half-SBS
+        if format_type == "Half-SBS":
+            cropped_frame = cv2.resize(cropped_frame, (width // 2, target_height), interpolation=cv2.INTER_LANCZOS4)
 
-        # If Half-OU, ensure aspect ratio matches expected dimensions
-        if output_format.get() == "Half-OU":
-            cropped_frame = cv2.resize(cropped_frame, (width, height // 2), interpolation=cv2.INTER_LANCZOS4)
-
-        # **Fix to avoid dimension mismatch**
-        cropped_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-        
-        return cropped_frame
+        return cropped_frame  # ✅ Correctly cropped & resized
 
     return frame  # Return unchanged if already 2.39:1
 
 
-# Function to detect and remove black bars
-def remove_black_bars(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if len(contours) == 0:
-        return frame, 0, 0, frame.shape[1], frame.shape[0]
-
-    x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
-
-    if w < frame.shape[1] * 0.5 or h < frame.shape[0] * 0.5:
-        return frame, 0, 0, frame.shape[1], frame.shape[0]
-
-    return frame[y:y+h, x:x+w], x, y, w, h
-    
 def remove_white_edges(image):
     mask = (image[:, :, 0] > 240) & (image[:, :, 1] > 240) & (image[:, :, 2] > 240)
     kernel = np.ones((3,3), np.uint8)
@@ -121,344 +117,259 @@ def calculate_depth_intensity(depth_map):
     depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
     avg_depth = np.mean(depth_gray)
     depth_variance = np.var(depth_gray)
+
+
+def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, 
+                 fg_shift, mg_shift, bg_shift, delay_time=1/30, 
+                 blend_factor=0.5, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
     
-
-def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
-    """
-    Applies backward warping correction to background objects to enhance depth perception.
-
-    - Uses the trained model to simulate depth by warping background regions inward.
-    - Applies correction only to background areas.
-
-    Parameters:
-        left_frame (numpy array): Left eye frame.
-        right_frame (numpy array): Right eye frame.
-        depth_map (numpy array): Depth map normalized between 0-1.
-        model (Keras model): Trained warp correction model.
-        bg_threshold (float): Depth threshold to define the background.
-
-    Returns:
-        corrected_left, corrected_right (numpy arrays): Frames with corrected convergence shift.
-    """
-
-    # Ensure depth is normalized
-    depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
-
-    # Create a binary mask for background (where depth is farther)
-    background_mask = (depth_map >= bg_threshold).astype(np.uint8)
-
-    # ✅ OPTIMIZATION: Call the model only once (since `bg_threshold` doesn't change)
-    if not hasattr(correct_convergence_shift, "warp_params"):
-        warp_input = np.array([[bg_threshold]])  # Using depth threshold as input
-        correct_convergence_shift.warp_params = model.predict(warp_input).reshape(3, 3)
-
-    warp_params = correct_convergence_shift.warp_params
-
-    # Apply warp transformation ONLY to background areas
-    h, w = left_frame.shape[:2]
-    corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h))
-    corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
-
-    # Mask out non-background areas to prevent unnecessary corrections
-    corrected_left = np.where(background_mask[..., None], corrected_left, left_frame)
-    corrected_right = np.where(background_mask[..., None], corrected_right, right_frame)
-
-    return corrected_left, corrected_right
-
-
-
-def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                  sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None,
-                  suspend_flag=None, cancel_flag=None):
+    # Frame delay buffer
     frame_delay = int(fps * delay_time)
-    frame_buffer = []
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
+    frame_buffer = deque(maxlen=frame_delay + 1)
+    
+    # Precompute reusable components
+    height_range = np.arange(height, dtype=np.float32)
+    width_range = np.arange(width, dtype=np.float32)
+    
+    # Preallocate memory for shift maps
+    temp_output = output_video.rsplit('.', 1)[0] + '_temp.' + output_video.rsplit('.', 1)[1]
+
+    # Initialize video writer
+    writer = imageio.get_writer(temp_output, fps=fps, macro_block_size=1, 
+                               codec='libx264', ffmpeg_params=['-crf', '18'])
+    
+    # Open video sources
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
+    
+    try:
+        total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start_time = time.time()
 
-    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    start_time = time.time()
-    prev_time = start_time
-    fps_values = []  # Store last few FPS values for smoothing
+        for frame_idx in range(total_frames):
+            if cancel_flag and cancel_flag.is_set():
+                print("❌ Rendering canceled.")
+                break
 
-    for frame_idx in range(total_frames):
-        if cancel_flag and cancel_flag.is_set():
-            print("❌ Rendering canceled.")
-            break
+            while suspend_flag and suspend_flag.is_set():
+                print("⏸ Rendering paused...")
+                time.sleep(0.5)
 
-        while suspend_flag and suspend_flag.is_set():
-            print("⏸ Rendering paused...")
-            time.sleep(0.5)  
+            # Read frames
+            ret1, original_frame = original_cap.read()
+            ret2, depth_frame = depth_cap.read()
+            if not ret1 or not ret2:
+                break
 
-        ret1, original_frame = original_cap.read()
-        ret2, depth_frame = depth_cap.read()
-        if not ret1 or not ret2:
-            break
-
-        percentage = (frame_idx / total_frames) * 100
-        elapsed_time = time.time() - start_time
-
-        # ✅ **Calculate FPS with Moving Average**
-        curr_time = time.time()
-        frame_time = curr_time - prev_time  # Time taken for one frame
-
-        if frame_time > 0:
-            fps_calc = 1.0 / frame_time  # FPS based on actual frame time
-            fps_values.append(fps_calc)
-
-        if len(fps_values) > 10:  # Keep last 10 FPS values for smoothing
-            fps_values.pop(0)
-
-        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0  # Compute average FPS
-
-        # ✅ **Update Progress Bar and FPS Display**
-        if progress:
-            progress["value"] = percentage
-            progress.update()
-        if progress_label:
-            progress_label.config(
-                text=f"{percentage:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed_time))}"
-            )
-
-        prev_time = curr_time  # Update previous frame time
-
-
-        # Remove black bars
-        cropped_frame, x, y, w, h = remove_black_bars(original_frame)
-        cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
-        depth_frame_resized = cv2.resize(depth_frame, (width, height))
-
-        left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
-        
-        
-        # Convert to grayscale for scene change detection
-        current_frame_gray = cv2.cvtColor(cropped_resized_frame, cv2.COLOR_BGR2GRAY)
-
-         # Depth analysis
-        depth_scene_type = calculate_depth_intensity(depth_frame)     
-        
-        corrected_left, corrected_right = left_frame, right_frame  # No IPD adjustment
-        
-        # Pulfrich effect adjustments
-        blend_factor = min(0.5, blend_factor + 0.05) if len(frame_buffer) else blend_factor
-
-        # Process Depth frame
-        depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
-        depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-        depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
-        depth_normalized = depth_filtered / 255.0             
-        
-        # Ensure left and right frames are fresh copies of the cropped frame
-        left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
-        
-        # Apply convergence correction BEFORE doing depth-based shifts
-        left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, model)
-
-               
-        # Generate y-coordinate mapping
-        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
-        
-        # Depth-based pixel shift
-        for y in range(height):
-            fg_shift_val = fg_shift  # Foreground shift (e.g. 12)
-            mg_shift_val = mg_shift  # Midground shift (e.g. 6)
-            bg_shift_val = bg_shift  # Background shift (e.g. -2)
-
-            # **Original depth-based mapping**
-            shift_vals_fg = (-depth_normalized[y, :] * fg_shift_val).astype(np.float32)
-            shift_vals_mg = (-depth_normalized[y, :] * mg_shift_val).astype(np.float32)
-            shift_vals_bg = (depth_normalized[y, :] * bg_shift_val).astype(np.float32)
-
-            # Final x-mapping
-            new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-            new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
-
-            # Reshape for remapping
-            map_x_left = new_x_left.reshape(1, -1).astype(np.float32)
-            map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
-
-            # Apply remapping (ensuring correct interpolation)
-            left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-        
-        if cinemascope_enabled.get():
-            left_frame = apply_cinemascope_crop(left_frame)
-            right_frame = apply_cinemascope_crop(right_frame)
+            # Convert frame to RGB
+            original_frame = cv2.cvtColor(original_frame, cv2.COLOR_BGR2RGB)
             
-        # Buffer logic
-        frame_buffer.append((left_frame, right_frame))
-        if len(frame_buffer) > frame_delay:
-            delayed_left_frame, delayed_right_frame = frame_buffer.pop(0)
-        else:
-            delayed_left_frame, delayed_right_frame = left_frame, right_frame
+            # Depth processing
+            depth_gray = cv2.cvtColor(cv2.resize(depth_frame, (width, height)), cv2.COLOR_BGR2GRAY)
 
-        # Create Pulfrich effect
-        blended_left_frame = cv2.addWeighted(delayed_left_frame, blend_factor, left_frame, 1 - blend_factor, 0)
-        sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
-        left_sharp = cv2.filter2D(blended_left_frame, -1, sharpen_kernel)
-        right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
-        
-        left_sharp_resized = cv2.resize(left_sharp, (width // 2, height))
-        right_sharp_resized = cv2.resize(right_sharp, (width // 2, height))
+            # Smoothen depth map to remove harsh edges causing haloing
+            depth_normalized = cv2.GaussianBlur(depth_gray, (9, 9), 0)
 
-        sbs_frame = format_3d_output(left_sharp_resized, right_sharp_resized, output_format.get())
-        out.write(sbs_frame)
+            # Normalize depth
+            depth_normalized = cv2.normalize(depth_normalized, None, 0, 1, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
 
-    original_cap.release()
-    depth_cap.release()
-    out.release()
-    print("Half SBS video generated successfully.")
+            # Compute depth-based shifts with softened weights to avoid over-shifting
+            combined_shift = (depth_normalized * (-0.7 * fg_shift - 0.5 * mg_shift) + (1 - depth_normalized) * (0.5 * bg_shift))
+
+            # Ensure mapping coordinates are the same shape as original_frame
+            map_x_left = np.clip(np.tile(width_range, (height, 1)) + combined_shift, 10, width - 10).astype(np.float32)
+            map_x_right = np.clip(np.tile(width_range, (height, 1)) - combined_shift, 10, width - 10).astype(np.float32)
+            map_y = np.tile(height_range[:, np.newaxis], (1, width)).astype(np.float32)
+            
+            # Remap the frames properly
+            left_shifted = cv2.remap(original_frame, map_x_left, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+            right_shifted = cv2.remap(original_frame, map_x_right, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+            # Edge-aware inpainting for missing pixels
+            mask = (combined_shift > 0).astype(np.uint8) * 255
+            left_shifted = cv2.inpaint(left_shifted, mask, 3, cv2.INPAINT_TELEA)
+            right_shifted = cv2.inpaint(right_shifted, mask, 3, cv2.INPAINT_TELEA)
+
+            # Frame buffering and blending
+            frame_buffer.append((left_shifted, right_shifted))
+            delayed_left, delayed_right = frame_buffer[0] if len(frame_buffer) > frame_delay else (left_shifted, right_shifted)
+
+            # Vectorized blending (original)
+            blended_left = cv2.addWeighted(delayed_left, blend_factor, left_shifted, 1 - blend_factor, 0)
+            blended_right = cv2.addWeighted(delayed_right, blend_factor, right_shifted, 1 - blend_factor, 0)
+
+            # 🔥 Apply Motion-Aware Smoothing to Reduce Ghosting 🔥
+            if frame_idx > 0:
+                prev_blended_left = cv2.addWeighted(frame_buffer[-1][0], 0.3, blended_left, 0.7, 0)
+                prev_blended_right = cv2.addWeighted(frame_buffer[-1][1], 0.3, blended_right, 0.7, 0)
+            else:
+                prev_blended_left, prev_blended_right = blended_left, blended_right
+
+            # Format output with the smoothed frames
+            sbs_frame = format_3d_output(prev_blended_left, prev_blended_right, output_format.get())
+
+            # Write frame to output
+            writer.append_data(sbs_frame)
+
+
+            # Update progress bar
+            update_progress(frame_idx, total_frames, start_time, progress, progress_label)
+
+    finally:
+        writer.close()
+        original_cap.release()
+        depth_cap.release()
+
+    # Add audio back to the final output
+    command = [
+        'ffmpeg',
+        '-i', temp_output,  
+        '-i', input_video,  
+        '-c:v', 'copy',    
+        '-c:a', 'aac',    
+        '-map', '0:v:0',   
+        '-map', '1:a:0',    
+        '-y', output_video  
+    ]
     
-def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                 sharpness_factor, delay_time=1/30, blend_factor=0.5, progress=None, progress_label=None,
-                 suspend_flag=None, cancel_flag=None):
+    try:
+        subprocess.run(command, check=True)
+    finally:
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+    
+    print("✅ Optimized SBS video generation complete.")
+
+
+def update_progress(frame_idx, total_frames, start_time, progress, progress_label):
+    percentage = (frame_idx / total_frames) * 100
+    if progress:
+        progress["value"] = percentage
+        progress.update()
+    
+    if progress_label:
+        elapsed_time = time.time() - start_time
+        time_per_frame = elapsed_time / (frame_idx + 1)
+        fps = 1.0 / time_per_frame  # Calculate frames per second
+        time_remaining = time_per_frame * (total_frames - frame_idx)
+
+        elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
+        time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
+
+        progress_label.config(
+            text=f"{percentage:.2f}% | FPS: {fps:.2f} | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
+        )
+
+def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, 
+                 fg_shift, mg_shift, bg_shift, delay_time=1/30, 
+                 blend_factor=0.5, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
+    
+    # Frame delay buffer for Pulfrich effect
     frame_delay = int(fps * delay_time)
-    frame_buffer = []
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
+    frame_buffer = deque(maxlen=frame_delay + 1)
+    
+    # Prepare intermediate output
+    temp_output = output_video.rsplit('.', 1)[0] + '_temp.' + output_video.rsplit('.', 1)[1]
+    
+    # Initialize video writer
+    writer = imageio.get_writer(temp_output, fps=fps, macro_block_size=1, codec='libx264', ffmpeg_params=['-crf', '18'])
+    
+    # Open video sources
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
+    
+    try:
+        total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start_time = time.time()
 
-    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    start_time = time.time()
-    prev_time = start_time
-    fps_values = []  # Store last few FPS values for smoothing
+        # ✅ Load warp model parameters
+        warp_params = model.predict(np.array([[0.3]])).reshape(3, 3)
 
-    for frame_idx in range(total_frames):
-        if cancel_flag and cancel_flag.is_set():
-            print("❌ Rendering canceled.")
-            break
+        for frame_idx in range(total_frames):
+            if cancel_flag and cancel_flag.is_set():
+                print("❌ Rendering canceled.")
+                break
 
-        while suspend_flag and suspend_flag.is_set():
-            print("⏸ Rendering paused...")
-            time.sleep(0.5)  
+            while suspend_flag and suspend_flag.is_set():
+                print("⏸ Rendering paused...")
+                time.sleep(0.5)
 
-        ret1, original_frame = original_cap.read()
-        ret2, depth_frame = depth_cap.read()
-        if not ret1 or not ret2:
-            break
+            # Read frames
+            ret1, original_frame = original_cap.read()
+            ret2, depth_frame = depth_cap.read()
+            if not ret1 or not ret2:
+                break
 
-        percentage = (frame_idx / total_frames) * 100
-        elapsed_time = time.time() - start_time
+            # Convert frame to RGB
+            original_frame = cv2.cvtColor(original_frame, cv2.COLOR_BGR2RGB)
 
-        # ✅ **Calculate FPS with Moving Average**
-        curr_time = time.time()
-        frame_time = curr_time - prev_time  # Time taken for one frame
-
-        if frame_time > 0:
-            fps_calc = 1.0 / frame_time  # FPS based on actual frame time
-            fps_values.append(fps_calc)
-
-        if len(fps_values) > 10:  # Keep last 10 FPS values for smoothing
-            fps_values.pop(0)
-
-        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0  # Compute average FPS
-
-        # ✅ **Update Progress Bar and FPS Display**
-        if progress:
-            progress["value"] = percentage
-            progress.update()
-        if progress_label:
-            progress_label.config(
-                text=f"{percentage:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed_time))}"
+            # Process Depth frame
+            depth_normalized = cv2.normalize(
+                cv2.cvtColor(cv2.resize(depth_frame, (width, height)), cv2.COLOR_BGR2GRAY),
+                None, 0, 1, cv2.NORM_MINMAX, dtype=np.float32
             )
+            depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
 
-        prev_time = curr_time  # Update previous frame time
+            # Compute depth-based shifts
+            combined_shift = (depth_normalized * (-fg_shift - mg_shift) + (1 - depth_normalized) * bg_shift)
+            
+            # Create mapping coordinates
+            width_range = np.arange(width, dtype=np.float32)
+            map_x_top = np.clip(width_range + combined_shift, 0, width-1)
+            map_x_bottom = np.clip(width_range - combined_shift, 0, width-1)
 
+            # Apply sharpness adjustment before resizing
+            top_shifted = apply_sharpness(top_shifted, sharpness_factor.get())
+            bottom_shifted = apply_sharpness(bottom_shifted, sharpness_factor.get())
 
-        # 🎯 Scene classification (close-up or wide)
-        scene_type = smooth_scene_type(detect_closeup(original_frame))
-        depth_scene_type = calculate_depth_intensity(depth_frame)
+            # Handle Half-OU with exact 16:9 scaling
+            if output_format.get() == "Half-OU":
+                half_height = width * 9 // 16 // 2  # Ensure correct Half-OU aspect ratio
 
-        # 🛠 Update depth shifts dynamically
-        fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
+                # ✅ Properly scale both frames
+                top_half = cv2.resize(top_shifted, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+                bottom_half = cv2.resize(bottom_shifted, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
 
-        # Scene change detection
-        current_frame_gray = cv2.cvtColor(original_frame, cv2.COLOR_BGR2GRAY)
-        if prev_frame_gray is not None:
-            diff = cv2.absdiff(current_frame_gray, prev_frame_gray)
-            diff_score = np.mean(diff)
+                # ✅ Add black padding to ensure alignment
+                padding_height = int(half_height * 0.02)
+                padding_bar = np.zeros((padding_height, width, 3), dtype=np.uint8)
 
-            rolling_diff.append(diff_score)
-            if len(rolling_diff) > 8:  # Keep rolling buffer size at 8
-                rolling_diff.pop(0)
-
-            avg_diff_score = np.mean(rolling_diff)
-            adaptive_threshold = 40 if avg_diff_score < 80 else 70
-            scene_change_detected = avg_diff_score > adaptive_threshold
-
-            # 🎬 Handle scene change
-            if scene_change_detected and scene_stability_counter > 5:
-                print(f"🎬 Scene change detected at frame {frame_idx}, diff: {avg_diff_score:.2f}")
-                frame_buffer.clear()  # Reset Pulfrich buffer
-
-                # Smooth blending instead of abrupt cuts
-                blend_factor = np.clip(blend_factor * 0.9, 0.3, 0.7)  # Adjust transition smoothness
-
-                # **Update depth shifts dynamically**
-                fg_shift, mg_shift, bg_shift = update_depth_shifts(scene_type, fg_shift, mg_shift, bg_shift)
-
-                scene_stability_counter = 0  # Reset stability counter
+                # ✅ Stack properly
+                ou_frame = np.vstack((top_half, padding_bar, bottom_half))
             else:
-                scene_stability_counter += 1  # Increase stability count
+                # ✅ Full-OU (no resizing, stack directly)
+                ou_frame = np.vstack((top_shifted, bottom_shifted))
+                            
+            # Write frame to output
+            writer.append_data(ou_frame)
 
-        prev_frame_gray = current_frame_gray.copy()
+            # Update progress bar
+            update_progress(frame_idx, total_frames, start_time, progress, progress_label)
 
-        # Process Depth frame
-        depth_map_gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
-        depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-        depth_normalized = depth_filtered / 255.0
+    finally:
+        writer.close()
+        original_cap.release()
+        depth_cap.release()
 
-        # Prepare top and bottom frames
-        top_frame, bottom_frame = original_frame.copy(), original_frame.copy()
-
-        # Correct foreground artifacts before applying 3D shifts
-        top_frame, bottom_frame = correct_convergence_shift(top_frame, bottom_frame, depth_normalized, model)
-
-        # Apply depth-based shifts
-        for y in range(height):
-            shift_vals_fg = (-depth_normalized[y, :] * fg_shift).astype(np.float32)
-            shift_vals_mg = (-depth_normalized[y, :] * mg_shift).astype(np.float32)
-            shift_vals_bg = (depth_normalized[y, :] * bg_shift).astype(np.float32)
-
-            new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-            new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
-
-            map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
-            map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
-
-            top_frame[y] = cv2.remap(original_frame, map_x_top, np.full_like(map_x_top, y), 
-                                     interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-            bottom_frame[y] = cv2.remap(original_frame, map_x_bottom, np.full_like(map_x_bottom, y), 
-                                        interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-
-        # Pulfrich effect
-        frame_buffer.append((top_frame, bottom_frame))
-        if len(frame_buffer) > frame_delay:
-            delayed_top_frame, delayed_bottom_frame = frame_buffer.pop(0)
-        else:
-            delayed_top_frame, delayed_bottom_frame = top_frame, bottom_frame
-
-        blended_top_frame = cv2.addWeighted(delayed_top_frame, blend_factor, top_frame, 1 - blend_factor, 0)
-        sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
-        top_sharp = cv2.filter2D(blended_top_frame, -1, sharpen_kernel)
-        bottom_sharp = cv2.filter2D(bottom_frame, -1, sharpen_kernel)
-
-        # Apply Cinemascope crop if enabled
-        if cinemascope_enabled.get():
-            top_sharp = apply_cinemascope_crop(top_sharp)
-            bottom_sharp = apply_cinemascope_crop(bottom_sharp)
-
-        # Format the 3D output properly
-        ou_frame = format_3d_output(top_sharp, bottom_sharp, output_format.get())
-
-        out.write(ou_frame)
-
-    original_cap.release()
-    depth_cap.release()
-    out.release()
-    print("✅ Over-Under 3D video generated successfully.")
+    # Add audio back to the final output
+    command = [
+        'ffmpeg',
+        '-i', temp_output,  
+        '-i', input_video,  
+        '-c:v', 'copy',    
+        '-c:a', 'aac',    
+        '-map', '0:v:0',   
+        '-map', '1:a:0',    
+        '-y', output_video  
+    ]
+    
+    try:
+        subprocess.run(command, check=True)
+    finally:
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+    
+    print("✅ Optimized Over-Under 3D video generation complete.")
 
 def start_processing_thread():
     global process_thread
@@ -561,7 +472,6 @@ def process_video():
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
-            sharpness_factor.get(),
             delay_time=delay_time.get(),
             blend_factor=blend_factor.get(),
             progress=progress,
@@ -581,7 +491,6 @@ def process_video():
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
-            sharpness_factor.get(),
             delay_time=delay_time.get(),
             blend_factor=blend_factor.get(),
             progress=progress,
@@ -665,7 +574,6 @@ def save_settings():
         "fg_shift": fg_shift.get(),
         "mg_shift": mg_shift.get(),
         "bg_shift": bg_shift.get(),
-        "sharpness_factor": sharpness_factor.get(),
         "blend_factor": blend_factor.get(),
         "delay_time": delay_time.get(),
     }
@@ -680,7 +588,6 @@ def load_settings():
             fg_shift.set(settings.get("fg_shift", 6.0))
             mg_shift.set(settings.get("mg_shift", 3.0))
             bg_shift.set(settings.get("bg_shift", -4.0))
-            sharpness_factor.set(settings.get("sharpness_factor", 0.2))
             blend_factor.set(settings.get("blend_factor", 0.6))
             delay_time.set(settings.get("delay_time", 1/30))
 
@@ -726,24 +633,20 @@ cinemascope_checkbox.grid(row=0, column=2, columnspan=2, pady=5, sticky="w")
 reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
 reset_button.grid(row=0, column=3, columnspan=2, pady=10)
 
-
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
-tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift).grid(row=1, column=1, sticky="ew")
-
-tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
-tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor).grid(row=1, column=3, sticky="ew")
+tk.Scale(options_frame, from_=0, to=30, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift).grid(row=1, column=1, sticky="ew", padx=5)
 
 tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
-tk.Scale(options_frame, from_=0, to=8, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift).grid(row=2, column=1, sticky="ew")
-
-tk.Label(options_frame, text="Blend Factor").grid(row=2, column=2, sticky="w")
-tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor).grid(row=2, column=3, sticky="ew")
+tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift).grid(row=2, column=1, sticky="ew", padx=5)
 
 tk.Label(options_frame, text="Convergence Shift").grid(row=3, column=0, sticky="w")
-tk.Scale(options_frame, from_=-5, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift).grid(row=3, column=1, sticky="ew")
+tk.Scale(options_frame, from_=-20, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift).grid(row=3, column=1, sticky="ew", padx=5)
 
-tk.Label(options_frame, text="Delay Time (seconds)").grid(row=3, column=2, sticky="w")
-tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=3, column=3, sticky="ew")
+tk.Label(options_frame, text="Blend Factor").grid(row=1, column=2, sticky="w")
+tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor).grid(row=1, column=3, sticky="ew", padx=5)
+
+tk.Label(options_frame, text="Delay Time (seconds)").grid(row=2, column=2, sticky="w")
+tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=2, column=3, sticky="ew", padx=5)
 
 # File Selection
 tk.Button(content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
@@ -762,7 +665,7 @@ button_frame.grid(row=6, column=0, columnspan=5, pady=10, sticky="w")
 # 3D Format Label and Dropdown (Inside button_frame)
 tk.Label(button_frame, text="3D Format").pack(side="left", padx=5)
 
-option_menu = tk.OptionMenu(button_frame, output_format, "SBS", "Half-OU", "Full-OU", "Interlaced 3D")
+option_menu = tk.OptionMenu(button_frame, output_format, "SBS", "Half-SBS", "Half-OU", "Full-OU", "Interlaced 3D")
 option_menu.config(width=10)  # Adjust width to keep consistent look
 option_menu.pack(side="left", padx=5)
 
