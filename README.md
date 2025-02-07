@@ -18,7 +18,7 @@ Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, V
 
 GUI Layout
 
---![GuiSetupv3](https://github.com/user-attachments/assets/33c8a01b-fdd3-48f3-8e92-2966369f3536)
+![GuiSetupv3](https://github.com/user-attachments/assets/7186246a-917f-4e3d-b54b-d8a145fb30b3)
 
 
 ## Guide Sheet: Install
