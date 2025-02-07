@@ -43,6 +43,9 @@ def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
     height, width = left_frame.shape[:2]
 
+    if output_format == "Red-Cyan Anaglyph":
+        return generate_anaglyph_3d(left_frame, right_frame)  # 🔴🔵
+    
     if output_format == "Full-SBS":
         return np.hstack((left_frame, right_frame))  # 3840x1080
 
@@ -77,6 +80,31 @@ def format_3d_output(left_frame, right_frame, output_format):
     else:
         print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
         return np.hstack((left_frame, right_frame))  # Default to Full-SBS
+ 
+def generate_anaglyph_3d(left_frame, right_frame):
+    """Creates a properly balanced True Red-Cyan Anaglyph 3D effect."""
+
+    # Convert frames to float to prevent overflow during merging
+    left_frame = left_frame.astype(np.float32)
+    right_frame = right_frame.astype(np.float32)
+
+    # Extract color channels
+    left_r, left_g, left_b = cv2.split(left_frame)
+    right_r, right_g, right_b = cv2.split(right_frame)
+
+    # Merge the corrected Red-Cyan channels (based on optimized anaglyph conversion)
+    anaglyph = cv2.merge([
+        right_b * 0.7,  # Reduce blue intensity to avoid overpowering cyan
+        right_g * 0.8,  # Slightly stronger green to balance cyan
+        left_r * 1.0    # Keep red at full strength
+    ])
+
+    # Clip values to ensure valid pixel range
+    anaglyph = np.clip(anaglyph, 0, 255).astype(np.uint8)
+
+    return anaglyph
+
+
 
 def apply_aspect_ratio_crop(frame, aspect_ratio):
     """Crops the frame to the selected aspect ratio while maintaining width."""
@@ -537,6 +565,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             print("❌ Video processing was canceled by the user.")
 
         print("🎬 Rendering process finalized. All resources cleaned up.")
+        
 
 def start_processing_thread():
     global process_thread
@@ -864,7 +893,7 @@ button_frame.grid(row=6, column=0, columnspan=5, pady=10, sticky="w")
 # 3D Format Label and Dropdown (Inside button_frame)
 tk.Label(button_frame, text="3D Format").pack(side="left", padx=5)
 
-option_menu = tk.OptionMenu(button_frame, output_format, "Half-SBS", "Full-SBS", "Half-OU", "Full-OU", "Interlaced 3D")
+option_menu = tk.OptionMenu(button_frame, output_format, "Half-SBS", "Full-SBS", "Half-OU", "Full-OU", "Red-Cyan Anaglyph", "Interlaced 3D")
 option_menu.config(width=10)  # Adjust width to keep consistent look
 option_menu.pack(side="left", padx=5)
 
