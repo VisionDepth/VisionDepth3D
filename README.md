@@ -4,16 +4,22 @@ VisionDepth3D AI-powered 3D converter is a high-performance tool for creating Ha
 With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware, this open-source 3D tool is optimized for efficiency!
 
 Key features include:
-- ✅ Real-time motion depth enhancements for accurate shifting
-- ✅ Intelligent edge blending for seamless object transitions
-- ✅ Cinemascope mode (2.39:1) for a professional widescreen effect
-- ✅ Leverages AI-based GPU acceleration for optimized rendering.
+- ✅ Real-time motion-based depth enhancements for pixel-accurate shifting
+- ✅ AI-powered convergence correction to refine depth shifts dynamically
+- ✅ Pulfrich Effect simulation for enhanced motion-based depth perception
+- ✅ Intelligent edge blending for smoother object transitions
+- ✅ Cinematic aspect ratio support (2.39:1, 21:9, 4:3, 1:1, etc.)
+- ✅ VR-ready formats (optimized for Oculus, SteamVR, and Meta Quest)
+- ✅ Advanced processing optimizations for mid-range and high-end GPUs
+- ✅ Full audio synchronization with seamless 3D conversion
+
 
 Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
 
 GUI Layout
---
-![GuiSetupv3](https://github.com/user-attachments/assets/92342a1e-eecf-4b8e-a6c6-670838d379fe)
+
+--![GuiSetupv3](https://github.com/user-attachments/assets/33c8a01b-fdd3-48f3-8e92-2966369f3536)
+
 
 ## Guide Sheet: Install
 Installation Steps
@@ -55,45 +61,60 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
   - `XVID` (MKV format)
   - Others supported by OpenCV.
 
+### 2. 3D Output Formats
+- **Description**: Specifies the output format used for encoding the output video.
+- **Options**: 
+  - `Half-SBS / Full-SBS` (For 3D TVs, YouTube 3D)
+  - `Half-OU / Full-OU` (For 3D projectors & VR headsets)
+  - Others supported by OpenCV.
 
-### 2. Divergence Shift
+### 3. Aspect Ratio Selection
+- **Description**: Specifies the Aspect Ratio used for encoding the output video.
+- **Default**: `Default (16:9)`
+- **Options**: 
+  - `CinemaScope (2.39:1)` (True cinematic widescreen)
+  - `21:9 UltraWide` (Compatible with UltraWide monitors)
+  - `4:3 (Classic Films` (Retro-style)
+  - `1:1 (Square)` (Social media content)
+  - `2.35:1 & 2.76:1` (Advanced widescreen format
+
+### 4. Divergence Shift 
 - **Description**: Controls the amount of pixel shift for objects in the foreground.
 - **Default**: `4.8`
 - **Recommended Range**: `3.0` to `8.0`
 - **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
 
-
-### 3. Depth Transition 
+### 5. Depth Transition 
 - **Description**: Controls the amount of pixel shift for midground objects.
 - **Default**: `1.9`
 - **Recommended Range**: `1.0` to `5.0`
 - **Effect**: Fine-tune this value to balance the depth effect between divergence and convergence.
 
-### 4. Convergence Shift
+### 6. Convergence Shift
 - **Description**: Controls the amount of pixel shift for Depth.
 - **Default**: `-2.8`
 - **Recommended Range**: `-5.0` to `0.0`
 - **Effect**: Use Negative values to push objects farther back, creating more depth.
 
-### 5. Sharpness Factor
+### 7. Sharpness Factor
 - **Description**: Adjusts the sharpness of the final output video.
 - **Default**: `0`
 - **Range**: `-1.0` (softer) to `1.0` (sharper)
 - **Effect**: Higher values make edges more distinct, but excessive sharpness can introduce artifacts like over brightness.
 
-### 6. Blend Factor (Pulfrich Effect)
+### 8. Blend Factor (Pulfrich Effect)
 - **Description**: Controls the blending ratio between delayed and current frames for the Pulfrich effect.
 - **Default**: `0.5`
 - **Recommended Range**: `0.3` (subtle) to `0.7` (strong effect)
 - **Effect**: Higher values enhance the Pulfrich effect but may make scene transitions harder on the eyes.
 
-### 7. Delay Time (Pulfrich Effect)
+### 9. Delay Time (Pulfrich Effect)
 - **Description**: Specifies the temporal delay (in seconds) to create the Pulfrich effect.
 - **Default**: `1/30`
 - **Recommended Range**: `1/50` to `1/20`
 - **Effect**: Lower values (e.g., `1/50`) reduce the delay, creating a more subtle effect.
 
-## Depth Map File Requirements
+## 📁 Depth Map File Requirements
 ### 1. Just Have a Depth map Generated I suggest looking at
 - **Depth Anything V2
 - **Midas Models
@@ -119,9 +140,6 @@ plus 3D render time
   - Adjust `blend_factor` and `delay_time` for smoother transitions between scenes. this effect is supposed to 
 - **Audio Issues**:
   - Verify that the source video contains an audio stream, if not video will be generated with no audio
-- **GPU Memory Errors**:
- - Reduce the batch_size or vram_limit to avoid exceeding GPU memory limits.
----
 
 ## Notes
 - Ensure `ffmpeg` is installed and available in your system's PATH for audioprocessing. or put ffmpeg.exe in assets folder 
