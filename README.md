@@ -28,6 +28,7 @@ This program runs on python 3.9 - 3.10
 ### Step 1: Download the VisionDepth3D Program
 - Download the VisionDepth3D.zipfile from the official download source.
 - Extract the zip file to your desired folder (e.g., C:\VisionDepth3D).
+- Download backwards warp model [👉 here] https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing
 
 ### Step 2: Install Required Dependencies
 
