@@ -15,19 +15,14 @@ from threading import Thread
 import webbrowser
 import json
 import subprocess
-from tensorflow import keras
 from moviepy.editor import VideoFileClip, AudioFileClip
 import imageio
 from collections import deque
 
-# Load the trained divergence correction model
-MODEL_PATH = 'weights/backward_warping_model.keras'
-model = keras.models.load_model(MODEL_PATH)
-
 # Define global flags
 suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
 cancel_flag = threading.Event()
-suspend_flag = threading.Event()
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -38,71 +33,76 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
-    
+
 def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
     height, width = left_frame.shape[:2]
 
+    def gpu_resize(frame, size):
+        frame_gpu = cv2.cuda_GpuMat()
+        frame_gpu.upload(frame)
+        resized_gpu = cv2.cuda.resize(frame_gpu, size, interpolation=cv2.INTER_LINEAR)
+        return resized_gpu.download()
+
     if output_format == "Red-Cyan Anaglyph":
         return generate_anaglyph_3d(left_frame, right_frame)  # 🔴🔵
-    
+
     if output_format == "Full-SBS":
         return np.hstack((left_frame, right_frame))  # 3840x1080
 
     elif output_format == "Half-SBS":
-        # ✅ Half-SBS = 960x1080 per eye (for passive 3D TVs)
-        half_width = width // 2
-        left_resized = cv2.resize(left_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
-
+        left_resized = gpu_resize(left_frame, (960, height))
+        right_resized = gpu_resize(right_frame, (960, height))
         return np.hstack((left_resized, right_resized))  # 1920x1080
 
     elif output_format == "Full-OU":
         return np.vstack((left_frame, right_frame))  # 1920x2160
 
     elif output_format == "Half-OU":
-        # ✅ Half-OU = 1920x540 per eye (for passive 3D TVs)
-        target_height = height // 2
-        left_resized = cv2.resize(left_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
-
+        left_resized = gpu_resize(left_frame, (width, 540))
+        right_resized = gpu_resize(right_frame, (width, 540))
         return np.vstack((left_resized, right_resized))  # 1920x1080
 
     elif output_format == "VR":
-        # ✅ VR Headsets require per-eye aspect ratio correction (e.g., Oculus)
         vr_width = 1440  # Per-eye resolution for Oculus Quest 2
         vr_height = 1600  # Adjusted height
-        left_resized = cv2.resize(left_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
-
+        left_resized = gpu_resize(left_frame, (vr_width, vr_height))
+        right_resized = gpu_resize(right_frame, (vr_width, vr_height))
         return np.hstack((left_resized, right_resized))  # 2880x1600
 
     else:
         print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
         return np.hstack((left_frame, right_frame))  # Default to Full-SBS
- 
-def generate_anaglyph_3d(left_frame, right_frame):
-    """Creates a properly balanced True Red-Cyan Anaglyph 3D effect."""
 
-    # Convert frames to float to prevent overflow during merging
+
+def generate_anaglyph_3d(left_frame, right_frame):
+    """
+    Creates a Red-Cyan Anaglyph 3D effect by merging the left and right frames.
+
+    Parameters:
+        left_frame (numpy array): Left eye frame (BGR format).
+        right_frame (numpy array): Right eye frame (BGR format).
+
+    Returns:
+        anaglyph (numpy array): Anaglyph 3D image.
+    """
+    # Convert frames to float32 for blending
     left_frame = left_frame.astype(np.float32)
     right_frame = right_frame.astype(np.float32)
 
     # Extract color channels
-    left_r, left_g, left_b = cv2.split(left_frame)
-    right_r, right_g, right_b = cv2.split(right_frame)
+    left_r = left_frame[:, :, 2]  # Red channel from left frame
+    right_g = right_frame[:, :, 1]  # Green channel from right frame
+    right_b = right_frame[:, :, 0]  # Blue channel from right frame
 
-    # Merge the corrected Red-Cyan channels (based on optimized anaglyph conversion)
+    # Merge channels into an Anaglyph (Red from Left, Green & Blue from Right)
     anaglyph = cv2.merge([
-        right_b * 0.7,  # Reduce blue intensity to avoid overpowering cyan
-        right_g * 0.8,  # Slightly stronger green to balance cyan
-        left_r * 1.0    # Keep red at full strength
+        np.clip(right_b, 0, 255),  # Blue from right frame
+        np.clip(right_g, 0, 255),  # Green from right frame
+        np.clip(left_r, 0, 255)  # Red from left frame
     ])
 
-    # Clip values to ensure valid pixel range
-    anaglyph = np.clip(anaglyph, 0, 255).astype(np.uint8)
-
-    return anaglyph
+    return anaglyph.astype(np.uint8)  # Convert back to uint8
 
 
 
@@ -159,54 +159,6 @@ def calculate_depth_intensity(depth_map):
     avg_depth = np.mean(depth_gray)
     depth_variance = np.var(depth_gray)
     
-def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
-    """
-    Applies backward warping correction to background objects to enhance depth perception.
-
-    - Uses the trained model to simulate depth by warping background regions inward.
-    - Applies correction only to background areas.
-
-    Parameters:
-        left_frame (numpy array): Left eye frame.
-        right_frame (numpy array): Right eye frame.
-        depth_map (numpy array): Depth map normalized between 0-1.
-        model (Keras model): Trained warp correction model.
-        bg_threshold (float): Depth threshold to define the background.
-
-    Returns:
-        corrected_left, corrected_right (numpy arrays): Frames with corrected convergence shift.
-    """
-    
-    global previous_warp_params  # Ensure it's globally accessible
-
-    # ✅ Ensure depth is normalized
-    depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
-
-    # ✅ Create a binary mask for background (where depth is farther)
-    background_mask = (depth_map >= bg_threshold).astype(np.uint8)
-
-    # ✅ Initialize previous_warp_params if not set
-    if 'previous_warp_params' not in globals():
-        previous_warp_params = None
-
-    # ✅ Optimize: Call the model only when needed
-    if previous_warp_params is None:
-        warp_input = np.array([[bg_threshold]])  # Using depth threshold as input
-        previous_warp_params = model.predict(warp_input).reshape(3, 3)
-
-    warp_params = previous_warp_params
-
-    # ✅ Apply warp transformation ONLY to background areas
-    h, w = left_frame.shape[:2]
-    corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h))
-    corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
-
-    # ✅ Mask out non-background areas to prevent unnecessary corrections
-    corrected_left = np.where(background_mask[..., None], corrected_left, left_frame)
-    corrected_right = np.where(background_mask[..., None], corrected_right, right_frame)
-
-    return corrected_left, corrected_right
-
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, 
                   fg_shift, mg_shift, bg_shift, delay_time=None, 
@@ -305,9 +257,6 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             # **Ensure left and right frames are fresh copies**
             left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
 
-            # **✅ Apply Convergence Correction BEFORE Depth-Based Shifts**
-            left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, model)
-
             # **✅ Pulfrich effect adjustments (Re-Added)**
             blend_factor = min(0.5, blend_factor + 0.05) if len(frame_buffer) else blend_factor
 
@@ -344,10 +293,10 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
                 for _ in range(frame_delay):  
                     frame_buffer.append((left_frame.copy(), right_frame.copy()))
 
-            if len(frame_buffer) < frame_delay:
-                delayed_left_frame, delayed_right_frame = left_frame, right_frame  # Don't use buffer if not enough frames
-            else:
+            if len(frame_buffer) > 0:
                 delayed_left_frame, delayed_right_frame = frame_buffer.popleft()
+            else:
+                delayed_left_frame, delayed_right_frame = left_frame, right_frame  # Default to current frame
 
             # **✅ Create Pulfrich effect**
             blended_left_frame = cv2.addWeighted(delayed_left_frame, min(0.3, blend_factor), left_frame, 1 - min(0.3, blend_factor), 0)
@@ -403,24 +352,14 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         
 def update_progress(frame_idx, total_frames, start_time, progress, progress_label):
     percentage = (frame_idx / total_frames) * 100
-    if progress:
-        progress["value"] = percentage
-        progress.update()
+    elapsed_time = time.time() - start_time
+    fps = frame_idx / elapsed_time if elapsed_time > 0 else 0
+    time_remaining = (total_frames - frame_idx) / fps if fps > 0 else 0
+    time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
 
-    if progress_label:
-        elapsed_time = time.time() - start_time
-        time_per_frame = elapsed_time / (frame_idx + 1)
-        fps = 1.0 / time_per_frame  # Calculate frames per second
-        time_remaining = time_per_frame * (total_frames - frame_idx)
+    root.after(0, progress_label.config, {"text": f"Processing: {percentage:.2f}% | FPS: {fps:.2f} | Time Left: {time_remaining_str}"})
+    root.after(0, lambda: progress.config(value=percentage))
 
-        # ✅ Convert Time Left to MM:SS format
-        time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
-        elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
-
-        # ✅ Update Label in a cleaner format
-        progress_label.config(
-            text=f"Processing: {percentage:.2f}% | FPS: {fps:.2f} | Time Left: {time_remaining_str}"
-        )
 
     
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, 
@@ -494,9 +433,6 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             # ✅ Ensure left and right frames are fresh copies
             top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
 
-            # ✅ Apply Convergence Correction BEFORE Depth-Based Shifts
-            top_frame, bottom_frame = correct_convergence_shift(top_frame, bottom_frame, depth_normalized, model)
-
             # ✅ Depth-based pixel shift logic
             map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
@@ -565,7 +501,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             print("❌ Video processing was canceled by the user.")
 
         print("🎬 Rendering process finalized. All resources cleaned up.")
-        
+
 
 def start_processing_thread():
     global process_thread
@@ -637,6 +573,10 @@ def select_depth_map():
     selected_depth_map.set(depth_map_path)
     depth_map_label.config(text=f"Selected Depth Map:\n{os.path.basename(depth_map_path)}")
 
+def update_ui_progress(value, text):
+    root.after(0, progress_label.config, {"text": text})
+    root.after(0, progress["value"], value)
+
 
 def process_video():
     if not input_video_path.get() or not output_sbs_video_path.get() or not selected_depth_map.get():
@@ -656,13 +596,11 @@ def process_video():
     # ✅ Run UI updates with `root.after()` to avoid freezing
     root.after(0, progress_label.config, {"text": "Processing... 0%"})
     root.after(0, progress["value"], 0)
-    
-    def update_ui_progress(value, text):
-        root.after(0, progress_label.config, {"text": text})
-        root.after(0, progress["value"], value)
+
+    sbs_output_path = output_sbs_video_path.get().replace(".mp4", "_sbs.mp4")  # Temporary SBS file
 
     # Call rendering function based on format
-    if output_format.get() == "Full-OU" or output_format.get() == "Half-OU":
+    if output_format.get() in ["Full-OU", "Half-OU"]:
         render_ou_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -674,14 +612,13 @@ def process_video():
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
-            sharpness_factor.get(),
-            delay_time.get(),
             progress=progress,
             progress_label=progress_label,
             suspend_flag=suspend_flag,
             cancel_flag=cancel_flag
         )
-    else:
+
+    elif output_format.get() in ["Full-SBS", "Half-SBS"]:
         render_sbs_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -693,20 +630,48 @@ def process_video():
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
-            sharpness_factor.get(),
-            delay_time.get(),
             progress=progress,
             progress_label=progress_label,
             suspend_flag=suspend_flag,
             cancel_flag=cancel_flag
         )
 
-    if not cancel_flag.is_set():
-        update_ui_progress(100, "✅ Processing Complete!")
-        print("✅ Processing complete.")
-    else:
-        update_ui_progress(0, "❌ Processing Canceled.")
-        print("❌ Processing canceled.")
+    elif output_format.get() == "Red-Cyan Anaglyph":
+        # ✅ First, generate the SBS version
+        render_sbs_3d(
+            input_video_path.get(),
+            selected_depth_map.get(),
+            sbs_output_path,  # Save temporary SBS file
+            selected_codec.get(),
+            fps,
+            width,
+            height,
+            fg_shift.get(),
+            mg_shift.get(),
+            bg_shift.get(),
+            progress=progress,
+            progress_label=progress_label,
+            suspend_flag=suspend_flag,
+            cancel_flag=cancel_flag
+        )
+
+        # ✅ Check if the SBS output is already anaglyph
+        if "Red-Cyan" not in output_sbs_video_path.get():  # Prevent double conversion
+            render_anaglyph_3d(
+                sbs_output_path,  # Use the SBS video as input
+                output_sbs_video_path.get(),  # Final Anaglyph output
+                selected_codec.get(),
+                fps,
+                width,
+                height,
+                progress=progress,
+                progress_label=progress_label,
+                suspend_flag=suspend_flag,
+                cancel_flag=cancel_flag
+            )
+
+            # ✅ Cleanup: Remove temporary SBS file
+            os.remove(sbs_output_path)
 
 
 def suspend_processing():
@@ -768,7 +733,7 @@ bg_shift = tk.DoubleVar(value=-4.0)
 sharpness_factor = tk.DoubleVar(value=0.2)
 blend_factor = tk.DoubleVar(value=0.6)
 delay_time = tk.DoubleVar(value=1/30)
-output_format = tk.StringVar(value="SBS")
+output_format = tk.StringVar(value="Full-SBS")
 cinemascope_enabled = tk.BooleanVar(value=False)  # Checkbox variable
 ou_type = tk.StringVar(value="Half-OU")
 
@@ -855,7 +820,7 @@ aspect_ratio_menu = tk.OptionMenu(options_frame, selected_aspect_ratio, *aspect_
 aspect_ratio_menu.grid(row=0, column=3, padx=5, sticky="ew")
 
 reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white")
-reset_button.grid(row=0, column=4, columnspan=2, pady=10)
+reset_button.grid(row=3, column=4, columnspan=2, pady=10)
 
 
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
