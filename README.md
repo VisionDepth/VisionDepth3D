@@ -22,10 +22,10 @@ GUI Layout
 
 ## Guide Sheet: Install
 **Installation Steps**
-This program runs on python 3.9 - 3.10
-openCV with Cuda recommended but opencv-cpu works
-ffmpeg installed in system and able to access system wide
-pip and/or git installed on system 
+This program runs on python 3.9 - 3.10,
+openCV with Cuda recommended but opencv-cpu works,
+ffmpeg installed in system and able to access system wide,
+and pip and/or git installed on system 
 
 ### Step 1: Download the VisionDepth3D Program
 - Download the VisionDepth3D.zip file from the official Github Repo.
