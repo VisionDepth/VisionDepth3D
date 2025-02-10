@@ -1,11 +1,10 @@
 # VisionDepth3D - 3D Video Conversion with AI Depth Mapping & Pulfrich Effect
 VisionDepth3D AI-powered 3D converter is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
 
-With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware, this open-source 3D tool is optimized for efficiency!
+With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. Runs on mid-range hardware, this open-source 3D tool is optimized for efficiency!
 
 Key features include:
 - ✅ Real-time motion-based depth enhancements for pixel-accurate shifting
-- ✅ AI-powered convergence correction to refine depth shifts dynamically
 - ✅ Pulfrich Effect simulation for enhanced motion-based depth perception
 - ✅ Intelligent edge blending for smoother object transitions
 - ✅ Cinematic aspect ratio support (2.39:1, 21:9, 4:3, 1:1, etc.)
@@ -22,27 +21,30 @@ GUI Layout
 
 
 ## Guide Sheet: Install
-Installation Steps
+**Installation Steps**
 This program runs on python 3.9 - 3.10
+openCV with Cuda recommended but opencv-cpu works
+ffmpeg installed in system and able to access system wide
+pip and/or git installed on system 
 
 ### Step 1: Download the VisionDepth3D Program
-- Download the VisionDepth3D.zipfile from the official download source.
-- Extract the zip file to your desired folder (e.g., C:\VisionDepth3D).
-- Download backwards warp model [👉 here](https://drive.google.com/file/d/1Ff0py6EpTG7IcLDQE9Brl9d3002Hd3JO/view?usp=sharing) and put in weights folder 
+- Download the VisionDepth3D.zip file from the official Github Repo.
+- Extract the zip file to your desired folder (e.g., C:\\User\VisionDepth3D)
 
 ### Step 2: Install Required Dependencies
 
-### Open a terminal or command prompt and enter:
-- git clone https://github.com/VisionDepth/VisionDepth3D.git
-- cd VisionDepth3D
-- install_visiondepth3d.bat
+Open a terminal or command prompt or power shell and enter:
+- in the prompt change directory to extracted zip folder location with cd path/to/visionDepth3D
+- next type pip install -r requirements.txt
+- it should install required dependancies 
+- once finished you can open the program with python VisionDepth3D.py 
 
-### or alternatively you can use pip**
+### or alternatively you can clone the repo and use pip
 - pip install git+https://github.com/VisionDepth/VisionDepth3D.git
 - pip install -r requirements.txt
 
-### use conda by setting up an environment (best method)
-- open conda
+### use anaconda or miniconda by setting up an environment (best method)
+- open conda prompt
 - enter cd Path/To/Visiondepth3D
 - enter conda create --name VisionDepth3D python=3.10
 - enter conda activate VisionDepth3D
@@ -67,7 +69,7 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 - **Options**: 
   - `Half-SBS / Full-SBS` (For 3D TVs, YouTube 3D)
   - `Half-OU / Full-OU` (For 3D projectors & VR headsets)
-  - Others supported by OpenCV.
+  - 'interlaced 3D and VR'
 
 ### 3. Aspect Ratio Selection
 - **Description**: Specifies the Aspect Ratio used for encoding the output video.
