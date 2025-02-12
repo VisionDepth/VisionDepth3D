@@ -9,7 +9,6 @@ Key features include:
 - ✅ Intelligent edge blending for smoother object transitions
 - ✅ Cinematic aspect ratio support (2.39:1, 21:9, 4:3, 1:1, etc.)
 - ✅ VR-ready formats (optimized for Oculus, SteamVR, and Meta Quest)
-- ✅ Advanced processing optimizations for mid-range and high-end GPUs
 - ✅ Full audio synchronization with seamless 3D conversion
 
 
