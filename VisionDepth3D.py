@@ -95,26 +95,6 @@ def remove_white_edges(image):
     image[mask.astype(bool)] = blurred[mask.astype(bool)]
     return image
 
-def detect_closeup(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
-
-    if len(faces) > 0:
-        return "close-up"
-    else:
-        return "wide"
-
-previous_scene_types = []
-
-def smooth_scene_type(scene_type):
-    global previous_scene_types
-    previous_scene_types.append(scene_type)
-    
-    if len(previous_scene_types) > 10:  # Keep last 10 frames
-        previous_scene_types.pop(0)
-    
-    return max(set(previous_scene_types), key=previous_scene_types.count)
 
 def calculate_depth_intensity(depth_map):
     depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
@@ -212,8 +192,6 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
 
         prev_frame_gray = current_frame_gray       
 
-         # Scene classification (close-up or wide)
-        scene_type = smooth_scene_type(detect_closeup(original_frame))
         # Ensure corrected_left and corrected_right are assigned before using them
         corrected_left, corrected_right = left_frame, right_frame  # This guarantees they exist
 
