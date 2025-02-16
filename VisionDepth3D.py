@@ -171,27 +171,6 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
 
         left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
 
-        # Convert to grayscale for scene change detection
-        current_frame_gray = cv2.cvtColor(cropped_resized_frame, cv2.COLOR_BGR2GRAY)
-
-        # Scene change detection
-        if prev_frame_gray is not None:
-            diff = cv2.absdiff(current_frame_gray, prev_frame_gray)
-            diff_score = np.sum(diff) / (width * height)
-
-            rolling_diff.append(diff_score)
-            if len(rolling_diff) > max_rolling_frames:
-                rolling_diff.pop(0)
-            avg_diff_score = np.mean(rolling_diff)
-
-            adaptive_threshold = 50 if avg_diff_score < 100 else 75
-            if avg_diff_score > adaptive_threshold:
-                print(f"Scene change detected at frame {frame_idx} with diff {avg_diff_score:.2f}")
-                frame_buffer.clear()  # Clear buffer for Pulfrich effect
-                blend_factor = max(0.1, blend_factor - 0.2)  # Reduce blending for scene change
-
-        prev_frame_gray = current_frame_gray       
-
         # Ensure corrected_left and corrected_right are assigned before using them
         corrected_left, corrected_right = left_frame, right_frame  # This guarantees they exist
 
