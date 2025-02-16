@@ -101,11 +101,30 @@ def calculate_depth_intensity(depth_map):
     avg_depth = np.mean(depth_gray)
     depth_variance = np.var(depth_gray)
     
-    # Define threshold for close-ups vs. wide shots
-    if depth_variance < 500:  
-        return "close-up"
+
+frame_times = []
+
+def calculate_fps():
+    # Record the current time
+    current_time = time.time()
+    
+    # Store the time it took to process the last frame
+    if frame_times:
+        frame_times.append(current_time - frame_times[-1])
     else:
-        return "wide"
+        frame_times.append(current_time)
+    
+    # Keep only the last 30 frame times
+    if len(frame_times) > 30:
+        frame_times.pop(0)
+    
+    # Calculate the average FPS
+    if len(frame_times) > 1:
+        fps = 1.0 / (sum(frame_times[1:]) / (len(frame_times) - 1))
+    else:
+        fps = 0.0
+    
+    return fps
 
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
@@ -158,11 +177,15 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
         time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
 
+        # Assume you have a way to calculate fps and store it in the variable 'fps'
+        fps = calculate_fps()  # You need to implement this function
+
         # Update the progress bar and label
         if progress_label:
             progress_label.config(
-                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
+                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str} | FPS: {fps:.2f}"
             )
+
 
         # Remove black bars
         cropped_frame, x, y, w, h = remove_black_bars(original_frame)
@@ -170,14 +193,13 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         depth_frame_resized = cv2.resize(depth_frame, (width, height))
 
         left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
+ 
 
         # Ensure corrected_left and corrected_right are assigned before using them
         corrected_left, corrected_right = left_frame, right_frame  # This guarantees they exist
 
          # Depth analysis
         depth_scene_type = calculate_depth_intensity(depth_frame)     
-        
-        corrected_left, corrected_right = left_frame, right_frame  # No IPD adjustment
         
         # Pulfrich effect adjustments
         blend_factor = min(0.5, blend_factor + 0.05) if len(frame_buffer) else blend_factor
@@ -195,29 +217,23 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         # Generate y-coordinate mapping
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
-        # Depth-based pixel shift
-        for y in range(height):
-            fg_shift_val = fg_shift  # Foreground shift (e.g. 12)
-            mg_shift_val = mg_shift  # Midground shift (e.g. 6)
-            bg_shift_val = bg_shift  # Background shift (e.g. -2)
+        # Depth-based pixel shift values
+        shift_vals_fg = (-depth_normalized * fg_shift).astype(np.float32)
+        shift_vals_mg = (-depth_normalized * mg_shift).astype(np.float32)
+        shift_vals_bg = (depth_normalized * bg_shift).astype(np.float32)
 
-            # **Original depth-based mapping**
-            shift_vals_fg = (-depth_normalized[y, :] * fg_shift_val).astype(np.float32)
-            shift_vals_mg = (-depth_normalized[y, :] * mg_shift_val).astype(np.float32)
-            shift_vals_bg = (depth_normalized[y, :] * bg_shift_val).astype(np.float32)
+        # Final x-mapping
+        new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
+        new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
 
-            # Final x-mapping
-            new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-            new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
+        # Reshape for remapping
+        map_x_left = new_x_left.reshape(height, width).astype(np.float32)
+        map_x_right = new_x_right.reshape(height, width).astype(np.float32)
 
-            # Reshape for remapping
-            map_x_left = new_x_left.reshape(1, -1).astype(np.float32)
-            map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
+        # Apply remapping (ensuring correct interpolation)
+        left_frame = cv2.remap(cropped_resized_frame, map_x_left, map_y, interpolation=cv2.INTER_CUBIC)
+        right_frame = cv2.remap(cropped_resized_frame, map_x_right, map_y, interpolation=cv2.INTER_CUBIC)
 
-            # Apply remapping (ensuring correct interpolation)
-            left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-        
         if cinemascope_enabled.get():
             left_frame = apply_cinemascope_crop(left_frame)
             right_frame = apply_cinemascope_crop(right_frame)
@@ -291,11 +307,14 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
         elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
         time_remaining_str = time.strftime("%M:%S", time.gmtime(time_remaining))
 
+        # Assume you have a way to calculate fps and store it in the variable 'fps'
+        fps = calculate_fps()  # You need to implement this function
+
         # Update the progress bar and label
         if progress_label:
             progress_label.config(
-                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str}"
-            )       
+                text=f"{percentage:.2f}% | Elapsed: {elapsed_time_str} | Remaining: {time_remaining_str} | FPS: {fps:.2f}"
+            )     
         
         # Remove black bars & Resize
         cropped_frame, x, y, w, h = remove_black_bars(original_frame)
@@ -314,24 +333,23 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
         # Generate y-coordinate mapping
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
-        for y in range(height):
-            # Depth-based pixel shifts
-            shift_vals_fg = (-depth_normalized[y, :] * fg_shift).astype(np.int32)
-            shift_vals_mg = (-depth_normalized[y, :] * mg_shift).astype(np.int32)
-            shift_vals_bg = (depth_normalized[y, :] * bg_shift).astype(np.int32)  # BG remains negative
+        # Depth-based pixel shift values
+        shift_vals_fg = (-depth_normalized * fg_shift).astype(np.int32)
+        shift_vals_mg = (-depth_normalized * mg_shift).astype(np.int32)
+        shift_vals_bg = (depth_normalized * bg_shift).astype(np.int32)  # BG remains negative
 
-            # Final x-mapping
-            new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-            new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
+        # Final x-mapping
+        new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
+        new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
 
-            # Reshape for remapping
-            map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
-            map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
+        # Reshape for remapping
+        map_x_top = new_x_top.reshape(height, width).astype(np.float32)
+        map_x_bottom = new_x_bottom.reshape(height, width).astype(np.float32)
 
-            # Apply remapping
-            top_frame[y] = cv2.remap(cropped_resized_frame, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            bottom_frame[y] = cv2.remap(cropped_resized_frame, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-        
+        # Apply remapping
+        top_frame = cv2.remap(cropped_resized_frame, map_x_top, map_y, interpolation=cv2.INTER_CUBIC)
+        bottom_frame = cv2.remap(cropped_resized_frame, map_x_bottom, map_y, interpolation=cv2.INTER_CUBIC)
+
         # 🎬 **Apply Cinemascope Cropping if Enabled**
         if cinemascope_enabled.get():
             top_frame = apply_cinemascope_crop(top_frame)
