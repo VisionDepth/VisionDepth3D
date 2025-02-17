@@ -1,6 +1,5 @@
 import os
 import sys
-import shutil
 import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog, messagebox
@@ -14,9 +13,6 @@ import threading
 from threading import Thread
 import webbrowser
 import json
-import subprocess
-from moviepy.editor import VideoFileClip, AudioFileClip
-import imageio
 from collections import deque
 
 process_thread = None  # ✅ Declare global thread variable before using it
