@@ -19,10 +19,6 @@ from moviepy.editor import VideoFileClip, AudioFileClip
 import imageio
 from collections import deque
 
-# Define global flags
-suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
-cancel_flag = threading.Event()
-
 process_thread = None  # ✅ Declare global thread variable before using it
 
 
@@ -40,43 +36,33 @@ def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
     height, width = left_frame.shape[:2]
 
-    if output_format == "Red-Cyan Anaglyph":
-        return generate_anaglyph_3d(left_frame, right_frame)  # 🔴🔵
-    
     if output_format == "Full-SBS":
-        return np.hstack((left_frame, right_frame))  # 3840x1080
+        return np.hstack((left_frame, right_frame))  # ✅ 3840x1608
 
     elif output_format == "Half-SBS":
-        # ✅ Half-SBS = 960x1080 per eye (for passive 3D TVs)
         half_width = width // 2
-        left_resized = cv2.resize(left_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
-
-        return np.hstack((left_resized, right_resized))  # 1920x1080
+        left_resized = cv2.resize(left_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+        return np.hstack((left_resized, right_resized))  # ✅ Correct output: 1920x1608
 
     elif output_format == "Full-OU":
-        return np.vstack((left_frame, right_frame))  # 1920x2160
+        return np.vstack((left_frame, right_frame))  # ✅ 3840x3216
 
     elif output_format == "Half-OU":
-        # ✅ Half-OU = 1920x540 per eye (for passive 3D TVs)
+        # ✅ Correct Half-OU: 3840x804 per eye → 3840x1608 final output
         target_height = height // 2
-        left_resized = cv2.resize(left_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
+        left_resized = cv2.resize(left_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
 
-        return np.vstack((left_resized, right_resized))  # 1920x1080
+        return np.vstack((left_resized, right_resized))  # ✅ Correct output size: 3840x1608
 
-    elif output_format == "VR":
-        # ✅ VR Headsets require per-eye aspect ratio correction (e.g., Oculus)
-        vr_width = 1440  # Per-eye resolution for Oculus Quest 2
-        vr_height = 1600  # Adjusted height
-        left_resized = cv2.resize(left_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
-
-        return np.hstack((left_resized, right_resized))  # 2880x1600
+    elif output_format == "Red-Cyan Anaglyph":
+        return generate_anaglyph_3d(left_frame, right_frame)  
 
     else:
-        print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
-        return np.hstack((left_frame, right_frame))  # Default to Full-SBS
+        print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to Full-SBS.")
+        return np.hstack((left_frame, right_frame))  # ✅ Default to Full-SBS
+
  
 def generate_anaglyph_3d(left_frame, right_frame):
     """Creates a properly balanced True Red-Cyan Anaglyph 3D effect."""
@@ -120,27 +106,40 @@ def apply_aspect_ratio_crop(frame, aspect_ratio):
     print(f"✅ Aspect Ratio Applied | {width}x{target_height} ({aspect_ratio})")
     return cropped_frame
 
+# Initialize a history buffer to track black bar detections
+black_bar_history = deque(maxlen=10)  # Stores the last 10 frames
+history_threshold = 5  # Require at least 5 consecutive detections before cropping
 
-frame_cache = {}  # ✅ Keep it if using caching
-
-def remove_black_bars(frame):
-    key = hash(frame.tobytes())  # Unique hash for each frame
-    if key in frame_cache:
-        return frame_cache[key]  # ✅ Return cached result
+def remove_black_bars(frame, min_area_ratio=0.05):
+    global black_bar_history
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+    
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+    
     if len(contours) == 0:
-        result = (frame, 0, 0, frame.shape[1], frame.shape[0])  # ✅ Ensure 5 values
+        black_bar_history.append(False)
+        return frame, 0, 0, frame.shape[1], frame.shape[0]
+
+    x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
+    
+    frame_area = frame.shape[0] * frame.shape[1]
+    cropped_area = w * h
+
+    # Only consider it a black bar if the non-black area is above a certain size
+    if cropped_area < frame_area * min_area_ratio:
+        black_bar_history.append(False)
+        return frame, 0, 0, frame.shape[1], frame.shape[0]
+
+    # Add detection to history
+    black_bar_history.append(True)
+
+    # Only crop if black bars have been detected for several frames
+    if sum(black_bar_history) >= history_threshold:
+        return frame[y:y+h, x:x+w], x, y, w, h
     else:
-        x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
-        result = (frame[y:y+h, x:x+w], x, y, w, h)
-
-    frame_cache[key] = result  # ✅ Store in cache
-    return result
-
+        return frame, 0, 0, frame.shape[1], frame.shape[0]
 
 def remove_white_edges(image):
     mask = (image[:, :, 0] > 240) & (image[:, :, 1] > 240) & (image[:, :, 2] > 240)
@@ -159,163 +158,126 @@ def calculate_depth_intensity(depth_map):
     
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, 
-                  fg_shift, mg_shift, bg_shift, delay_time=None, 
-                  blend_factor=0.5, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
+                  fg_shift, mg_shift, bg_shift, sharpness_factor, progress=None, progress_label=None):
 
-    # If no delay_time is passed, use the default value
-    if delay_time is None:
-        delay_time = 1/30  # ✅ Default value only applied if None
+    # ✅ Delete existing file to prevent corruption issues
+    if os.path.exists(output_video):
+        os.remove(output_video)
+        print(f"🗑 Deleted existing file: {output_video}")
 
-    # Frame delay buffer
-    frame_delay = int(fps * delay_time)
-    frame_buffer = deque(maxlen=frame_delay + 1)
+    # ✅ Ensure a valid codec is used
+    codec = "H264" if output_video.endswith(".mp4") else "XVID"
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
 
-    # Determine output width based on format
-    if output_format.get() == "Half-SBS":
-        output_width = width // 2  # Half-SBS has half the width
+    if not out.isOpened():
+        print(f"❌ Error: Failed to initialize VideoWriter for {output_video}")
+        return
     else:
-        output_width = width
-
-    # Initialize OpenCV VideoWriter
-    fourcc = cv2.VideoWriter_fourcc(*codec)
-    writer = cv2.VideoWriter(output_video, fourcc, fps, (output_width, height))
+        print(f"✅ VideoWriter initialized successfully for {output_video}")
 
     # Open video sources
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
-    try:
-        total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start_time = time.time()
+    if not original_cap.isOpened() or not depth_cap.isOpened():
+        print("❌ Error: Unable to open input or depth video.")
+        return
 
-        for frame_idx in range(total_frames):
-            if cancel_flag and cancel_flag.is_set():
-                print("❌ Rendering canceled.")
-                break
+    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    start_time = time.time()
+    frames_written = 0  # ✅ Track the number of frames successfully written
 
-            while suspend_flag and suspend_flag.is_set():
-                print("⏸ Rendering paused...")
-                time.sleep(0.5)
+    for frame_idx in range(total_frames):
+        ret1, original_frame = original_cap.read()
+        ret2, depth_frame = depth_cap.read()
 
-            # Read frames
-            ret1, original_frame = original_cap.read()
-            ret2, depth_frame = depth_cap.read()
-            if not ret1 or not ret2:
-                break
+        # ✅ Skip bad frames instead of breaking the loop
+        if not ret1:
+            print(f"⚠ Warning: Skipping frame {frame_idx} (original video issue).")
+            continue
+        if not ret2:
+            print(f"⚠ Warning: Using last good depth frame for frame {frame_idx}.")
+            depth_frame = last_valid_depth.copy()  # ✅ Use the last valid depth frame
 
-            elapsed_time = time.time() - start_time
-            fps_current = frame_idx / elapsed_time if elapsed_time > 0 else 0
-            remaining_time = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
+        cropped_frame, x, y, w, h = remove_black_bars(original_frame)
+        cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
+        depth_frame_resized = cv2.resize(depth_frame, (width, height))
 
-            # ✅ Update progress bar and label
-            progress_percentage = (frame_idx / total_frames) * 100
-            if progress:
-                progress["value"] = progress_percentage
-                progress.update_idletasks()  # ✅ Force GUI update
+        left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
 
-            if progress_label:
-                # Convert remaining time (in seconds) to MM:SS format
-                time_remaining_str = time.strftime("%M:%S", time.gmtime(remaining_time))
+        # ✅ Convert depth frame to grayscale and normalize
+        depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
+        depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
+        depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
+        depth_normalized = depth_filtered / 255.0  # Normalize to range [0,1]
 
-                # Calculate estimated completion time (ETA)
-                estimated_completion_time = datetime.now() + timedelta(seconds=remaining_time)
-                completion_time_str = estimated_completion_time.strftime("%I:%M %p")  # 12-hour format with AM/PM
+        left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
 
-                # Update Progress Label
-                progress_label.config(
-                    text=f"Processing: {progress_percentage:.2f}% | FPS: {fps_current:.2f} | Time Left: {time_remaining_str} | ETA: {completion_time_str}"
-                )
+        # ✅ Pixel shifting logic for left and right eye views
+        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
-            # Remove black bars
-            cropped_frame, x, y, w, h = remove_black_bars(original_frame)
-            cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
-            depth_frame_resized = cv2.resize(depth_frame, (width, height), interpolation=cv2.INTER_AREA)
+        for y in range(height):
+            # Compute per-pixel shift values based on depth
+            shift_vals_fg = np.clip(-depth_normalized[y, :] * fg_shift, -10, 10).astype(np.float32)
+            shift_vals_mg = np.clip(-depth_normalized[y, :] * mg_shift, -5, 5).astype(np.float32)
+            shift_vals_bg = np.clip(depth_normalized[y, :] * bg_shift, -2, 2).astype(np.float32)
 
-            # **✅ Process Depth frame**
-            depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
-            depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-            depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
-            depth_normalized = depth_filtered / 255.0  
+            # Compute pixel shift mappings
+            new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
+            new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
 
-            # **Ensure left and right frames are fresh copies**
-            left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
+            # Convert mappings to proper format for remapping
+            map_x_left = new_x_left.reshape(1, -1).astype(np.float32)
+            map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
 
-            # **✅ Depth-based pixel shift logic**
-            map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
+            # Apply depth-based remapping
+            left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+            right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
 
-            for y in range(height):
-                fg_shift_val = fg_shift
-                mg_shift_val = mg_shift
-                bg_shift_val = bg_shift
-
-                # Compute pixel shift values based on depth
-                shift_vals_fg = np.clip(-depth_normalized[y, :] * fg_shift, -10, 10).astype(np.float32)
-                shift_vals_mg = np.clip(-depth_normalized[y, :] * mg_shift, -5, 5).astype(np.float32)
-                shift_vals_bg = np.clip(depth_normalized[y, :] * bg_shift, -2, 2).astype(np.float32)
-
-                # Final x-mapping for remapping
-                new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-                new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
-
-                # Convert mappings to proper format
-                map_x_left = new_x_left.reshape(1, -1).astype(np.float32)
-                map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
-
-                # Apply depth-based remapping
-                left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-                right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-
-            if len(frame_buffer) < frame_delay:
-                delayed_left_frame, delayed_right_frame = left_frame, right_frame  # Don't use buffer if not enough frames
-            else:
-                delayed_left_frame, delayed_right_frame = frame_buffer.popleft()
-
-            # **✅ Create Pulfrich effect**
-            blended_left_frame = cv2.addWeighted(delayed_left_frame, min(0.3, blend_factor), left_frame, 1 - min(0.3, blend_factor), 0)
-            sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor.get(), -1], [0, -1, 0]])
-            left_sharp = cv2.filter2D(blended_left_frame, -1, sharpen_kernel)
-            right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
-
-            # **✅ Resize for Half-SBS**
-            left_sharp_resized = cv2.resize(left_sharp, (width // 2, height)) if output_format.get() == "Half-SBS" else left_sharp
-            right_sharp_resized = cv2.resize(right_sharp, (width // 2, height)) if output_format.get() == "Half-SBS" else right_sharp
-
-            # Apply Aspect Ratio Crop Before Resizing
-            if selected_aspect_ratio.get() != "Default (16:9)":
-                aspect_ratio_value = aspect_ratios[selected_aspect_ratio.get()]
-                left_frame = apply_aspect_ratio_crop(left_frame, aspect_ratio_value)
-                right_frame = apply_aspect_ratio_crop(right_frame, aspect_ratio_value)
-
-            # ✅ Format the 3D output properly
-            sbs_frame = format_3d_output(left_frame, right_frame, output_format.get())
-
-            # ✅ Write frame using OpenCV VideoWriter
-            writer.write(sbs_frame)
-
-    finally:
-        # ✅ Release video resources safely
-        if original_cap.isOpened():
-            original_cap.release()
-        if depth_cap.isOpened():
-            depth_cap.release()
-        writer.release()  # ✅ Ensure the writer is closed properly
-
-        # ✅ Ensure progress bar reaches 100% if not canceled
-        if not cancel_flag.is_set():
-            progress["value"] = 100
-            progress_label.config(text="✅ Processing complete!")
-            progress.update_idletasks()
-
-            print("✅ Half-SBS video generated successfully.")
-        else:
-            progress_label.config(text="❌ Processing Canceled.")
-            progress["value"] = 0
-            progress.update_idletasks()
-            print("❌ Video processing was canceled by the user.")
-
-        print("🎬 Rendering process finalized. All resources cleaned up.")
+        sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
+        left_sharp = cv2.filter2D(left_frame, -1, sharpen_kernel)
+        right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
         
+        # ✅ Format the final 3D output frame
+        sbs_frame = format_3d_output(left_frame, right_frame, output_format.get())
+
+        # ✅ Ensure the frame matches expected size
+        h, w = sbs_frame.shape[:2]
+        if (w, h) != (width, height):
+            print(f"⚠ Warning: Frame size mismatch! Expected: {width}x{height}, Got: {w}x{h}")
+            sbs_frame = cv2.resize(sbs_frame, (width, height), interpolation=cv2.INTER_AREA)
+
+        # ✅ Write frame and track success
+        try:
+            out.write(sbs_frame)
+            frames_written += 1
+            if frame_idx % 100 == 0:  # Print progress every 100 frames
+                print(f"🖼 Processed {frame_idx}/{total_frames} frames ({(frame_idx/total_frames)*100:.2f}%).")
+        except Exception as e:
+            print(f"❌ Error writing frame {frame_idx}: {e}")
+
+    # ✅ Final check: Ensure frames were actually written
+    if frames_written == 0:
+        print("❌ No frames were written! Check frame processing.")
+    else:
+        print(f"✅ Successfully wrote {frames_written} frames to {output_video}")
+
+    # Release resources properly
+    original_cap.release()
+    depth_cap.release()
+    out.release()
+    print(f"🎬 Rendering process finalized. Output saved: {output_video}")
+
+    # ✅ Check final output file size
+    if os.path.exists(output_video):
+        file_size = os.path.getsize(output_video)
+        if file_size == 0:
+            print(f"❌ Error: Output file {output_video} is empty! Check encoding settings.")
+        else:
+            print(f"✅ Output file size: {file_size / 1024 / 1024:.2f} MB")
+
+    
 def update_progress_ui(frame_idx, total_frames, start_time):
     """ Updates the progress bar, FPS display, and estimated time remaining dynamically. """
     elapsed_time = time.time() - start_time
@@ -339,35 +301,24 @@ def update_progress_ui(frame_idx, total_frames, start_time):
 
     
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, 
-                 fg_shift, mg_shift, bg_shift, delay_time=1/30, 
-                 blend_factor=0.5, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
+                 fg_shift, mg_shift, bg_shift, progress=None, progress_label=None):
 
-    # Frame delay buffer
-    frame_delay = int(fps * delay_time)
-    frame_buffer = deque(maxlen=frame_delay + 1)
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
+    if not writer.isOpened():
+        print("Error: VideoWriter failed to open.")
+        return
 
-    # Initialize OpenCV VideoWriter
-    fourcc = cv2.VideoWriter_fourcc(*codec)
-    writer = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
 
     # Open video sources
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
+
 
     try:
         total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
         start_time = time.time()
 
         for frame_idx in range(total_frames):
-            if cancel_flag and cancel_flag.is_set():
-                print("❌ Rendering canceled.")
-                break
-
-            while suspend_flag and suspend_flag.is_set():
-                print("⏸ Rendering paused...")
-                time.sleep(0.5)
-
-            # Read frames
             ret1, original_frame = original_cap.read()
             ret2, depth_frame = depth_cap.read()
             if not ret1 or not ret2:
@@ -384,6 +335,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
                 progress.update_idletasks()
 
             if progress_label:
+                time_remaining_str = time.strftime("%M:%S", time.gmtime(remaining_time))
                 estimated_completion_time = datetime.now() + timedelta(seconds=remaining_time)
                 completion_time_str = estimated_completion_time.strftime("%I:%M %p")
 
@@ -403,7 +355,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
             depth_normalized = depth_filtered / 255.0  
 
-            # ✅ Ensure left and right frames are fresh copies
+            # ✅ Ensure top and bottom frames are fresh copies
             top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
 
             # ✅ Depth-based pixel shift logic
@@ -443,7 +395,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             ou_frame = format_3d_output(top_frame, bottom_frame, output_format.get())
 
             # ✅ Write frame using OpenCV VideoWriter
-            writer.write(ou_frame)
+            out.write(ou_frame)
 
             print(f"🖼 Frame {frame_idx + 1}/{total_frames} | Format: {output_format.get()} | Frame Size: {ou_frame.shape}")
 
@@ -453,21 +405,10 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             original_cap.release()
         if depth_cap.isOpened():
             depth_cap.release()
-        writer.release()  # ✅ Ensure the writer is closed properly
-
-        # ✅ Ensure progress bar reaches 100% if not canceled
-        if not cancel_flag.is_set():
-            progress["value"] = 100
-            progress_label.config(text="✅ Processing complete!")
-            progress.update_idletasks()
-            print("✅ Over-Under 3D video generated successfully.")
-        else:
-            progress_label.config(text="❌ Processing Canceled.")
-            progress["value"] = 0
-            progress.update_idletasks()
-            print("❌ Video processing was canceled by the user.")
+        out.release()  # ✅ Ensure the writer is closed properly
 
         print("🎬 Rendering process finalized. All resources cleaned up.")
+
         
 
 def start_processing_thread():
@@ -476,9 +417,6 @@ def start_processing_thread():
     if process_thread and process_thread.is_alive():  # ✅ Check if thread exists before calling .is_alive()
         messagebox.showwarning("Warning", "Processing is already running!")
         return
-
-    cancel_flag.clear()  # Reset cancel state
-    suspend_flag.clear()  # Ensure it's not paused
 
     process_thread = threading.Thread(target=process_video, daemon=True)
     process_thread.start()
@@ -531,10 +469,17 @@ def update_thumbnail(thumbnail_path):
     video_thumbnail_label.image = thumbnail_photo
 
 def select_output_video():
-    output_sbs_video_path.set(filedialog.asksaveasfilename(
+    output_path = filedialog.asksaveasfilename(
         defaultextension=".mp4",
         filetypes=[("MP4 files", "*.mp4"), ("MKV files", "*.mkv"), ("AVI files", "*.avi")]
-    ))
+    )
+    
+    if output_path:  # Ensure a valid output path is selected
+        output_sbs_video_path.set(output_path)
+        print(f"Output file set to: {output_path}")
+    else:
+        print("No output file selected.")
+
 
 def select_depth_map():
     depth_map_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
@@ -550,6 +495,15 @@ def process_video():
         messagebox.showerror("Error", "Please select input video, depth map, and output path.")
         return
 
+    output_path = output_sbs_video_path.get()
+    
+    # ✅ Delete existing output file to avoid corruption issues
+    if os.path.exists(output_path):
+        os.remove(output_path)
+        print(f"🗑 Deleted old output file: {output_path}")
+
+    print(f"Output path set to: {output_path}")
+
     cap = cv2.VideoCapture(input_video_path.get())
     if not cap.isOpened():
         messagebox.showerror("Error", "Failed to open input video!")
@@ -564,16 +518,10 @@ def process_video():
         messagebox.showerror("Error", "Invalid video file! Please select a valid input video.")
         return
 
-
-    # ✅ Run UI updates with `root.after()` properly
     root.after(0, lambda: progress_label.config(text="Processing... 0%"))
     root.after(0, lambda: progress.config(value=0))
 
-    def update_ui_progress(value, text):
-        root.after(0, lambda: progress_label.config(text=text))
-        root.after(0, lambda: progress.config(value=value))
-
-    # Call rendering function based on format
+    # ✅ Call the correct function based on output format
     if output_format.get() in ["Full-OU", "Half-OU"]:
         render_ou_3d(
             input_video_path.get(),
@@ -587,13 +535,10 @@ def process_video():
             mg_shift.get(),
             bg_shift.get(),
             sharpness_factor.get(),
-            delay_time.get(),
             progress=progress,
             progress_label=progress_label,
-            suspend_flag=suspend_flag,
-            cancel_flag=cancel_flag
         )
-    else:
+    elif output_format.get() in ["Full-SBS", "Half-SBS"]:
         render_sbs_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -606,40 +551,19 @@ def process_video():
             mg_shift.get(),
             bg_shift.get(),
             sharpness_factor.get(),
-            delay_time.get(),
             progress=progress,
             progress_label=progress_label,
-            suspend_flag=suspend_flag,
-            cancel_flag=cancel_flag
         )
 
-    # ✅ Ensure UI updates after processing is done
-    if not cancel_flag.is_set():
-        update_ui_progress(100, "✅ Processing Complete!")
-        print("✅ Processing complete.")
-    else:
-        update_ui_progress(0, "❌ Processing Canceled.")
-        print("❌ Processing canceled.")
-
-def suspend_processing():
-    """ Pauses the processing loop safely. """
-    if not suspend_flag.is_set():
-        suspend_flag.set()
-        print("⏸ Processing Suspended!")  # ✅ Only prints once
-
-def resume_processing():
-    """ Resumes the processing loop safely. """
-    if suspend_flag.is_set():
-        suspend_flag.clear()
-        print("▶ Processing Resumed!")  # ✅ Only prints once
+    # ✅ Final check: Ensure output file is not empty
+    if os.path.exists(output_path):
+        file_size = os.path.getsize(output_path)
+        if file_size == 0:
+            print(f"❌ Error: Output file {output_path} is empty! Check video writing process.")
+        else:
+            print(f"✅ Output file generated: {file_size / 1024 / 1024:.2f} MB")
 
 
-def cancel_processing():
-    """ Cancels processing completely. """
-    cancel_flag.set()
-    suspend_flag.clear()  # Ensure no accidental resume
-    print("❌ Processing canceled.")
-    
 # Define SETTINGS_FILE at the top of the script
 SETTINGS_FILE = "settings.json"
 
@@ -680,8 +604,6 @@ fg_shift = tk.DoubleVar(value=6.0)
 mg_shift = tk.DoubleVar(value=3.0)
 bg_shift = tk.DoubleVar(value=-4.0)
 sharpness_factor = tk.DoubleVar(value=0.2)
-blend_factor = tk.DoubleVar(value=0.6)
-delay_time = tk.DoubleVar(value=1/30)
 output_format = tk.StringVar(value="Half-SBS")
 
 # Dictionary of Common Aspect Ratios
@@ -705,8 +627,6 @@ def save_settings():
         "mg_shift": mg_shift.get(),
         "bg_shift": bg_shift.get(),
         "sharpness_factor": sharpness_factor.get(),
-        "blend_factor": blend_factor.get(),
-        "delay_time": delay_time.get(),
     }
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f)
@@ -720,15 +640,13 @@ def load_settings():
             mg_shift.set(settings.get("mg_shift", 3.0))
             bg_shift.set(settings.get("bg_shift", -4.0))
             sharpness_factor.set(settings.get("sharpness_factor", 0.2))
-            blend_factor.set(settings.get("blend_factor", 0.6))
-            delay_time.set(settings.get("delay_time", 1/30))
 
 # Ensure SETTINGS_FILE is defined before calling load_settings()
 load_settings()
 
 
 # Codec options
-codec_options = ["mp4v", "H264", "XVID", "DIVX"]
+codec_options = ["mp4v", "XVID", "DIVX"]
 
 # Layout frames
 top_widgets_frame = tk.LabelFrame(content_frame, text="Video Info", padx=10, pady=10)
@@ -772,20 +690,14 @@ reset_button.grid(row=0, column=4, columnspan=2, pady=10)
 tk.Label(options_frame, text="Divergence Shift").grid(row=1, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift).grid(row=1, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
-tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor).grid(row=1, column=3, sticky="ew")
-
 tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=8, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift).grid(row=2, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Blend Factor").grid(row=2, column=2, sticky="w")
-tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor).grid(row=2, column=3, sticky="ew")
+tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
+tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor).grid(row=1, column=3, sticky="ew")
 
 tk.Label(options_frame, text="Convergence Shift").grid(row=3, column=0, sticky="w")
 tk.Scale(options_frame, from_=-5, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift).grid(row=3, column=1, sticky="ew")
-
-tk.Label(options_frame, text="Delay Time (seconds)").grid(row=3, column=2, sticky="w")
-tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time).grid(row=3, column=3, sticky="ew")
 
 # File Selection
 tk.Button(content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
@@ -811,15 +723,6 @@ option_menu.pack(side="left", padx=5)
 # Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(button_frame, text="Generate 3D Video", command=start_processing_thread, bg="green", fg="white")
 start_button.pack(side="left", padx=5)
-
-suspend_button = tk.Button(button_frame, text="Suspend", command=suspend_processing, bg="orange", fg="black")
-suspend_button.pack(side="left", padx=5)
-
-resume_button = tk.Button(button_frame, text="Resume", command=resume_processing, bg="blue", fg="white")
-resume_button.pack(side="left", padx=5)
-
-cancel_button = tk.Button(button_frame, text="Cancel", command=cancel_processing, bg="red", fg="white")
-cancel_button.pack(side="left", padx=5)
 
 # Load the GitHub icon from assets
 github_icon_path = resource_path("assets/github_Logo.png")
