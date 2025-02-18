@@ -32,34 +32,60 @@ def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
     height, width = left_frame.shape[:2]
 
-    if output_format == "Full-SBS":
-        return np.hstack((left_frame, right_frame))  # ✅ 3840x1608
+    if output_format == "Red-Cyan Anaglyph":
+        return generate_anaglyph_3d(left_frame, right_frame)  # 🔴🔵
+    
+    elif output_format == "Full-SBS":
+        # ✅ Check if frames are already the correct width, otherwise fix them
+        expected_width = width * 2
+        if left_frame.shape[1] != width or right_frame.shape[1] != width:
+            print("🔄 Resizing left and right frames to match Full-SBS format...")
+            left_frame = cv2.resize(left_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            right_frame = cv2.resize(right_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+
+        sbs_frame = np.hstack((left_frame, right_frame))  # Final size should be 7680x1608
+        print(f"✅ Full-SBS Frame Created: {sbs_frame.shape}")
+        return sbs_frame
 
     elif output_format == "Half-SBS":
+        # ✅ Half-SBS = 960x1080 per eye (for passive 3D TVs)
         half_width = width // 2
-        left_resized = cv2.resize(left_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
-        return np.hstack((left_resized, right_resized))  # ✅ Correct output: 1920x1608
+        left_resized = cv2.resize(left_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
+
+        return np.hstack((left_resized, right_resized))  # 1920x1080
 
     elif output_format == "Full-OU":
-        return np.vstack((left_frame, right_frame))  # ✅ 3840x3216
+        if left_frame.shape != right_frame.shape:
+            print(f"⚠ Mismatch Detected! Resizing frames for Full-OU... {left_frame.shape} vs {right_frame.shape}")
+            left_frame = cv2.resize(left_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            right_frame = cv2.resize(right_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        
+        ou_frame = np.vstack((left_frame, right_frame))  # Final size should be 3840x3216
+        print(f"✅ Full-OU Frame Created: {ou_frame.shape}")
+        return ou_frame
 
     elif output_format == "Half-OU":
-        # ✅ Correct Half-OU: 3840x804 per eye → 3840x1608 final output
+        # ✅ Half-OU = 1920x540 per eye (for passive 3D TVs)
         target_height = height // 2
-        left_resized = cv2.resize(left_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (width, target_height), interpolation=cv2.INTER_LANCZOS4)
+        left_resized = cv2.resize(left_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
 
-        return np.vstack((left_resized, right_resized))  # ✅ Correct output size: 3840x1608
+        return np.vstack((left_resized, right_resized))  # 1920x1080
 
-    elif output_format == "Red-Cyan Anaglyph":
-        return generate_anaglyph_3d(left_frame, right_frame)  
+    elif output_format == "VR":
+        # ✅ VR Headsets require per-eye aspect ratio correction (e.g., Oculus)
+        vr_width = 1440  # Per-eye resolution for Oculus Quest 2
+        vr_height = 1600  # Adjusted height
+        left_resized = cv2.resize(left_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (vr_width, vr_height), interpolation=cv2.INTER_LANCZOS4)
+
+        return np.hstack((left_resized, right_resized))  # 2880x1600
 
     else:
-        print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to Full-SBS.")
-        return np.hstack((left_frame, right_frame))  # ✅ Default to Full-SBS
-
- 
+        print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
+        return np.hstack((left_frame, right_frame))  # Default to Full-SBS
+        
 def generate_anaglyph_3d(left_frame, right_frame):
     """Creates a properly balanced True Red-Cyan Anaglyph 3D effect."""
 
@@ -85,22 +111,20 @@ def generate_anaglyph_3d(left_frame, right_frame):
     return anaglyph
 
 
-
 def apply_aspect_ratio_crop(frame, aspect_ratio):
     """Crops the frame to the selected aspect ratio while maintaining width."""
     height, width = frame.shape[:2]
     target_height = int(width / aspect_ratio)  # Calculate new height for the given aspect ratio
 
-    # If the target height is already within the current height, no cropping needed
     if target_height >= height:
-        return frame
+        return frame  # No cropping needed
 
-    # Calculate cropping margins (center crop)
     crop_y = (height - target_height) // 2
     cropped_frame = frame[crop_y:crop_y + target_height, :]
 
     print(f"✅ Aspect Ratio Applied | {width}x{target_height} ({aspect_ratio})")
-    return cropped_frame
+    return cv2.resize(cropped_frame, (width, target_height), interpolation=cv2.INTER_AREA)  # Ensure resizing is applied correctly
+
 
 # Initialize a history buffer to track black bar detections
 black_bar_history = deque(maxlen=10)  # Stores the last 10 frames
@@ -163,7 +187,9 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
 
     # ✅ Ensure a valid codec is used
     codec = "H264" if output_video.endswith(".mp4") else "XVID"
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
+    # ✅ Dynamically adjust width for Full-SBS
+    output_width = width * 2 if output_format.get() == "Full-SBS" else width
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (output_width, height))
 
     if not out.isOpened():
         print(f"❌ Error: Failed to initialize VideoWriter for {output_video}")
@@ -182,6 +208,7 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_time = time.time()
     frames_written = 0  # ✅ Track the number of frames successfully written
+
 
     for frame_idx in range(total_frames):
         ret1, original_frame = original_cap.read()
@@ -238,16 +265,23 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         # ✅ Format the final 3D output frame
         sbs_frame = format_3d_output(left_frame, right_frame, output_format.get())
 
-        # ✅ Ensure the frame matches expected size
+        # ✅ Dynamically check expected size based on output format
+        expected_width = width * 2 if output_format.get() == "Full-SBS" else width  # 7680 for Full-SBS
+        expected_height = height  # Height stays the same
+
         h, w = sbs_frame.shape[:2]
-        if (w, h) != (width, height):
-            print(f"⚠ Warning: Frame size mismatch! Expected: {width}x{height}, Got: {w}x{h}")
-            sbs_frame = cv2.resize(sbs_frame, (width, height), interpolation=cv2.INTER_AREA)
+        if (w, h) != (expected_width, expected_height):
+            print(f"⚠ Warning: Frame size mismatch! Expected: {expected_width}x{expected_height}, Got: {w}x{h}")
+            sbs_frame = cv2.resize(sbs_frame, (expected_width, expected_height), interpolation=cv2.INTER_AREA)
 
         # ✅ Write frame and track success
         try:
             out.write(sbs_frame)
             frames_written += 1
+
+            # ✅ Update Progress Bar & ETA
+            update_progress(frame_idx, total_frames, start_time, progress, progress_label)
+
             if frame_idx % 100 == 0:  # Print progress every 100 frames
                 print(f"🖼 Processed {frame_idx}/{total_frames} frames ({(frame_idx/total_frames)*100:.2f}%).")
         except Exception as e:
@@ -274,8 +308,12 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             print(f"✅ Output file size: {file_size / 1024 / 1024:.2f} MB")
 
     
-def update_progress_ui(frame_idx, total_frames, start_time):
-    """ Updates the progress bar, FPS display, and estimated time remaining dynamically. """
+def update_progress(frame_idx, total_frames, start_time, progress=None, progress_label=None):
+    """ Updates the progress bar and ETA dynamically for both SBS & OU renders """
+
+    if progress is None or progress_label is None:
+        return  # ✅ Prevents crash if progress bar is not initialized
+
     elapsed_time = time.time() - start_time
     if frame_idx == 0 or elapsed_time == 0:
         return  # ✅ Prevents division by zero on the first frame
@@ -289,26 +327,36 @@ def update_progress_ui(frame_idx, total_frames, start_time):
 
     progress_percent = (frame_idx / total_frames) * 100
 
-    # ✅ Use `root.after()` to update UI safely in a background thread
-    root.after(0, lambda: progress_label.config(
-        text=f"Processing: {progress_percent:.2f}% | FPS: {fps_current:.2f} | ETA: {eta_str}"
-    ))
-    root.after(0, lambda: progress.config(value=progress_percent))
+    # ✅ Ensure UI updates are safe in a background thread
+    try:
+        root.after(0, lambda: progress.config(value=progress_percent) if progress else None)
+        root.after(0, lambda: progress_label.config(
+            text=f"Processing: {progress_percent:.2f}% | FPS: {fps_current:.2f} | ETA: {eta_str}"
+        ) if progress_label else None)
+    except Exception as e:
+        print(f"⚠ Tkinter update error: {e}")  # ✅ Prevents full crash if UI update fails
 
     
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, 
-                 fg_shift, mg_shift, bg_shift, progress=None, progress_label=None):
+                 fg_shift, mg_shift, bg_shift, output_format, progress=None, progress_label=None):
 
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, height))
-    if not writer.isOpened():
-        print("Error: VideoWriter failed to open.")
+    # ✅ Ensure a valid codec is used
+    codec = "H264" if output_video.endswith(".mp4") else "XVID"
+
+    # ✅ Ensure Full-OU has correct height
+    output_height = height * 2 if output_format == "Full-OU" else height
+
+    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, output_height))
+
+    if not out.isOpened():
+        print("❌ Error: VideoWriter failed to open.")
         return
-
 
     # Open video sources
     original_cap = cv2.VideoCapture(input_video)
     depth_cap = cv2.VideoCapture(depth_video)
 
+    frames_written = 0  # ✅ Initialize frame counter
 
     try:
         total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -320,26 +368,12 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             if not ret1 or not ret2:
                 break
 
-            elapsed_time = time.time() - start_time
-            fps_current = frame_idx / elapsed_time if elapsed_time > 0 else 0
-            remaining_time = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
+            if progress and progress_label:
+                update_progress(frame_idx, total_frames, start_time, progress, progress_label)
+            else:
+                print(f"⚠ Warning: Progress bar or label is missing. Skipping progress update.")
 
-            # ✅ Update progress
-            progress_percentage = (frame_idx / total_frames) * 100
-            if progress:
-                progress["value"] = progress_percentage
-                progress.update_idletasks()
-
-            if progress_label:
-                time_remaining_str = time.strftime("%M:%S", time.gmtime(remaining_time))
-                estimated_completion_time = datetime.now() + timedelta(seconds=remaining_time)
-                completion_time_str = estimated_completion_time.strftime("%I:%M %p")
-
-                progress_label.config(
-                    text=f"Processing: {progress_percentage:.2f}% | FPS: {fps_current:.2f} | Time Left: {time_remaining_str} | ETA: {completion_time_str}"
-                )
-
-            # Remove black bars
+            # ✅ Remove black bars
             cropped_frame, x, y, w, h = remove_black_bars(original_frame)
             cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
             depth_frame_resized = cv2.resize(depth_frame, (width, height), interpolation=cv2.INTER_AREA)
@@ -351,7 +385,7 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
             depth_normalized = depth_filtered / 255.0  
 
-            # ✅ Ensure top and bottom frames are fresh copies
+            # ✅ Top and bottom frames
             top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
 
             # ✅ Depth-based pixel shift logic
@@ -375,37 +409,44 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
                 top_frame[y] = cv2.remap(cropped_resized_frame, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
                 bottom_frame[y] = cv2.remap(cropped_resized_frame, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
 
-            # Apply Aspect Ratio Crop Before Resizing
-            if selected_aspect_ratio.get() != "Default (16:9)":
-                aspect_ratio_value = aspect_ratios[selected_aspect_ratio.get()]
-                top_frame = apply_aspect_ratio_crop(top_frame, aspect_ratio_value)
-                bottom_frame = apply_aspect_ratio_crop(bottom_frame, aspect_ratio_value)
+            # ✅ Format into OU frame
+            ou_frame = np.vstack((top_frame, bottom_frame))
+            print(f"✅ Full-OU Frame Created: {ou_frame.shape}")  # Debugging
 
-            # ✅ Resize for Half-OU
-            if output_format.get() == "Half-OU":
-                half_height = height // 2
-                top_frame = cv2.resize(top_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
-                bottom_frame = cv2.resize(bottom_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+            # ✅ Ensure frame size is correct before writing
+            expected_height = height * 2 if output_format == "Full-OU" else height
+            h, w = ou_frame.shape[:2]
+            if (w, h) != (width, expected_height):
+                print(f"⚠ Warning: Frame size mismatch! Expected: {width}x{expected_height}, Got: {w}x{h}")
+                ou_frame = cv2.resize(ou_frame, (width, expected_height), interpolation=cv2.INTER_AREA)
 
-            # ✅ Format the 3D output properly
-            ou_frame = format_3d_output(top_frame, bottom_frame, output_format.get())
+            # ✅ Write frame
+            if out.isOpened():
+                out.write(ou_frame)
+                frames_written += 1
+            else:
+                print("❌ Error: VideoWriter is closed unexpectedly!")
 
-            # ✅ Write frame using OpenCV VideoWriter
-            out.write(ou_frame)
-
-            print(f"🖼 Frame {frame_idx + 1}/{total_frames} | Format: {output_format.get()} | Frame Size: {ou_frame.shape}")
+            if frame_idx % 100 == 0:
+                print(f"🖼 Processed {frame_idx}/{total_frames} frames ({(frame_idx/total_frames)*100:.2f}%).")
 
     finally:
-        # ✅ Release video resources safely
-        if original_cap.isOpened():
-            original_cap.release()
-        if depth_cap.isOpened():
-            depth_cap.release()
-        out.release()  # ✅ Ensure the writer is closed properly
+        original_cap.release()
+        depth_cap.release()
+        out.release()
 
-        print("🎬 Rendering process finalized. All resources cleaned up.")
+        if frames_written == 0:
+            print("❌ No frames were written! Check frame processing.")
+        else:
+            print(f"✅ Successfully wrote {frames_written} frames to {output_video}")
 
-        
+        # ✅ Check final output file size
+        if os.path.exists(output_video):
+            file_size = os.path.getsize(output_video)
+            if file_size == 0:
+                print(f"❌ Error: Output file {output_video} is empty! Check encoding settings.")
+            else:
+                print(f"✅ Output file size: {file_size / 1024 / 1024:.2f} MB")
 
 def start_processing_thread():
     global process_thread  # ✅ Ensure function modifies global process_thread
@@ -530,10 +571,11 @@ def process_video():
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
-            sharpness_factor.get(),
+            output_format.get(),  # 🔥 Fix: Now passing the output format!
             progress=progress,
-            progress_label=progress_label,
+            progress_label=progress_label
         )
+
     elif output_format.get() in ["Full-SBS", "Half-SBS"]:
         render_sbs_3d(
             input_video_path.get(),
@@ -548,7 +590,7 @@ def process_video():
             bg_shift.get(),
             sharpness_factor.get(),
             progress=progress,
-            progress_label=progress_label,
+            progress_label=progress_label
         )
 
     # ✅ Final check: Ensure output file is not empty
