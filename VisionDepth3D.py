@@ -31,10 +31,13 @@ def resource_path(relative_path):
 def format_3d_output(left_frame, right_frame, output_format):
     """Formats the 3D output according to the user's selection."""
     height, width = left_frame.shape[:2]
-
-    if output_format == "Red-Cyan Anaglyph":
-        return generate_anaglyph_3d(left_frame, right_frame)  # 🔴🔵
     
+    if output_format == "Red-Cyan Anaglyph":
+        print("🎨 Generating Red-Cyan Anaglyph 3D frames...")
+        final_frame = generate_anaglyph_3d(left_frame, right_frame)
+        return final_frame  # ✅ Return the generated anaglyph frame
+
+
     elif output_format == "Full-SBS":
         # ✅ Check if frames are already the correct width, otherwise fix them
         expected_width = width * 2
@@ -48,12 +51,21 @@ def format_3d_output(left_frame, right_frame, output_format):
         return sbs_frame
 
     elif output_format == "Half-SBS":
-        # ✅ Half-SBS = 960x1080 per eye (for passive 3D TVs)
-        half_width = width // 2
-        left_resized = cv2.resize(left_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (960, height), interpolation=cv2.INTER_LANCZOS4)
+        # ✅ Apply selected aspect ratio before resizing
+        aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
+        left_frame = apply_aspect_ratio_crop(left_frame, aspect_ratio_value)
+        right_frame = apply_aspect_ratio_crop(right_frame, aspect_ratio_value)
 
-        return np.hstack((left_resized, right_resized))  # 1920x1080
+        # ✅ Resize for Half-SBS: 960xHeight per eye (1920x1080 total for 1080p)
+        half_width = left_frame.shape[1] // 2
+        height = left_frame.shape[0]
+        left_resized = cv2.resize(left_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (half_width, height), interpolation=cv2.INTER_LANCZOS4)
+
+        sbs_half_frame = np.hstack((left_resized, right_resized))
+        print(f"✅ Half-SBS Frame Created: {sbs_half_frame.shape}")
+        return sbs_half_frame
+
 
     elif output_format == "Full-OU":
         if left_frame.shape != right_frame.shape:
@@ -66,12 +78,22 @@ def format_3d_output(left_frame, right_frame, output_format):
         return ou_frame
 
     elif output_format == "Half-OU":
-        # ✅ Half-OU = 1920x540 per eye (for passive 3D TVs)
-        target_height = height // 2
-        left_resized = cv2.resize(left_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
-        right_resized = cv2.resize(right_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
+        # ✅ Apply selected aspect ratio before resizing
+        aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
+        top_frame = apply_aspect_ratio_crop(top_frame, aspect_ratio_value)
+        bottom_frame = apply_aspect_ratio_crop(bottom_frame, aspect_ratio_value)
 
-        return np.vstack((left_resized, right_resized))  # 1920x1080
+        # ✅ Resize for Half-OU: Height per eye halved (1920x540 total for 1080p)
+        half_height = top_frame.shape[0] // 2
+        width = top_frame.shape[1]
+
+        top_resized = cv2.resize(top_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+        bottom_resized = cv2.resize(bottom_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+
+        ou_half_frame = np.vstack((top_resized, bottom_resized))
+        print(f"✅ Half-OU Frame Created: {ou_half_frame.shape}")
+        return ou_half_frame
+
 
     elif output_format == "VR":
         # ✅ VR Headsets require per-eye aspect ratio correction (e.g., Oculus)
@@ -110,7 +132,6 @@ def generate_anaglyph_3d(left_frame, right_frame):
 
     return anaglyph
 
-
 def apply_aspect_ratio_crop(frame, aspect_ratio):
     """Crops the frame to the selected aspect ratio while maintaining width."""
     height, width = frame.shape[:2]
@@ -130,36 +151,25 @@ def apply_aspect_ratio_crop(frame, aspect_ratio):
 black_bar_history = deque(maxlen=10)  # Stores the last 10 frames
 history_threshold = 5  # Require at least 5 consecutive detections before cropping
 
-def remove_black_bars(frame, min_area_ratio=0.05):
-    global black_bar_history
+def remove_black_bars(frame, reference_crop=None):
+    """Removes black bars from the frame consistently using the first frame's crop values."""
+    if reference_crop is not None:
+        x, y, w, h = reference_crop
+        return frame[y:y+h, x:x+w], reference_crop
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-    
+    _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if len(contours) == 0:
-        black_bar_history.append(False)
-        return frame, 0, 0, frame.shape[1], frame.shape[0]
 
-    x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
-    
-    frame_area = frame.shape[0] * frame.shape[1]
-    cropped_area = w * h
+    if not contours:
+        print("⚠ No black bars detected. Returning original frame.")
+        return frame, (0, 0, frame.shape[1], frame.shape[0])
 
-    # Only consider it a black bar if the non-black area is above a certain size
-    if cropped_area < frame_area * min_area_ratio:
-        black_bar_history.append(False)
-        return frame, 0, 0, frame.shape[1], frame.shape[0]
+    # ✅ Largest contour is assumed to be the actual frame
+    c = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(c)
+    return frame[y:y+h, x:x+w], (x, y, w, h)
 
-    # Add detection to history
-    black_bar_history.append(True)
-
-    # Only crop if black bars have been detected for several frames
-    if sum(black_bar_history) >= history_threshold:
-        return frame[y:y+h, x:x+w], x, y, w, h
-    else:
-        return frame, 0, 0, frame.shape[1], frame.shape[0]
 
 def remove_white_edges(image):
     mask = (image[:, :, 0] > 240) & (image[:, :, 1] > 240) & (image[:, :, 2] > 240)
@@ -178,41 +188,57 @@ def calculate_depth_intensity(depth_map):
     
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, 
-                  fg_shift, mg_shift, bg_shift, sharpness_factor, progress=None, progress_label=None):
+                  fg_shift, mg_shift, bg_shift, sharpness_factor, output_format, aspect_ratio_value, 
+                  progress=None, progress_label=None):
 
     # ✅ Delete existing file to prevent corruption issues
     if os.path.exists(output_video):
         os.remove(output_video)
         print(f"🗑 Deleted existing file: {output_video}")
 
-    # ✅ Ensure a valid codec is used
-    codec = "H264" if output_video.endswith(".mp4") else "XVID"
-    # ✅ Dynamically adjust width for Full-SBS
-    output_width = width * 2 if output_format.get() == "Full-SBS" else width
+    # ✅ Correct Codec Selection
+    codec = "mp4v" if output_video.endswith(".mp4") else "XVID"
+
+    # ✅ Open video sources
+    original_cap = cv2.VideoCapture(input_video)
+    depth_cap = cv2.VideoCapture(depth_video)
+    if not original_cap.isOpened() or not depth_cap.isOpened():
+        print("❌ Error: Unable to open input or depth video.")
+        return
+
+    # ✅ Read the first frame to determine final height after cropping
+    ret, first_frame = original_cap.read()
+    if not ret:
+        print("❌ Error: Unable to read the first frame.")
+        return
+
+    # ✅ Aspect ratio crop to determine final height
+    aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
+    cropped_frame = apply_aspect_ratio_crop(first_frame, aspect_ratio_value)
+    height = cropped_frame.shape[0]  # Update height based on cropped frame
+
+    # ✅ Initialize VideoWriter with correct height (before loop)
+    output_width = width if output_format == "Half-SBS" else width * 2
     out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (output_width, height))
 
     if not out.isOpened():
         print(f"❌ Error: Failed to initialize VideoWriter for {output_video}")
         return
     else:
-        print(f"✅ VideoWriter initialized successfully for {output_video}")
-
-    # Open video sources
-    original_cap = cv2.VideoCapture(input_video)
-    depth_cap = cv2.VideoCapture(depth_video)
-
-    if not original_cap.isOpened() or not depth_cap.isOpened():
-        print("❌ Error: Unable to open input or depth video.")
-        return
-
+        print(f"✅ VideoWriter initialized successfully for {output_video} | {output_width}x{height}")
+    
+    original_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # ✅ Reset capture to start rendering from the first frame
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_time = time.time()
     frames_written = 0  # ✅ Track the number of frames successfully written
-
+    reference_crop = None  # ✅ Properly initialized here
+    last_valid_depth = None
 
     for frame_idx in range(total_frames):
         ret1, original_frame = original_cap.read()
         ret2, depth_frame = depth_cap.read()
+        if ret2:
+            last_valid_depth = depth_frame.copy()  # ✅ Save the last valid depth frame
 
         # ✅ Skip bad frames instead of breaking the loop
         if not ret1:
@@ -221,32 +247,40 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         if not ret2:
             print(f"⚠ Warning: Using last good depth frame for frame {frame_idx}.")
             depth_frame = last_valid_depth.copy()  # ✅ Use the last valid depth frame
+        
+        # ✅ Consistent black bar removal - handled once & reused
+        if reference_crop is None:
+            original_frame, reference_crop = remove_black_bars(original_frame)
+        else:
+            x, y, w, h = reference_crop
+            original_frame = original_frame[y:y+h, x:x+w]
 
-        cropped_frame, x, y, w, h = remove_black_bars(original_frame)
-        cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
+        frame_resized = cv2.resize(original_frame, (width, height), interpolation=cv2.INTER_AREA)
         depth_frame_resized = cv2.resize(depth_frame, (width, height))
+        
+        left_frame, right_frame = frame_resized.copy(), frame_resized.copy()
 
-        left_frame, right_frame = cropped_resized_frame, cropped_resized_frame
-
-        # ✅ Convert depth frame to grayscale and normalize
+        # ✅ Depth normalization
         depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
         depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-        depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
-        depth_normalized = depth_filtered / 255.0  # Normalize to range [0,1]
-
-        left_frame, right_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
+        depth_normalized = cv2.GaussianBlur(depth_normalized, (9, 9), 0)
+        depth_normalized = depth_filtered / 255.0 
 
         # ✅ Pixel shifting logic for left and right eye views
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
 
         for y in range(height):
-            # Compute per-pixel shift values based on depth
-            shift_vals_fg = np.clip(-depth_normalized[y, :] * fg_shift, -10, 10).astype(np.float32)
-            shift_vals_mg = np.clip(-depth_normalized[y, :] * mg_shift, -5, 5).astype(np.float32)
-            shift_vals_bg = np.clip(depth_normalized[y, :] * bg_shift, -2, 2).astype(np.float32)
+            fg_shift_val = fg_shift  # Foreground shift (e.g. 12)
+            mg_shift_val = mg_shift  # Midground shift (e.g. 6)
+            bg_shift_val = bg_shift  # Background shift (e.g. -2)
 
-            # Compute pixel shift mappings
+            # **Original depth-based mapping**
+            shift_vals_fg = (-depth_normalized[y, :] * fg_shift_val).astype(np.float32)
+            shift_vals_mg = (-depth_normalized[y, :] * mg_shift_val).astype(np.float32)
+            shift_vals_bg = (depth_normalized[y, :] * bg_shift_val).astype(np.float32)
+
+            # Final x-mapping
             new_x_left = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
             new_x_right = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
 
@@ -254,19 +288,19 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
             map_x_left = new_x_left.reshape(1, -1).astype(np.float32)
             map_x_right = new_x_right.reshape(1, -1).astype(np.float32)
 
-            # Apply depth-based remapping
-            left_frame[y] = cv2.remap(cropped_resized_frame, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-            right_frame[y] = cv2.remap(cropped_resized_frame, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+            # ✅ Apply depth-based remapping (FIXED VARIABLE NAME)
+            left_frame[y] = cv2.remap(frame_resized, map_x_left, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+            right_frame[y] = cv2.remap(frame_resized, map_x_right, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
 
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
         left_sharp = cv2.filter2D(left_frame, -1, sharpen_kernel)
-        right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)
-        
+        right_sharp = cv2.filter2D(right_frame, -1, sharpen_kernel)       
+                
         # ✅ Format the final 3D output frame
-        sbs_frame = format_3d_output(left_frame, right_frame, output_format.get())
+        sbs_frame = format_3d_output(left_sharp, right_sharp, output_format)
 
         # ✅ Dynamically check expected size based on output format
-        expected_width = width * 2 if output_format.get() == "Full-SBS" else width  # 7680 for Full-SBS
+        expected_width = width * 2 if output_format == "Full-SBS" else width  # 7680 for Full-SBS
         expected_height = height  # Height stays the same
 
         h, w = sbs_frame.shape[:2]
@@ -338,115 +372,158 @@ def update_progress(frame_idx, total_frames, start_time, progress=None, progress
 
     
 def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, height, 
-                 fg_shift, mg_shift, bg_shift, output_format, progress=None, progress_label=None):
+                  fg_shift, mg_shift, bg_shift, sharpness_factor, output_format, aspect_ratio_value, 
+                  progress=None, progress_label=None):
 
-    # ✅ Ensure a valid codec is used
-    codec = "H264" if output_video.endswith(".mp4") else "XVID"
+    # ✅ Delete existing file to prevent corruption issues
+    if os.path.exists(output_video):
+        os.remove(output_video)
+        print(f"🗑 Deleted existing file: {output_video}")
 
-    # ✅ Ensure Full-OU has correct height
-    output_height = height * 2 if output_format == "Full-OU" else height
+    # ✅ Correct Codec Selection
+    codec = "mp4v" if output_video.endswith(".mp4") else "XVID"
 
+    # ✅ Open video sources
+    original_cap = cv2.VideoCapture(input_video)
+    depth_cap = cv2.VideoCapture(depth_video)
+    if not original_cap.isOpened() or not depth_cap.isOpened():
+        print("❌ Error: Unable to open input or depth video.")
+        return
+
+    # ✅ Read the first frame to determine final height after cropping
+    ret, first_frame = original_cap.read()
+    if not ret:
+        print("❌ Error: Unable to read the first frame.")
+        return
+
+    # ✅ Aspect ratio crop to determine final height
+    aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
+    cropped_frame = apply_aspect_ratio_crop(first_frame, aspect_ratio_value)
+    height = cropped_frame.shape[0]  # Update height based on cropped frame
+
+    # ✅ Initialize VideoWriter with correct height (before loop)
+    output_height = height * 2 if output_format == "Full-ou" else height
     out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, output_height))
 
     if not out.isOpened():
-        print("❌ Error: VideoWriter failed to open.")
+        print(f"❌ Error: Failed to initialize VideoWriter for {output_video}")
         return
+    else:
+        print(f"✅ VideoWriter initialized successfully for {output_video} | {width}x{output_height}")
+    
+    original_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # ✅ Reset capture to start rendering from the first frame
+    total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    start_time = time.time()
+    frames_written = 0  # ✅ Track the number of frames successfully written
+    reference_crop = None  # ✅ Properly initialized here
+    last_valid_depth = None
 
-    # Open video sources
-    original_cap = cv2.VideoCapture(input_video)
-    depth_cap = cv2.VideoCapture(depth_video)
+    for frame_idx in range(total_frames):
+        ret1, original_frame = original_cap.read()
+        ret2, depth_frame = depth_cap.read()
+        if ret2:
+            last_valid_depth = depth_frame.copy()  # ✅ Save the last valid depth frame
 
-    frames_written = 0  # ✅ Initialize frame counter
-
-    try:
-        total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start_time = time.time()
-
-        for frame_idx in range(total_frames):
-            ret1, original_frame = original_cap.read()
-            ret2, depth_frame = depth_cap.read()
-            if not ret1 or not ret2:
-                break
-
-            if progress and progress_label:
-                update_progress(frame_idx, total_frames, start_time, progress, progress_label)
-            else:
-                print(f"⚠ Warning: Progress bar or label is missing. Skipping progress update.")
-
-            # ✅ Remove black bars
-            cropped_frame, x, y, w, h = remove_black_bars(original_frame)
-            cropped_resized_frame = cv2.resize(cropped_frame, (width, height), interpolation=cv2.INTER_AREA)
-            depth_frame_resized = cv2.resize(depth_frame, (width, height), interpolation=cv2.INTER_AREA)
-
-            # ✅ Process Depth frame
-            depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
-            depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
-            depth_normalized = cv2.GaussianBlur(depth_normalized, (5, 5), 0)
-            depth_normalized = depth_filtered / 255.0  
-
-            # ✅ Top and bottom frames
-            top_frame, bottom_frame = cropped_resized_frame.copy(), cropped_resized_frame.copy()
-
-            # ✅ Depth-based pixel shift logic
-            map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
-
-            for y in range(height):
-                # Compute pixel shift values based on depth
-                shift_vals_fg = np.clip(-depth_normalized[y, :] * fg_shift, -10, 10).astype(np.float32)
-                shift_vals_mg = np.clip(-depth_normalized[y, :] * mg_shift, -5, 5).astype(np.float32)
-                shift_vals_bg = np.clip(depth_normalized[y, :] * bg_shift, -2, 2).astype(np.float32)
-
-                # Final x-mapping for remapping
-                new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
-                new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
-
-                # Convert mappings to proper format
-                map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
-                map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
-
-                # Apply depth-based remapping
-                top_frame[y] = cv2.remap(cropped_resized_frame, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-                bottom_frame[y] = cv2.remap(cropped_resized_frame, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
-
-            # ✅ Format into OU frame
-            ou_frame = np.vstack((top_frame, bottom_frame))
-            print(f"✅ Full-OU Frame Created: {ou_frame.shape}")  # Debugging
-
-            # ✅ Ensure frame size is correct before writing
-            expected_height = height * 2 if output_format == "Full-OU" else height
-            h, w = ou_frame.shape[:2]
-            if (w, h) != (width, expected_height):
-                print(f"⚠ Warning: Frame size mismatch! Expected: {width}x{expected_height}, Got: {w}x{h}")
-                ou_frame = cv2.resize(ou_frame, (width, expected_height), interpolation=cv2.INTER_AREA)
-
-            # ✅ Write frame
-            if out.isOpened():
-                out.write(ou_frame)
-                frames_written += 1
-            else:
-                print("❌ Error: VideoWriter is closed unexpectedly!")
-
-            if frame_idx % 100 == 0:
-                print(f"🖼 Processed {frame_idx}/{total_frames} frames ({(frame_idx/total_frames)*100:.2f}%).")
-
-    finally:
-        original_cap.release()
-        depth_cap.release()
-        out.release()
-
-        if frames_written == 0:
-            print("❌ No frames were written! Check frame processing.")
+        # ✅ Skip bad frames instead of breaking the loop
+        if not ret1:
+            print(f"⚠ Warning: Skipping frame {frame_idx} (original video issue).")
+            continue
+        if not ret2:
+            print(f"⚠ Warning: Using last good depth frame for frame {frame_idx}.")
+            depth_frame = last_valid_depth.copy()  # ✅ Use the last valid depth frame
+        
+        # ✅ Consistent black bar removal - handled once & reused
+        if reference_crop is None:
+            original_frame, reference_crop = remove_black_bars(original_frame)
         else:
-            print(f"✅ Successfully wrote {frames_written} frames to {output_video}")
+            x, y, w, h = reference_crop
+            original_frame = original_frame[y:y+h, x:x+w]
 
-        # ✅ Check final output file size
-        if os.path.exists(output_video):
-            file_size = os.path.getsize(output_video)
-            if file_size == 0:
-                print(f"❌ Error: Output file {output_video} is empty! Check encoding settings.")
-            else:
-                print(f"✅ Output file size: {file_size / 1024 / 1024:.2f} MB")
+        frame_resized = cv2.resize(original_frame, (width, height), interpolation=cv2.INTER_AREA)
+        depth_frame_resized = cv2.resize(depth_frame, (width, height))
+        
+        top_frame, bottom_frame = frame_resized.copy(), frame_resized.copy()
+
+        # ✅ Depth normalization
+        depth_map_gray = cv2.cvtColor(depth_frame_resized, cv2.COLOR_BGR2GRAY)
+        depth_normalized = cv2.normalize(depth_map_gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        depth_filtered = cv2.bilateralFilter(depth_normalized, d=5, sigmaColor=50, sigmaSpace=50)
+        depth_normalized = cv2.GaussianBlur(depth_normalized, (9, 9), 0)
+        depth_normalized = depth_filtered / 255.0 
+
+        # ✅ Pixel shifting logic for left and right eye views
+        map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
+
+        for y in range(height):
+            fg_shift_val = fg_shift  # Foreground shift (e.g. 12)
+            mg_shift_val = mg_shift  # Midground shift (e.g. 6)
+            bg_shift_val = bg_shift  # Background shift (e.g. -2)
+
+            # **Original depth-based mapping**
+            shift_vals_fg = (-depth_normalized[y, :] * fg_shift_val).astype(np.float32)
+            shift_vals_mg = (-depth_normalized[y, :] * mg_shift_val).astype(np.float32)
+            shift_vals_bg = (depth_normalized[y, :] * bg_shift_val).astype(np.float32)
+
+            # Final x-mapping
+            new_x_top = np.clip(np.arange(width) + shift_vals_fg + shift_vals_mg + shift_vals_bg, 0, width - 1)
+            new_x_bottom = np.clip(np.arange(width) - shift_vals_fg - shift_vals_mg - shift_vals_bg, 0, width - 1)
+
+            # Convert mappings to proper format for remapping
+            map_x_top = new_x_top.reshape(1, -1).astype(np.float32)
+            map_x_bottom = new_x_bottom.reshape(1, -1).astype(np.float32)
+
+            # ✅ Apply depth-based remapping (FIXED VARIABLE NAME)
+            top_frame[y] = cv2.remap(frame_resized, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+            bottom_frame[y] = cv2.remap(frame_resized, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
+
+        sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
+        top_sharp = cv2.filter2D(top_frame, -1, sharpen_kernel)
+        bottom_sharp = cv2.filter2D(bottom_frame, -1, sharpen_kernel)       
+                
+        # ✅ Format the final 3D output frame
+        ou_frame = format_3d_output(top_sharp, bottom_sharp, output_format)
+
+        # ✅ Dynamically check expected size based on output format
+        expected_height = height * 2 if output_format == "Full-ou" else height
+        expected_width = width  # width stays the same
+
+        h, w = ou_frame.shape[:2]
+        if (w, h) != (expected_width, expected_height):
+            print(f"⚠ Warning: Frame size mismatch! Expected: {expected_width}x{expected_height}, Got: {w}x{h}")
+            ou_frame = cv2.resize(ou_frame, (expected_width, expected_height), interpolation=cv2.INTER_AREA)
+
+        # ✅ Write frame and track success
+        try:
+            out.write(ou_frame)
+            frames_written += 1
+
+            # ✅ Update Progress Bar & ETA
+            update_progress(frame_idx, total_frames, start_time, progress, progress_label)
+
+            if frame_idx % 100 == 0:  # Print progress every 100 frames
+                print(f"🖼 Processed {frame_idx}/{total_frames} frames ({(frame_idx/total_frames)*100:.2f}%).")
+        except Exception as e:
+            print(f"❌ Error writing frame {frame_idx}: {e}")
+
+    # ✅ Final check: Ensure frames were actually written
+    if frames_written == 0:
+        print("❌ No frames were written! Check frame processing.")
+    else:
+        print(f"✅ Successfully wrote {frames_written} frames to {output_video}")
+
+    # Release resources properly
+    original_cap.release()
+    depth_cap.release()
+    out.release()
+    print(f"🎬 Rendering process finalized. Output saved: {output_video}")
+
+    # ✅ Check final output file size
+    if os.path.exists(output_video):
+        file_size = os.path.getsize(output_video)
+        if file_size == 0:
+            print(f"❌ Error: Output file {output_video} is empty! Check encoding settings.")
+        else:
+            print(f"✅ Output file size: {file_size / 1024 / 1024:.2f} MB")
 
 def start_processing_thread():
     global process_thread  # ✅ Ensure function modifies global process_thread
@@ -572,11 +649,12 @@ def process_video():
             mg_shift.get(),
             bg_shift.get(),
             output_format.get(),  # 🔥 Fix: Now passing the output format!
+            aspect_ratios.get(selected_aspect_ratio.get()),
             progress=progress,
             progress_label=progress_label
         )
 
-    elif output_format.get() in ["Full-SBS", "Half-SBS"]:
+    elif output_format.get() in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph"]:
         render_sbs_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -589,6 +667,8 @@ def process_video():
             mg_shift.get(),
             bg_shift.get(),
             sharpness_factor.get(),
+            output_format.get(),
+            aspect_ratios.get(selected_aspect_ratio.get()),
             progress=progress,
             progress_label=progress_label
         )
