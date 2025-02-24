@@ -1,6 +1,7 @@
-numpy
 opencv-python
-Pillow
-tk
+tensorflow
+pillow
+numpy
+psutil
 tqdm
-
+multiprocessing-logging
