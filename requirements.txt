@@ -1,7 +1,10 @@
-opencv-python
-tensorflow
-pillow
+Pillow
+transformers
+accelerate
 numpy
-psutil
+matplotlib
+opencv-python
 tqdm
-multiprocessing-logging
+tensorflow
+# Note: For PyTorch (torch), it’s recommended to let users install the CUDA-enabled version
+# from the official PyTorch website (https://pytorch.org/get-started/locally/) based on their system.
