@@ -1,47 +1,68 @@
-# VisionDepth3Dv2 - 3D Video Conversion with AI Depth Mapping & Pulfrich Effect
-VisionDepth3D AI-powered 3D converter is a high-performance tool for creating Half Side-by-Side (H-SBS) and Over-Under (OU) 3D videos with advanced depth-based rendering, Pulfrich effect simulation, and adaptive scene transitions. Leveraging AI-driven backward warping correction, it intelligently enhances depth perception by reducing halo artifacts and preserving object integrity.
+# VisionDepth3Dv2 - AI-Powered 3D Video Conversion with Dynamic Depth Mapping & Pulfrich Effect
+VisionDepth3Dv2 transforms 2D videos into immersive 3D experiences using AI-driven depth mapping, advanced Pulfrich effect blending, and multi-format 3D rendering including Half-SBS, Full-SBS, Over-Under, VR, and Red-Cyan Anaglyph. Perfect for VR headsets, 3D displays, and cinematic presentations, VisionDepth3Dv2 offers real-time rendering controls, AI-powered convergence correction, and customizable depth effects — all within an intuitive GUI.
 
-With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects. Runs on mid-range hardware.
+With real-time depth adjustments, the system dynamically modifies foreground divergence, midground depth transition, and background convergence, ensuring a cinematic and immersive 3D experience. The integration of a deep-learning warp model refines depth shifts, improving background separation for more natural parallax effects.
 
-🚀 Key Features:
-📚 Multi-Format 3D Output:
-= Side-by-Side (SBS)
-- Half Over-Under (Half-OU)
-- Full Over-Under (Full-OU)
-- Interlaced 3D
-  
-🎛️ Advanced Depth Processing:
-- Dynamic foreground, midground, and background shifting for accurate 3D depth perception
-- Depth map normalization and bilateral filtering for enhanced accuracy
-- Machine Learning Model (TensorFlow/Keras) for convergence correction via backward warping
-  
-🎞️ Video Processing & Effects:
-- Real-time Pulfrich effect simulation
-- Cinemascope cropping for cinematic 2.39:1 aspect ratio
-- Automatic black bar removal and white edge correction
-- Dynamic sharpness control for enhanced clarity
-  
-🕹 Interactive GUI with Tkinter:
-- Live progress bar with FPS monitoring
-- Pause, Resume, and Cancel processing on the fly
-- Drag-and-drop file selection for input video, depth map, and output path
-- Customizable settings with save/load functionality
-  
-⚡ Optimized Performance:
-- Threaded rendering for non-blocking UI
-- FPS smoothing using a moving average for stable performance feedback
-- Adaptive scene change detection with dynamic depth adjustments
-  
-🌐 Extras:
-- One-click GitHub repository access via UI
-- Settings persistence in JSON format
-- Supports multiple codecs: mp4v, H264, XVID, and DIVX
+### "Transform your 2D moments into stunning 3D realities — with AI precision and cinematic depth."
+
+
+## 🚀 Key Features
+
+### 🔄 Multi-Format 3D Output 
+- Full-SBS (Side-by-Side) – Best for high-quality 3D displays (7680x1608 for 8K resolution).
+- Half-SBS (HSBS) – Optimized for 1080p displays (1920x1080 total).
+- Full-OU (Over-Under) – Suitable for vertical 3D viewing (3840x3216).
+- Half-OU – Optimized for lower bandwidth with halved vertical resolution.
+- Red-Cyan Anaglyph – True balanced anaglyph for standard 3D glasses.
+- VR Format – Supports Oculus Quest 2 and similar VR headsets (2880x1600 resolution).
+
+## 🎚 Advanced Depth-Based Rendering
+- Dynamic depth-based pixel shifting for realistic parallax effects.
+- Foreground, midground, and background shift customization for precise depth control.
+- Adjustable Pulfrich effect blending for smooth motion-based depth illusions.
+
+## 🎨 AI-Powered Convergence Correction
+- Utilizes a TensorFlow deep learning model to correct divergence for comfortable 3D viewing.
+- Automatic depth normalization and bilateral filtering for cleaner depth maps.
+
+## 🖼 Aspect Ratio Support
+-Select from cinematic aspect ratios including:
+- 16:9 (Default)
+- 2.39:1 (CinemaScope)
+- 21:9 (UltraWide)
+- 4:3 (Classic Films)
+- 1:1 (Square)
+- 2.35:1 (Classic Cinematic)
+- 2.76:1 (Ultra-Panavision)
+
+## 🛠 Smart Pre-Processing
+- Automatic black bar detection and removal to ensure full-frame 3D rendering.
+- White edge correction using median blur for professional visual consistency.
+
+## ⚡ Real-Time Performance Insights
+- Real-time FPS tracking with adaptive smoothing for accurate performance feedback.
+- Interactive progress bar and percentage completion updates during rendering.
+
+## 💾 Persistent User Settings
+- All rendering preferences, including depth shifts, sharpness, and delay times, are automatically saved and restored on - - relaunch via JSON settings.
+
+## 🎛 Flexible Codec Support
+- Choose from MP4 (mp4v, H264), AVI (XVID, DIVX), and MKV for wide playback compatibility.
+
+## 🖱 Interactive Tkinter GUI
+- Intuitive drag-and-drop interface with live video preview thumbnails.
+- Real-time pause, resume, and cancel controls for rendering operations.
+- Quick GitHub access for updates and support.
+
+## 🧩 Optimized for Efficiency
+- Threaded rendering with pause/resume functionality for optimized system resource management.
 
 Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
 
 GUI Layout
 --
-![GUILayout](https://github.com/user-attachments/assets/c77bd88d-4dd1-40ae-8e4e-2fd89400bfe4)
+![GUILayoutV2](https://github.com/user-attachments/assets/7576866f-e655-48b8-ab15-bf34d9156825)
+
 
 ## Guide Sheet: Install
 
@@ -54,17 +75,36 @@ pip required to install dependancies
 - Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
 - Download Backwards warp model [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing) and put in weights folder
 
-### Step 2: Install Required Dependencies
-- press (Win + R), type cmd, and hit Enter.
-- 
-- Navigate to the Program Directory:
+### Step 2: Install Required Dependencies 
+1. **press (Win + R), type cmd, and hit Enter.**
+
+2. **Navigate to the Program Directory:**
 ```
 cd C:\user\VisionDepth3D
 ```
-- Install Dependencies:
+3. **Install Dependencies:**
 ```
 pip install -r requirements.txt
 ```
+
+### Conda Install (easiest method) ###
+1. **Clone the Repository:**
+   ```bash
+   git clonehttps://github.com/VisionDepth/VisionDepth3D.git
+   cd VisionDepth3D
+2. **Create the Conda Environment:**
+   We provide an environment.yml file that installs all required dependencies. To create the environment, run:
+    ```bash
+    conda env create -f environment.yml
+4. **Activate the Environment:**
+   ```bash
+   conda activate visiondepth3d
+5. **Run VisionDepth3D:**
+   ```bash
+   python VisionDepth3Dv2.1.py
+
+This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
+
 
 ### Guide Sheet: GUI Inputs
 Below is a guide to help you understand and adjust each parameter in the GUI.
