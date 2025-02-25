@@ -8,54 +8,91 @@ With real-time depth adjustments, the system dynamically modifies foreground div
 
 ## 🚀 Key Features
 
-### 🔄 Multi-Format 3D Output 
-- Full-SBS (Side-by-Side) – Best for high-quality 3D displays (7680x1608 for 8K resolution).
-- Half-SBS (HSBS) – Optimized for 1080p displays (1920x1080 total).
-- Full-OU (Over-Under) – Suitable for vertical 3D viewing (3840x3216).
-- Half-OU – Optimized for lower bandwidth with halved vertical resolution.
-- Red-Cyan Anaglyph – True balanced anaglyph for standard 3D glasses.
-- VR Format – Supports Oculus Quest 2 and similar VR headsets (2880x1600 resolution).
+## 🔄 Multi-Format 3D Output
+Seamlessly generate 3D videos in multiple industry-standard formats, tailored for a variety of 3D displays, VR headsets, and anaglyph glasses:
+
+- 🖥️ Full-SBS (Side-by-Side) – Ideal for high-quality 3D displays and projectors, providing the highest resolution per 
+  eye. (7680x1608 for 8K output)
+- 🎬 Half-SBS (HSBS) – Optimized for 1080p displays like 3D TVs and monitors. Reduces bandwidth while maintaining crisp 
+  image quality.
+- 📺 Full-OU (Over-Under) – Perfect for vertical 3D display setups, ensuring full-resolution per eye. (3840x3216 total)
+- 📉 Half-OU – Designed for lower bandwidth streaming and mobile VR with halved vertical resolution, preserving visual 
+  quality while reducing file size.
+- 🎨 Red-Cyan Anaglyph – Generates true balanced anaglyph 3D compatible with standard Red-Cyan glasses, perfect for 
+  classic 3D viewing experiences.
+- 🕶️ VR Format – Optimized for VR headsets like Oculus Quest 2, providing an immersive experience with per-eye resolution 
+  of (1440x1600) for crystal-clear virtual environments. (2880x1600 total)
 
 ## 🎚 Advanced Depth-Based Rendering
-- Dynamic depth-based pixel shifting for realistic parallax effects.
-- Foreground, midground, and background shift customization for precise depth control.
-- Adjustable Pulfrich effect blending for smooth motion-based depth illusions.
+- 🌌 Dynamic Depth-Based Pixel Shifting: Generates realistic parallax effects by shifting pixels based on depth data, 
+  creating a convincing 3D experience with natural scene separation.
+- 🎛 Customizable Depth Layers: Fine-tune foreground, midground, and background shifts to control the intensity and depth 
+  perception, offering precision 3D rendering tailored to your visual preferences.
+- 🌊 Adjustable Pulfrich Effect Blending: Incorporates the Pulfrich effect with customizable blending, delivering smooth 
+  motion-based depth illusions that enhance the 3D impact during fast-moving scenes.
+- 🏃 Frame-Accurate Depth Mapping: Processes depth data per frame for smoother transitions and consistent depth 
+  perception, even in complex, high-motion videos.
 
 ## 🎨 AI-Powered Convergence Correction
-- Utilizes a TensorFlow deep learning model to correct divergence for comfortable 3D viewing.
-- Automatic depth normalization and bilateral filtering for cleaner depth maps.
+- ⚡ TensorFlow-Driven Precision: Leverages a deep learning model to automatically correct divergence issues, ensuring 
+  comfortable, eye-strain-free 3D viewing with natural depth perception.
+- 🧪 Smart Depth Normalization: Dynamically normalizes depth maps for consistent depth scaling across frames, delivering 
+  smoother 3D transitions.
+- 🎛 Bilateral Filtering for Clarity: Applies advanced bilateral filtering to eliminate noise while preserving important 
+  edges, resulting in sharper, cleaner 3D visuals.
+- 🎯 Adaptive Convergence Shifts: Adjusts convergence points based on scene depth, enhancing realism by ensuring objects 
+  at varying depths appear comfortably aligned.
 
 ## 🖼 Aspect Ratio Support
--Select from cinematic aspect ratios including:
-- 16:9 (Default)
-- 2.39:1 (CinemaScope)
-- 21:9 (UltraWide)
-- 4:3 (Classic Films)
-- 1:1 (Square)
-- 2.35:1 (Classic Cinematic)
-- 2.76:1 (Ultra-Panavision)
+Achieve the perfect cinematic look with a variety of predefined aspect ratios, tailored for different viewing experiences and display formats:
+
+- 🎞️ 16:9 (Default) – Standard widescreen format, ideal for HD and UHD displays, including most modern TVs, monitors, and 
+  online video platforms.
+- 🍿 2.39:1 (CinemaScope) – Epic cinematic aspect ratio, commonly used in blockbuster movies for a widescreen, immersive 
+  experience.
+- 🖥️ 21:9 (UltraWide) – Perfect for ultrawide monitors and theater-like experiences, offering extra horizontal space for 
+  enhanced immersion.
+- 🎥 4:3 (Classic Films) – The classic TV and film format, bringing a retro aesthetic to your 3D videos, ideal for 
+  archival and artistic projects.
+- 🔲 1:1 (Square) – Balanced and modern, perfect for social media platforms like Instagram and TikTok, offering a 
+  versatile framing option.
+- 🎬 2.35:1 (Classic Cinematic) – A traditional cinematic ratio that offers a widescreen look with subtle letterboxing, common in classic Hollywood films.
+- 🎞 2.76:1 (Ultra-Panavision) – Ultra-wide format used in iconic epic films, providing a dramatic and expansive field of 
+view for cinematic storytelling.
 
 ## 🛠 Smart Pre-Processing
-- Automatic black bar detection and removal to ensure full-frame 3D rendering.
-- White edge correction using median blur for professional visual consistency.
+Ensure flawless 3D rendering with intelligent pre-processing features designed for professional-grade visual consistency:
+
+- 🎯 Automatic Black Bar Detection & Removal – Automatically detects and removes letterboxing (black bars) from input videos, ensuring that every frame is fully utilized for a true full-frame 3D experience without unwanted borders.
+- 🎨 White Edge Correction with Median Blur – Detects and corrects white edges often caused by cropping or aspect ratio adjustments. Median blur filtering is applied to seamlessly blend edges, resulting in cleaner frames and a polished, professional look.
 
 ## ⚡ Real-Time Performance Insights
-- Real-time FPS tracking with adaptive smoothing for accurate performance feedback.
-- Interactive progress bar and percentage completion updates during rendering.
+Monitor your rendering performance in real-time with intuitive feedback tools:
+
+- ⏱️ Real-Time FPS Tracking – Displays live frames-per-second (FPS) data with adaptive smoothing for accurate and stable performance feedback.
+- 📊 Interactive Progress Indicators – Track rendering progress effortlessly with a dynamic progress bar and percentage completion updates, keeping you informed at every stage.
 
 ## 💾 Persistent User Settings
-- All rendering preferences, including depth shifts, sharpness, and delay times, are automatically saved and restored on - - relaunch via JSON settings.
+Save time with automatically retained preferences, ensuring a consistent user experience across sessions:
+
+- 💡 Auto-Save Settings – All rendering preferences, including depth shifts, sharpness levels, blend factors, and delay times, are saved to a JSON file and restored on relaunch for hassle-free continuity.
 
 ## 🎛 Flexible Codec Support
-- Choose from MP4 (mp4v, H264), AVI (XVID, DIVX), and MKV for wide playback compatibility.
+Enjoy broad playback compatibility with support for popular video codecs:
+
+- 🎞️ MP4 – Supports mp4v and H264 for high-quality compression and widespread compatibility.
+- 🎬 AVI – Offers XVID and DIVX options for classic playback and legacy systems.
+- 🎥 MKV – Ideal for high-definition video with rich metadata support and multi-track capabilities.
 
 ## 🖱 Interactive Tkinter GUI
-- Intuitive drag-and-drop interface with live video preview thumbnails.
-- Real-time pause, resume, and cancel controls for rendering operations.
-- Quick GitHub access for updates and support.
+A modern, intuitive interface designed for effortless 3D video generation:
+
+- 🖱️ Drag-and-Drop Simplicity – Easily load videos with drag-and-drop support and real-time thumbnail previews.
+- ⏸ Interactive Controls – Pause, resume, or cancel rendering in real time, offering full control over the process.
+- 🌐 GitHub Integration – One-click GitHub access for the latest updates, documentation, and community support.
 
 ## 🧩 Optimized for Efficiency
-- Threaded rendering with pause/resume functionality for optimized system resource management.
+- 🔀 Threaded Rendering Architecture – Utilizes multi-threading to ensure smooth performance, allowing you to pause and resume rendering without restarting the entire process.
 
 Designed for VR enthusiasts, stereoscopic filmmakers, and 3D content creators, VisionDepth3D provides fine-tuned control over depth parameters, delivering professional-quality 3D video conversions with precision and efficiency.
 
