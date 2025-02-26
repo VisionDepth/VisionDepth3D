@@ -5,10 +5,10 @@ With real-time depth adjustments, the system dynamically modifies foreground div
 
 ### "Transform your 2D moments into stunning 3D realities — with AI precision and cinematic depth."
 
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com)
 
 ## 🚀 Key Features
-
-## 🔄 Multi-Format 3D Output
+### 🔄 Multi-Format 3D Output
 Seamlessly generate 3D videos in multiple industry-standard formats, tailored for a variety of 3D displays, VR headsets, and anaglyph glasses:
 
 - 🖥️ Full-SBS (Side-by-Side) – Ideal for high-quality 3D displays and projectors, providing the highest resolution per 
