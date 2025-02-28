@@ -74,6 +74,7 @@ GUI Layout
 
 Installation Steps
 
+## 🔵 Option 1: Install via Windows/Linux (Standard Pip Method)
 ### 📌 System Requirements
 - ✔ Python 3.9 - 3.10 (Required)
 - ✔ pip (Required for dependency installation)
@@ -86,7 +87,7 @@ Installation Steps
 - 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing)
 
 
-### 📌 Step 2: Install PyTorch with CUDA Support 
+### 📌 Step 2: Check if PyTorch with CUDA Support is installed
 🔍 Find Your CUDA Version:
 Before installing PyTorch, check which CUDA version your GPU supports:
 - 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
@@ -100,12 +101,12 @@ nvidia-smi
 ```
 - 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
   
-### 📌 Install PyTorch with the Correct CUDA Version ### 
+### 📌 Install PyTorch with the Correct CUDA Version  
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
 ### Step 3: Install Required Dependencies 
-🟢 Option 1: Install via pip (Standard CMD Method)
+**🟢 Option 1: Install via pip (Standard CMD Method)**
 - 1️⃣ **press (Win + R), type cmd, and hit Enter.**
 - 2️⃣ **Navigate to the Program Directory:**
 ```
@@ -149,7 +150,7 @@ brew install python-tk ffmpeg            # macOS (requires Homebrew)
    ```
 
 ### 📌 Step 3: One-Click Launch (Recommended)
-** Windows:**
+**Windows:**
 To make launching easier, a one-click .bat file is included:
 - ✔ Double-click start_visiondepth3d.bat inside the VisionDepth3D folder
 
@@ -158,24 +159,24 @@ To make launching easier, a one-click .bat file is included:
 - Activates Conda environment if available
 - Runs VisionDepth3D using either Conda or standard Python
 
-** Linux/macOS:**
+**Linux/macOS:**
 - ✔ Use the included .sh script for one-click launch:
 - 1️⃣ Give execution permission (only needed once):
 ```
 chmod +x start_visiondepth3d.sh
 ```
-**  ⃣ Run VisionDepth3D:**
+**Run VisionDepth3D:**
 ```
 ./start_visiondepth3d.sh
 ```
 
 ### 📌 Step 4: (Optional) Create a Desktop Shortcut
-** Windows:** 
+**Windows:** 
 - ✅ Right-click start_visiondepth3d.bat → Create Shortcut
 - ✅ Move the shortcut to your Desktop
 - ✅ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
 
-** Linux/macOS:**
+**Linux/macOS:**
 - 1️⃣ Open Terminal and create a shortcut:
 ```
 ln -s ~/VisionDepth3D/start_visiondepth3d.sh ~/Desktop/VisionDepth3D
