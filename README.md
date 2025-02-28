@@ -105,7 +105,7 @@ GUI Layout
 
 Installation Steps
 
-📌 System Requirements
+### 📌 System Requirements
 - ✔ Python 3.9 - 3.10 (Required)
 - ✔ pip (Required for dependency installation)
 - ✔ Conda (Optional, Recommended for Simplicity)
@@ -116,7 +116,7 @@ Installation Steps
 - 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing)
 
 
-### Step 2: Install PyTorch with CUDA Support 
+### 📌 Step 2: Install PyTorch with CUDA Support 
 🔍 Find Your CUDA Version:
 Before installing PyTorch, check which CUDA version your GPU supports:
 - 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
@@ -134,10 +134,9 @@ nvidia-smi
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-### Step 2: Install Required Dependencies 
+### Step 3: Install Required Dependencies 
 🟢 Option 1: Install via pip (Standard CMD Method)
 - 1️⃣ **press (Win + R), type cmd, and hit Enter.**
-
 - 2️⃣ **Navigate to the Program Directory:**
 ```
 cd C:\VisionDepth3D
@@ -147,7 +146,7 @@ cd C:\VisionDepth3D
 pip install -r requirements.txt
 ```
 
-### 🔵 Option 2: Install via Conda (Recommended)
+## 🔵 Option 2: Install via Conda (Recommended)
 - **1️⃣ Clone the Repository (Skip this if you downloaded the ZIP)**
    ```bash
    git clone https://github.com/VisionDepth/VisionDepth3D.git
@@ -178,6 +177,11 @@ To make launching easier, a one-click .bat file is included:
 - Runs VisionDepth3D using either Conda or standard Python
 
 ### 📌 Step 4: (Optional) Create a Desktop Shortcut
+- ✅ Right-click start_visiondepth3d.bat → Create Shortcut
+- ✅ Move the shortcut to your Desktop
+- ✅ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
+
+### 📌 Step 5: (Optional) Create a Desktop Shortcut
 - 1️⃣ Right-click start_visiondepth3d.bat → Create Shortcut
 - 2️⃣ Move the shortcut to your Desktop
 - 3️⃣ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
