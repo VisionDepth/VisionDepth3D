@@ -3,9 +3,9 @@ import sys
 import shutil
 import tkinter as tk
 from tkinter import ttk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, Label, Button, OptionMenu, StringVar, BooleanVar, Entry
 from tqdm import tqdm
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk,  ImageOps
 import cv2
 import numpy as np
 import time
@@ -16,6 +16,12 @@ import json
 import subprocess
 from tensorflow import keras
 from collections import deque
+from accelerate.test_utils.testing import get_backend
+import matplotlib.cm as cm
+from transformers import pipeline
+
+# Automatically detect device (CUDA, CPU, etc.)
+device, _, _ = get_backend()
 
 # Load the trained divergence correction model
 MODEL_PATH = 'weights/backward_warping_model.keras'
@@ -192,7 +198,7 @@ def remove_white_edges(image):
     return image
     
 
-def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.2):
+def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
     depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
     background_mask = (depth_map >= bg_threshold).astype(np.uint8)
 
@@ -682,6 +688,13 @@ def reset_settings():
     
     messagebox.showinfo("Settings Reset", "All values have been restored to defaults!")
 
+#---Depth Estimation---
+
+# -----------------------
+# Global Variables & Setup
+# -----------------------
+
+# --- Window Setup ---
 root = tk.Tk()
 root.title("VisionDepth3D Video Generator")
 root.geometry("1080x780")
@@ -690,11 +703,309 @@ background_image = Image.open(resource_path("assets/Background.png"))
 background_image = background_image.resize((1080, 780), Image.LANCZOS)
 bg_image = ImageTk.PhotoImage(background_image)
 
+root.bg_image = bg_image  # keep a persistent reference
 background_label = tk.Label(root, image=bg_image)
 background_label.place(x=0, y=0, relwidth=1, relheight=1)
 
-content_frame = tk.Frame(root, highlightthickness=0, bd=0)
-content_frame.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.8)
+
+supported_models = {
+    "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
+    "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
+    "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
+    "Depth Anything V1 Large": "LiheYoung/Depth-Anything-V2-Large",
+    "Depth Anything V1 Base": "LiheYoung/depth-anything-base-hf",
+    "Depth Anything V1 Small": "LiheYoung/depth-anything-small-hf",
+    "V2-Metric-Indoor-Large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
+    "V2-Metric-Outdoor-Large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
+    "DA_vitl14": "LiheYoung/depth_anything_vitl14", 
+    "DA_vits14": "LiheYoung/depth_anything_vits14",
+    "DepthPro": "apple/DepthPro-hf",
+    "ZoeDepth": "Intel/zoedepth-nyu-kitti",
+    "MiDaS 3.0": "Intel/dpt-hybrid-midas",
+    "DPT-Large": "Intel/dpt-large",
+    "DinoV2": "facebook/dpt-dinov2-small-kitti",
+    "dpt-beit-large-512": "Intel/dpt-beit-large-512"
+}
+
+selected_model = StringVar(root, value="Depth Anything V2 Large")
+colormap_var = StringVar(root, value="Default")
+invert_var = BooleanVar(root, value=False)
+output_dir = ""
+
+if selected_model.get() == "Distill-Any-Depth":
+    from gradio_client import Client, handle_file
+    pipe = Client("xingyang1/Distill-Any-Depth")
+else:
+    checkpoint = supported_models[selected_model.get()]
+    pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+
+
+
+# -----------------------
+# Functions
+# -----------------------
+def update_pipeline(*args):
+    global pipe
+    if selected_model.get() == "Distill-Any-Depth":
+        from gradio_client import Client, handle_file
+        pipe = Client("xingyang1/Distill-Any-Depth")
+    else:
+        checkpoint = supported_models[selected_model.get()]
+        pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+    status_label.config(text=f"✅ Model updated: {selected_model.get()}")
+
+def choose_output_directory():
+    global output_dir
+    selected_directory = filedialog.askdirectory()
+    if selected_directory:
+        output_dir = selected_directory
+        output_dir_label.config(text=f"📁 {output_dir}")
+
+def process_image(file_path):
+    image = Image.open(file_path)
+    predictions = pipe(image)
+
+    if "predicted_depth" in predictions:
+        raw_depth = predictions["predicted_depth"]
+        depth_norm = (raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())
+        depth_np = depth_norm.squeeze().detach().cpu().numpy()
+        grayscale = (depth_np * 255).astype("uint8")
+        cmap_choice = colormap_var.get()
+        if cmap_choice == "Default":
+            depth_image = predictions["depth"]
+        else:
+            cmap = cm.get_cmap(cmap_choice.lower())
+            colored = cmap(grayscale / 255.0)
+            colored = (colored[:, :, :3] * 255).astype(np.uint8)
+            depth_image = Image.fromarray(colored)
+    else:
+        depth_image = predictions["depth"]
+
+    if invert_var.get():
+        print("Inversion enabled")
+        depth_image = ImageOps.invert(depth_image.convert("RGB"))
+
+    image_disp = image.copy()
+    image_disp.thumbnail((600, 600))
+    photo_input = ImageTk.PhotoImage(image_disp)
+    input_label.config(image=photo_input)
+    input_label.image = photo_input
+
+    depth_disp = depth_image.copy()
+    depth_disp.thumbnail((600, 600))
+    photo_depth = ImageTk.PhotoImage(depth_disp)
+    output_label.config(image=photo_depth)
+    output_label.image = photo_depth
+
+    output_filename = output_name_entry.get().strip() or "depth_map.png"
+    file_save_path = os.path.join(output_dir, output_filename) if output_dir else output_filename
+    depth_image.save(file_save_path)
+    status_label.config(text=f"✅ Image saved: {file_save_path}")
+    progress_bar.config(value=100)
+
+def open_image():
+    file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpeg;*.jpg;*.png")])
+    if file_path:
+        status_label.config(text="🔄 Processing image...")
+        progress_bar.start(10)
+        threading.Thread(target=lambda: [process_image(file_path), progress_bar.stop()], daemon=True).start()
+
+def process_video2(file_path):
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        status_label.config(text="❌ Error: Cannot open video.")
+        return
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Handle resolution input (downscale for processing)
+    res_input = resolution_entry.get().strip()
+    target_size = None
+    if res_input:
+        try:
+            width, height = map(int, res_input.split(','))
+            target_size = (width, height)
+        except:
+            status_label.config(text="⚠️ Invalid resolution input. Using original size.")
+    else:
+        target_size = (original_width, original_height)
+
+    # Handle batch size input
+    try:
+        BATCH_SIZE = int(batch_size_entry.get().strip())
+        if BATCH_SIZE <= 0:
+            raise ValueError
+    except ValueError:
+        BATCH_SIZE = 8  # Default batch size
+        status_label.config(text="⚠️ Invalid batch size. Using default batch size (8).")
+
+    # Output file setup
+    input_dir, input_filename = os.path.split(file_path)
+    name, ext = os.path.splitext(input_filename)
+    output_filename = f"{name}_depth{ext}"
+    output_path = os.path.join(output_dir, output_filename) if output_dir else output_filename
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') if ext.lower() == ".mp4" else cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
+
+    # -----------------------
+    # 🚀 Batch Processing Setup
+    # -----------------------
+    frames_batch = []
+    frame_count = 0
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_count += 1
+
+        # Downscale frame if needed
+        if target_size and target_size != (original_width, original_height):
+            frame = cv2.resize(frame, target_size)
+
+        # Convert frame for pipeline
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(frame_rgb)
+
+        frames_batch.append(pil_image)
+
+        # Process batch when full or at the end
+        if len(frames_batch) == BATCH_SIZE or frame_count == total_frames:
+            predictions = pipe(frames_batch)
+
+            for prediction in predictions:
+                raw_depth = prediction["predicted_depth"]
+                depth_norm = (raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())
+                depth_np = depth_norm.squeeze().detach().cpu().numpy()
+                grayscale = (depth_np * 255).astype("uint8")
+
+                cmap_choice = colormap_var.get()
+                if cmap_choice == "Default":
+                    depth_image = prediction["depth"]
+                else:
+                    cmap = cm.get_cmap(cmap_choice.lower())
+                    colored = cmap(grayscale / 255.0)
+                    colored = (colored[:, :, :3] * 255).astype(np.uint8)
+                    depth_image = Image.fromarray(colored)
+
+                if invert_var.get():
+                    depth_image = ImageOps.invert(depth_image.convert("RGB"))
+
+                # Convert to OpenCV format
+                depth_frame = np.array(depth_image)
+                depth_frame = cv2.cvtColor(depth_frame, cv2.COLOR_RGB2BGR)
+
+                # **Upscale back to original resolution before saving**
+                if target_size and target_size != (original_width, original_height):
+                    depth_frame = cv2.resize(depth_frame, (original_width, original_height))
+
+                out.write(depth_frame)
+
+            frames_batch.clear()  # Clear the batch for the next set of frames
+
+        # Progress Update
+        progress = int((frame_count / total_frames) * 100)
+        progress_bar.config(value=progress)
+        status_label.config(text=f"🎬 Processing video: {frame_count}/{total_frames} frames")
+
+    cap.release()
+    out.release()
+    status_label.config(text=f"✅ Video saved: {output_path}")
+    progress_bar.config(value=100)
+
+
+def open_video():
+    file_path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
+    if file_path:
+        status_label.config(text="🔄 Processing video...")
+        progress_bar.config(mode="determinate", maximum=100, value=0)
+        threading.Thread(target=process_video2, args=(file_path,), daemon=True).start()
+
+
+
+# --- Notebook for Tabs ---
+tab_control = ttk.Notebook(root)
+tab_control.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.8)
+
+# --- 3D Video Generator Tab ---
+visiondepth_frame = tk.Frame(tab_control)
+tab_control.add(visiondepth_frame, text="3D Video Generator")
+
+# ✅ Same styled content_frame for VisionDepth3D tab
+visiondepth_content_frame = tk.Frame(visiondepth_frame, highlightthickness=0, bd=0)
+visiondepth_content_frame.pack(fill="both", expand=True)
+
+# --- Depth Estimation GUI (Dummy Tab) ---
+depth_estimation_frame = tk.Frame(tab_control)
+tab_control.add(depth_estimation_frame, text="Depth Estimation")
+
+# Use the depth estimation tab’s content frame as the parent
+depth_content_frame = tk.Frame(depth_estimation_frame, highlightthickness=0, bd=0)
+depth_content_frame.pack(fill="both", expand=True)
+
+# Sidebar Frame inside depth_content_frame
+sidebar = tk.Frame(depth_content_frame, bg="#1c1c1c", width=240)
+sidebar.pack(side="left", fill="y")
+
+# Main Content Frame inside depth_content_frame
+main_content = tk.Frame(depth_content_frame, bg="#2b2b2b")
+main_content.pack(side="right", fill="both", expand=True)
+
+# --- Sidebar Content ---
+tk.Label(sidebar, text="🛠️ Model", bg="#1c1c1c", fg="white", font=("Arial", 11)).pack(pady=5)
+model_dropdown = ttk.Combobox(sidebar, textvariable=selected_model, values=list(supported_models.keys()), state="readonly", width=22)
+model_dropdown.pack(pady=5)
+model_dropdown.bind("<<ComboboxSelected>>", update_pipeline)
+
+output_dir_label = tk.Label(sidebar, text="📂 Output Dir: None", bg="#1c1c1c", fg="white", wraplength=200)
+output_dir_label.pack(pady=5)
+tk.Button(sidebar, text="Choose Directory", command=choose_output_directory, width=20).pack(pady=5)
+
+tk.Label(sidebar, text="🎨 Colormap:", bg="#1c1c1c", fg="white").pack(pady=5)
+colormap_dropdown = ttk.Combobox(sidebar, textvariable=colormap_var, values=["Default", "Magma", "Viridis", "Inferno", "Plasma", "Gray"], state="readonly", width=22)
+colormap_dropdown.pack(pady=5)
+
+invert_checkbox = tk.Checkbutton(sidebar, text="🌑 Invert Depth", variable=invert_var, bg="#1c1c1c", fg="white")
+invert_checkbox.pack(pady=5)
+
+tk.Label(sidebar, text="💾 Filename (Image):", bg="#1c1c1c", fg="white").pack(pady=5)
+output_name_entry = tk.Entry(sidebar, width=22)
+output_name_entry.insert(0, "depth_map.png")
+output_name_entry.pack(pady=5)
+
+# Batch Size Input
+tk.Label(sidebar, text="📦 Batch Size (Frames):", bg="#1c1c1c", fg="white").pack(pady=5)
+batch_size_entry = tk.Entry(sidebar, width=22)
+batch_size_entry.insert(0, "8")
+batch_size_entry.pack(pady=5)
+
+tk.Label(sidebar, text="🖼️ Video Resolution (w,h):", bg="#1c1c1c", fg="white").pack(pady=5)
+resolution_entry = tk.Entry(sidebar, width=22)
+resolution_entry.insert(0, "")
+resolution_entry.pack(pady=5)
+
+progress_bar = ttk.Progressbar(sidebar, mode="determinate", length=180)
+progress_bar.pack(pady=10)
+status_label = tk.Label(sidebar, text="🔋 Ready", bg="#1c1c1c", fg="white")
+status_label.pack(pady=5)
+
+# --- Main Content: Image previews ---
+frame_preview = tk.Frame(main_content, bg="#2b2b2b")
+frame_preview.pack(pady=10)
+input_label = tk.Label(frame_preview, text="🖼️ Input Image", bg="#2b2b2b", fg="white", width=40, height=15)
+input_label.pack(side="left", padx=10)
+output_label = tk.Label(frame_preview, text="🌊 Depth Map", bg="#2b2b2b", fg="white", width=40, height=15)
+output_label.pack(side="right", padx=10)
+
+# --- Main Content: Buttons ---
+tk.Button(main_content, text="🖼️ Process Image", command=open_image, width=25, bg="#4a4a4a", fg="white").pack(pady=5)
+tk.Button(main_content, text="🎥 Process Video", command=open_video, width=25, bg="#4a4a4a", fg="white").pack(pady=5)
+
 
 input_video_path = tk.StringVar()
 selected_depth_map = tk.StringVar()
@@ -757,7 +1068,7 @@ load_settings()
 codec_options = ["mp4v", "H264", "XVID", "DIVX"]
 
 # Layout frames
-top_widgets_frame = tk.LabelFrame(content_frame, text="Video Info", padx=10, pady=10)
+top_widgets_frame = tk.LabelFrame(visiondepth_content_frame, text="Video Info", padx=10, pady=10)
 top_widgets_frame.grid(row=0, column=0, columnspan=2, pady=10, padx=5, sticky="nsew")
 
 # Thumbnail
@@ -778,7 +1089,7 @@ progress_label.grid(row=1, column=2, padx=10, pady=5, sticky="ew")
 
 
 # Processing Options
-options_frame = tk.LabelFrame(content_frame, text="Processing Options", padx=10, pady=10)
+options_frame = tk.LabelFrame(visiondepth_content_frame, text="Processing Options", padx=10, pady=10)
 options_frame.grid(row=1, column=0, columnspan=2, pady=10, padx=5, sticky="nsew")
 
 tk.Label(options_frame, text="Codec").grid(row=0, column=0, sticky="w")
@@ -813,17 +1124,17 @@ reset_button = tk.Button(options_frame, text="Reset to Defaults", command=reset_
 reset_button.grid(row=3, column=4, columnspan=2, pady=10)
 
 # File Selection
-tk.Button(content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
-tk.Entry(content_frame, textvariable=input_video_path, width=50).grid(row=3, column=1, pady=5, padx=5)
+tk.Button(visiondepth_content_frame, text="Select Input Video", command=select_input_video).grid(row=3, column=0, pady=5, sticky="ew")
+tk.Entry(visiondepth_content_frame, textvariable=input_video_path, width=50).grid(row=3, column=1, pady=5, padx=5)
 
-tk.Button(content_frame, text="Select Depth Map", command=select_depth_map).grid(row=4, column=0, pady=5, sticky="ew")
-tk.Entry(content_frame, textvariable=selected_depth_map, width=50).grid(row=4, column=1, pady=5, padx=5)
+tk.Button(visiondepth_content_frame, text="Select Depth Map", command=select_depth_map).grid(row=4, column=0, pady=5, sticky="ew")
+tk.Entry(visiondepth_content_frame, textvariable=selected_depth_map, width=50).grid(row=4, column=1, pady=5, padx=5)
 
-tk.Button(content_frame, text="Select Output Video", command=select_output_video).grid(row=5, column=0, pady=5, sticky="ew")
-tk.Entry(content_frame, textvariable=output_sbs_video_path, width=50).grid(row=5, column=1, pady=5, padx=5)
+tk.Button(visiondepth_content_frame, text="Select Output Video", command=select_output_video).grid(row=5, column=0, pady=5, sticky="ew")
+tk.Entry(visiondepth_content_frame, textvariable=output_sbs_video_path, width=50).grid(row=5, column=1, pady=5, padx=5)
 
 # Frame to Hold Buttons and Format Selection in a Single Row
-button_frame = tk.Frame(content_frame)
+button_frame = tk.Frame(visiondepth_content_frame)
 button_frame.grid(row=6, column=0, columnspan=5, pady=10, sticky="w")
 
 # 3D Format Label and Dropdown (Inside button_frame)
@@ -855,7 +1166,7 @@ github_icon = github_icon.resize((15, 15), Image.LANCZOS)  # Resize to fit UI
 github_icon_tk = ImageTk.PhotoImage(github_icon)
 
 # Create the clickable GitHub icon button
-github_button = tk.Button(content_frame, image=github_icon_tk, command=open_github, borderwidth=0, bg="white", cursor="hand2")
+github_button = tk.Button(visiondepth_content_frame, image=github_icon_tk, command=open_github, borderwidth=0, bg="white", cursor="hand2")
 github_button.image = github_icon_tk  # Keep a reference to prevent garbage collection
 github_button.grid(row=7, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
 
