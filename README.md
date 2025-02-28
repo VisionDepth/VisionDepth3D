@@ -101,44 +101,89 @@ GUI Layout
 ![GUILayoutV2](https://github.com/user-attachments/assets/7576866f-e655-48b8-ab15-bf34d9156825)
 
 
-## Guide Sheet: Install
+## ✅ VisionDepth3D Installation Guide
 
 Installation Steps
-This program runs on python 3.9 - 3.10
-pip required to install dependancies
+📌 System Requirements
+- ✔ Python 3.9 - 3.10 (Required)
+- ✔ pip (Required for dependency installation)
+- ✔ Conda (Optional, Recommended for Simplicity)
 
-### Step 1: Download the VisionDepth3Dv2 Program
-- Download the VisionDepth3D zip file from the official download source. (green button)
-- Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- Download Backwards warp model [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing) and put in weights folder
+### 📌 Step 1: Download & Extract VisionDepth3D
+- 1️⃣ Download the latest VisionDepth3D ZIP file from the official repository (green "Download" button).
+- 2️⃣ Extract the ZIP file to a folder of your choice (e.g., C:\VisionDepth3D).
+- 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing)
+
+
+### Step 2: Install PyTorch with CUDA Support 
+🔍 Find Your CUDA Version:
+Before installing PyTorch, check which CUDA version your GPU supports:
+- 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
+- 2️⃣ Run the following command:
+```
+nvcc --version
+```
+or 
+```
+nvidia-smi
+```
+- 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
+
+### 📌 Install PyTorch with the Correct CUDA Version ### 
+Go to the official PyTorch website to find the best install command for your setup:
+🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
 ### Step 2: Install Required Dependencies 
-1. **press (Win + R), type cmd, and hit Enter.**
+🟢 Option 1: Install via pip (Standard CMD Method)
+- 1️⃣ **press (Win + R), type cmd, and hit Enter.**
 
-2. **Navigate to the Program Directory:**
+- 2️⃣ **Navigate to the Program Directory:**
 ```
-cd C:\user\VisionDepth3D
+cd C:\VisionDepth3D
 ```
-3. **Install Dependencies:**
+- 3️⃣ **Install All Dependencies:**
 ```
 pip install -r requirements.txt
 ```
 
-### Conda Install (easiest method) ###
-1. **Clone the Repository:**
+### 🔵 Option 2: Install via Conda (Recommended)
+- **1️⃣ Clone the Repository (Skip this if you downloaded the ZIP)**
    ```bash
-   git clonehttps://github.com/VisionDepth/VisionDepth3D.git
+   git clone https://github.com/VisionDepth/VisionDepth3D.git
    cd VisionDepth3D
-2. **Create the Conda Environment:**
+   ```
+- **2️⃣ Create the Conda Environment (Automatically installs dependencies)**
    We provide an environment.yml file that installs all required dependencies. To create the environment, run:
     ```bash
     conda env create -f environment.yml
-4. **Activate the Environment:**
+    ```
+- **3️⃣ Activate the Conda Environment**
    ```bash
    conda activate visiondepth3d
-5. **Run VisionDepth3D:**
+   ```
+- **4️⃣ Run VisionDepth3D**
    ```bash
-   python VisionDepth3Dv2.1.py
+   python VisionDepth3Dv3.py
+   ```
+
+### 📌 Step 3: One-Click Launch (Recommended)
+To make launching easier, a one-click .bat file is included:
+- ✔ Instead of manually running commands, just double-click:
+- 📂 start_visiondepth3d.bat inside the VisionDepth3D folder.
+
+***📌 What the .bat file does:***
+- Automatically detects if Conda is installed
+- Activates Conda environment if available
+- Runs VisionDepth3D using either Conda or standard Python
+
+### 📌 Step 4: (Optional) Create a Desktop Shortcut
+- 1️⃣ Right-click start_visiondepth3d.bat → Create Shortcut
+- 2️⃣ Move the shortcut to your Desktop
+- 3️⃣ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
+
+🔥 Now you can launch VisionDepth3D in one click from your Desktop!
+
+   
 
 This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
 
