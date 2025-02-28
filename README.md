@@ -98,7 +98,7 @@ or
 nvidia-smi
 ```
 - 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
-- 
+  
 ### 📌 Install PyTorch with the Correct CUDA Version ### 
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
