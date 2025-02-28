@@ -78,6 +78,7 @@ Installation Steps
 - ✔ Python 3.9 - 3.10 (Required)
 - ✔ pip (Required for dependency installation)
 - ✔ Conda (Optional, Recommended for Simplicity)
+- ✔ Linux/macOS users may need additional dependencies (see Step 3).
 
 ### 📌 Step 1: Download & Extract VisionDepth3D
 - 1️⃣ Download the latest VisionDepth3D ZIP file from the official repository (green "Download" button).
@@ -110,12 +111,24 @@ Go to the official PyTorch website to find the best install command for your set
 ```
 cd C:\VisionDepth3D
 ```
+Linux/macOS
+```
+cd ~/VisionDepth3D 
+```
+
 - 3️⃣ **Install All Dependencies:**
 ```
 pip install -r requirements.txt
 ```
+- 🔵 Linux/macOS users may need to install additional dependencies:
+```
+sudo apt-get install python3-tk ffmpeg   # Ubuntu/Debian
+brew install python-tk ffmpeg            # macOS (requires Homebrew)
+```
 
 ## 🔵 Option 2: Install via Conda (Recommended)
+
+(Automatically manages dependencies & isolates environment.)
 - **1️⃣ Clone the Repository (Skip this if you downloaded the ZIP)**
    ```bash
    git clone https://github.com/VisionDepth/VisionDepth3D.git
@@ -136,24 +149,46 @@ pip install -r requirements.txt
    ```
 
 ### 📌 Step 3: One-Click Launch (Recommended)
+** Windows:**
 To make launching easier, a one-click .bat file is included:
-- ✔ Instead of manually running commands, just double-click:
-- 📂 start_visiondepth3d.bat inside the VisionDepth3D folder.
+- ✔ Double-click start_visiondepth3d.bat inside the VisionDepth3D folder
 
 ***📌 What the .bat file does:***
 - Automatically detects if Conda is installed
 - Activates Conda environment if available
 - Runs VisionDepth3D using either Conda or standard Python
 
+** Linux/macOS:**
+- ✔ Use the included .sh script for one-click launch:
+- 1️⃣ Give execution permission (only needed once):
+```
+chmod +x start_visiondepth3d.sh
+```
+**  ⃣ Run VisionDepth3D:**
+```
+./start_visiondepth3d.sh
+```
+
 ### 📌 Step 4: (Optional) Create a Desktop Shortcut
+** Windows:** 
 - ✅ Right-click start_visiondepth3d.bat → Create Shortcut
 - ✅ Move the shortcut to your Desktop
 - ✅ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
 
-### 📌 Step 5: (Optional) Create a Desktop Shortcut
-- 1️⃣ Right-click start_visiondepth3d.bat → Create Shortcut
-- 2️⃣ Move the shortcut to your Desktop
-- 3️⃣ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
+** Linux/macOS:**
+- 1️⃣ Open Terminal and create a shortcut:
+```
+ln -s ~/VisionDepth3D/start_visiondepth3d.sh ~/Desktop/VisionDepth3D
+```
+- 2️⃣ (Optional) Make a .desktop shortcut:
+```
+echo '[Desktop Entry]
+Name=VisionDepth3D
+Exec=/home/user/VisionDepth3D/start_visiondepth3d.sh
+Type=Application
+Terminal=true' > ~/Desktop/VisionDepth3D.desktop
+chmod +x ~/Desktop/VisionDepth3D.desktop
+```
 
 🔥 Now you can launch VisionDepth3D in one click from your Desktop!
 
