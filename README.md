@@ -1,91 +1,89 @@
-# VisionDepth3D v3 - AI-Powered 3D Video Converter
+# VisionDepth3D - AI-Powered Depth Map Generator and 3D Video Converter  
 ## 🎥 Convert Any 2D Video into Immersive 3D!
 
-VisionDepth3D v3 uses AI-powered depth estimation to generate stunning, multi-format 3D videos, optimized for:
-- ✅ VR Headsets (Quest, SteamVR, etc.)
-- ✅ 3D TVs & Projectors (Full-SBS, Half-SBS, Over-Under)
-- ✅ Red-Cyan Glasses (Anaglyph)
-- ✅ Cinematic Experiences (2.39:1, 21:9, 16:9 & more)
-  
-- 🔹 Supports GPU acceleration (CUDA) for faster processing
-- 🔹 Advanced Pulfrich effect blending for motion-based 3D depth
-- 🔹 AI-powered convergence correction for natural 3D separation
-- 🔹 Simple drag-and-drop GUI with real-time rendering controls
-  
 ### 🎯 "Turn your 2D moments into immersive 3D realities—AI precision, cinematic depth, and VR-ready output!" 🚀"
 
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com)
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.9-blue)
+
+## 📖 Table of Contents
+- [🚀 Key Features](#-key-features)
+- [🎚 Advanced Depth Estimation & 3D Processing](#-advanced-depth-estimation--3d-video-processing)
+- [🖼 GUI Layout](#gui-layout)
+- [📌 System Requirements](#-system-requirements)
+- [📥 Installation](#guide-sheet-install)
+  - [🟢 Pip Installation](#-option-1-install-via-pip-standard-cmd-method)
+  - [🔵 Conda Installation (Recommended)](#-option-2-install-via-conda-recommended)
+- [🛠 GUI Settings & Adjustments](#guide-sheet-gui-inputs)
+- [📄 Pulfrich Effect Explained](#pulfrich-effect-explained)
+- [🐛 Troubleshooting](#troubleshooting)
+- [👨‍💻 Dev Notes](#-notes)
+
 
 ## 🚀 Key Features
-### 🔄 Multi-Format 3D Output
-Convert 2D videos into multiple industry-standard 3D formats, compatible with VR headsets, 3D displays, and anaglyph glasses:
 
-- 🖥️ Full-SBS (Side-by-Side) – Highest quality for 8K/4K projectors & 3D displays
-- 🎬 Half-SBS (HSBS) – Optimized for 1080p 3D TVs & monitors
-- 📺 Full-OU (Over-Under) – Perfect for vertical 3D setups
-- 📉 Half-OU – Lower bandwidth streaming & mobile VR compatibility
-- 🎨 Red-Cyan Anaglyph – Viewable on any standard screen with 3D glasses
-- 🕶️ VR Format – Optimized for Oculus Quest, SteamVR & more
+### 👁️ Depth Estimation Models via Transformers
+ - Multi-Model AI Support – Choose from cutting-edge depth estimation models like Depth Anything V2, MiDaS 3.0, ZoeDepth, DinoV2, and more.
+ - Real-Time Depth Processing – GPU-accelerated estimation with dynamic scaling for enhanced efficiency.
+ - Simple pick and download Depth model and cached for future uses
+ - Adaptive Depth Smoothing – Intelligent filtering reduces noise while preserving sharp depth details.
+ - Customizable Depth Formats – Export in Full-SBS, Half-SBS, Full-OU, Half-OU, Anaglyph 3D, or VR-optimized formats.
+ - Precision Depth Convergence – Advanced background isolation and convergence shift correction for realistic 3D results.
+ - Batch Video Processing – Accelerate video depth conversion with optimized batch inference.
+
+### 🎚 Advanced Depth Estimation & 3D Video Processing
+ - AI-Powered Depth Shifting – Generate precise depth-based parallax effects for immersive 3D visuals.
+ - Customizable Depth Mapping – Fine-tune foreground, midground, and background shifts for accurate depth perception.
+ - Pulfrich Effect Blending – Motion-aware depth enhancement for fluid cinematic depth transitions.
+ - Frame-Accurate Depth Tracking – Consistent per-frame depth mapping with smart scene correction for precise rendering.
   
-## 🎚 Advanced Depth-Based Rendering
-- 🌌 AI-Powered Depth Pixel Shifting – Dynamic depth-based parallax effects
-- 🎛 Customizable Depth Controls – Fine-tune foreground, midground, and background shifts
-- 🌊 Pulfrich Effect Blending – Motion-based depth enhancement for smoother cinematic transitions
-- 🏃 Frame-Accurate Depth Mapping – Per-frame depth consistency & scene correction
-  
-## 🎨 AI-Powered Convergence Correction
-- ⚡ Deep-Learning Warp Model – Auto-corrects divergence for natural 3D separation
-- 🧪 Smart Depth Normalization – Dynamic depth scaling per frame
-- 🎛 Bilateral Filtering – Sharpens depth maps & reduces noise artifacts
+### 🎨 AI-Powered Convergence Correction
+ - Deep-Learning Warp Model – Auto-corrects divergence for natural 3D separation
+ - Smart Depth Normalization – Dynamic depth scaling per frame
+ - Bilateral Filtering – Sharpens depth maps & reduces noise artifacts
 
-## 🖼 Aspect Ratio Support
-Select from a variety of aspect ratios for cinematic and immersive experiences:
-- 🎞️ 16:9 (Default) – Standard HD/UHD format
-- 🍿 2.39:1 (CinemaScope) – Widescreen cinematic experience
-- 🖥️ 21:9 (UltraWide) – Perfect for ultrawide monitors
-- 🎥 4:3 (Classic Films) – Retro 3D format
-- 🔲 1:1 (Square) – Social media-friendly format
-- 🎬 2.35:1 & 2.76:1 – Cinematic widescreen options
+### 🖼 Aspect Ratio Support
+**Select from a variety of aspect ratios for cinematic and immersive experiences:**
+ - 16:9 (Default) – Standard HD/UHD format
+ - 2.39:1 (CinemaScope) – Widescreen cinematic experience
+ - 21:9 (UltraWide) – Perfect for ultrawide monitors
+ - 4:3 (Classic Films) – Retro 3D format
+ - 1:1 (Square) – Social media-friendly format
+ - 2.35:1 & 2.76:1 – Cinematic widescreen options
 
-## 🛠 Smart Pre-Processing
-- ✔ 🎯 Automatic Black Bar Detection & Removal (Removes letterboxing for true full-frame 3D!)
-- ✔ 🎨 White Edge Correction (Blends edges seamlessly with median blur!)
+### 🛠 Smart Pre-Processing
+- Automatic Black Bar Detection & Removal (Removes letterboxing for true full-frame 3D!)
+- White Edge Correction (Blends edges seamlessly with median blur!)
 
-## ⚡ Real-Time Performance Insights
-Monitor your rendering performance in real-time with intuitive feedback tools:
-- ✔ ⏱️ FPS Tracker (Displays real-time frames-per-second speed!)
-- ✔ 📊 Interactive Progress Indicators (Live tracking of render progress!)
+### ⚡ Real-Time Performance Insights
+**Monitor your rendering performance in real-time with intuitive feedback tools:**
+- FPS Tracker (Displays real-time frames-per-second speed!)
+- Interactive Progress Indicators (Live tracking of render progress!)
 
-## 💾 Persistent User Settings
-- ✔ 🔄 Auto-Save Preferences (Restores previous depth settings on relaunch!)
+### 💾 Persistent User Settings
+- Auto-Save Preferences (Restores previous depth settings on relaunch!)
 
-## 🖱 Interactive Tkinter GUI
-- ✔ Drag-and-Drop Simplicity (Easily load videos with real-time thumbnails!)
-- ✔ ⏸ Live Controls (Pause, resume, or cancel rendering anytime!)
+### 🖱 Interactive Tkinter GUI
+- Slider Controls for Divergence shift, Depth Transition, Convergence shift, Pulfrich effect and Frame blending
+- Live Controls (Pause, resume, or cancel rendering anytime!)
 
-GUI Layout
---
-
-![Tab1](https://github.com/user-attachments/assets/259a169d-fd99-4098-b08b-554dd4ea705f)
-![Tab2](https://github.com/user-attachments/assets/80296073-2f6b-4d00-a90d-69ed6c687368)
+## **GUI Layout**
+![GUITabsSBS](https://github.com/user-attachments/assets/337a6bd3-43ad-4f25-ab63-4563387305d6)
+### **Example Wigglegram** 
+![LoganvDeadpool](https://github.com/user-attachments/assets/4afb0525-0ddf-44f4-a4fc-e97814aa0b83)
 
 
-## ✅ VisionDepth3D Installation Guide
+## Guide Sheet: Install
 
-Installation Steps
-
-## 🔵 Option 1: Install via Windows/Linux (Standard Pip Method)
 ### 📌 System Requirements
-- ✔ Python 3.9 - 3.10 (Required)
-- ✔ pip (Required for dependency installation)
-- ✔ Conda (Optional, Recommended for Simplicity)
-- ✔ Linux/macOS users may need additional dependencies (see Step 3).
+- ✔️ This program runs on python 3.9
+- ✔️ pip required to install dependancies
+- ✔️ Conda (Optional, Recommended for Simplicity)
+- ❌ Linux/macOS is not officially supported until a more stable solution is found
 
-### 📌 Step 1: Download & Extract VisionDepth3D
-- 1️⃣ Download the latest VisionDepth3D ZIP file from the official repository (green "Download" button).
-- 2️⃣ Extract the ZIP file to a folder of your choice (e.g., C:\VisionDepth3D).
-- 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1uHAceuTt_E5uamILk3VfGgFSQFIQqbjc/view?usp=sharing)
-
+### 📌 Step 1: Download the VisionDepth3Dv2 Program
+- 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
+- 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
+- 3️⃣ Download Backwards warp model [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing) and put in weights folder
 
 ### 📌 Step 2: Check if PyTorch with CUDA Support is installed
 🔍 Find Your CUDA Version:
@@ -105,93 +103,35 @@ nvidia-smi
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-### Step 3: Install Required Dependencies 
-**🟢 Option 1: Install via pip (Standard CMD Method)**
-- 1️⃣ **press (Win + R), type cmd, and hit Enter.**
-- 2️⃣ **Navigate to the Program Directory:**
-```
-cd C:\VisionDepth3D
-```
-Linux/macOS
-```
-cd ~/VisionDepth3D 
-```
 
-- 3️⃣ **Install All Dependencies:**
-```
-pip install -r requirements.txt
-```
-- 🔵 Linux/macOS users may need to install additional dependencies:
-```
-sudo apt-get install python3-tk ffmpeg   # Ubuntu/Debian
-brew install python-tk ffmpeg            # macOS (requires Homebrew)
-```
+### Step 3: Create Env and Install Required Dependencies 
+
+## 🟢 Option 1: Install via pip (Standard CMD Method)
+- **1️. press (Win + R), type cmd, and hit Enter.**
+- **2. Clone the Repository (Skip this if you downloaded the ZIP)**
+  ```
+  git clone https://github.com/VisionDepth/VisionDepth3D.git
+  cd C:\VisionDepth3D
+  pip install -r requirements.txt
+  python VisionDepth3Dv3.py
+  ```
 
 ## 🔵 Option 2: Install via Conda (Recommended)
 
 (Automatically manages dependencies & isolates environment.)
-- **1️⃣ Clone the Repository (Skip this if you downloaded the ZIP)**
-   ```bash
+
+- **1. Clone the Repository (Skip this if you downloaded the ZIP)**
+   ```
    git clone https://github.com/VisionDepth/VisionDepth3D.git
    cd VisionDepth3D
    ```
-- **2️⃣ Create the Conda Environment (Automatically installs dependencies)**
-   We provide an environment.yml file that installs all required dependencies. To create the environment, run:
-    ```bash
-    conda env create -f environment.yml
+- **2. Create the Conda Environment**
+	To create the environment, run:
     ```
-- **3️⃣ Activate the Conda Environment**
-   ```bash
-   conda activate visiondepth3d
-   ```
-- **4️⃣ Run VisionDepth3D**
-   ```bash
+   conda create -n VD3D python=3.9
+   conda activate VD3D
    python VisionDepth3Dv3.py
    ```
-
-### 📌 Step 3: One-Click Launch (Recommended)
-**Windows:**
-To make launching easier, a one-click .bat file is included:
-- ✔ Double-click start_visiondepth3d.bat inside the VisionDepth3D folder
-
-***📌 What the .bat file does:***
-- Automatically detects if Conda is installed
-- Activates Conda environment if available
-- Runs VisionDepth3D using either Conda or standard Python
-
-**Linux/macOS:**
-- ✔ Use the included .sh script for one-click launch:
-- 1️⃣ Give execution permission (only needed once):
-```
-chmod +x start_visiondepth3d.sh
-```
-**Run VisionDepth3D:**
-```
-./start_visiondepth3d.sh
-```
-
-### 📌 Step 4: (Optional) Create a Desktop Shortcut
-**Windows:** 
-- ✅ Right-click start_visiondepth3d.bat → Create Shortcut
-- ✅ Move the shortcut to your Desktop
-- ✅ (Optional) Right-click → Properties → Change "Run" to "Minimized" to hide the CMD window.
-
-**Linux/macOS:**
-- 1️⃣ Open Terminal and create a shortcut:
-```
-ln -s ~/VisionDepth3D/start_visiondepth3d.sh ~/Desktop/VisionDepth3D
-```
-- 2️⃣ (Optional) Make a .desktop shortcut:
-```
-echo '[Desktop Entry]
-Name=VisionDepth3D
-Exec=/home/user/VisionDepth3D/start_visiondepth3d.sh
-Type=Application
-Terminal=true' > ~/Desktop/VisionDepth3D.desktop
-chmod +x ~/Desktop/VisionDepth3D.desktop
-```
-
-🔥 Now you can launch VisionDepth3D in one click from your Desktop!
 
 This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
 
