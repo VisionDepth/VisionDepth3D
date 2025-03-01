@@ -102,7 +102,7 @@ nvidia-smi
 ### 📌 Install PyTorch with the Correct CUDA Version  
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-
+sometimes "pip3" doesnt work just chaneg it to "pip"
 
 ### Step 3: Create Env and Install Required Dependencies 
 
@@ -127,9 +127,10 @@ Go to the official PyTorch website to find the best install command for your set
    ```
 - **2. Create the Conda Environment**
 	To create the environment, run:
-    ```
+   ```
    conda create -n VD3D python=3.9
    conda activate VD3D
+   pip install -r requirements.txt
    python VisionDepth3Dv3.py
    ```
 
