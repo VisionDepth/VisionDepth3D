@@ -102,9 +102,9 @@ Go to the official PyTorch website to find the best install command for your set
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 sometimes "pip3" doesnt work just change it to "pip"
 
-### Step 3: Create Env and Install Required Dependencies 
+### 📌 Step 3: Create Env and Install Required Dependencies 
 
-## 🟢 Option 1: Install via pip (Standard CMD Method)
+### 🟢 Option 1: Install via pip (Standard CMD Method)
 - **1️. press (Win + R), type cmd, and hit Enter.**
 - **2. Clone the Repository (Skip this if you downloaded the ZIP and just start from cd)**
   ```
@@ -114,7 +114,7 @@ sometimes "pip3" doesnt work just change it to "pip"
   python VisionDepth3Dv3.py
   ```
 
-## 🔵 Option 2: Install via Conda (Recommended)
+### 🔵 Option 2: Install via Conda (Recommended)
 
 (Automatically manages dependencies & isolates environment.)
 
