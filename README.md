@@ -108,7 +108,7 @@ Go to the official PyTorch website to find the best install command for your set
 
 ## 🟢 Option 1: Install via pip (Standard CMD Method)
 - **1️. press (Win + R), type cmd, and hit Enter.**
-- **2. Clone the Repository (Skip this if you downloaded the ZIP)**
+- **2. Clone the Repository (Skip this if you downloaded the ZIP and just start from cd)**
   ```
   git clone https://github.com/VisionDepth/VisionDepth3D.git
   cd C:\VisionDepth3D
@@ -120,7 +120,7 @@ Go to the official PyTorch website to find the best install command for your set
 
 (Automatically manages dependencies & isolates environment.)
 
-- **1. Clone the Repository (Skip this if you downloaded the ZIP)**
+- **1. Clone the Repository (Skip this if you downloaded the ZIP and start from cd)**
    ```
    git clone https://github.com/VisionDepth/VisionDepth3D.git
    cd VisionDepth3D
