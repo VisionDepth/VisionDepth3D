@@ -1,7 +1,5 @@
 # VisionDepth3D - AI-Powered Depth Map Generator and 3D Video Converter  
-## 🎥 Convert Any 2D Video into Immersive 3D!
-
-### 🎯 "Turn your 2D moments into immersive 3D realities—AI precision, cinematic depth, and VR-ready output! 🚀"
+## 🎥 Convert Any 2D Video into Immersive 3D realities—AI precision, cinematic depth, and VR-ready output! 🚀
 
 [![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.9-blue)
 
@@ -102,7 +100,7 @@ nvidia-smi
 ### 📌 Install PyTorch with the Correct CUDA Version  
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-sometimes "pip3" doesnt work just chaneg it to "pip"
+sometimes "pip3" doesnt work just change it to "pip"
 
 ### Step 3: Create Env and Install Required Dependencies 
 
