@@ -84,7 +84,7 @@ Installation Steps
 ### 📌 Step 1: Download & Extract VisionDepth3D
 - 1️⃣ Download the latest VisionDepth3D ZIP file from the official repository (green "Download" button).
 - 2️⃣ Extract the ZIP file to a folder of your choice (e.g., C:\VisionDepth3D).
-- 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1x2JApPfOcUA9EGLGEZK-Bzgur7KkGrTR/view?usp=sharing)
+- 3️⃣ Download the Backwards Warp Model and place it in the weights folder: [Here](https://drive.google.com/file/d/1uHAceuTt_E5uamILk3VfGgFSQFIQqbjc/view?usp=sharing)
 
 
 ### 📌 Step 2: Check if PyTorch with CUDA Support is installed
