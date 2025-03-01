@@ -185,10 +185,28 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 
 
 ## Depth Map File Requirements
-### 1. Just Have a Depth map Generated I suggest looking at
-- **Depth Anything V2
-- **Midas Models
-- **DPT Models
+### 1. Create a Depth map from Depth Generator Tab or use an existing
+**Lots of models to choose from!** 
+
+Some Models Inverse the depth map, check a frame before rendering a whole clip
+and toggle inverse checkbox to generate the Depthmap as higher contrast/white(close object) and lower contrast/black (Far objects) 
+- *Depth Anything V2 Large*
+- *Depth Anything V2 Base*
+- *Depth Anything V2 Small*
+- *Depth Anything V1 Large*
+- *Depth Anything V1 Base*
+- *Depth Anything V1 Small*
+- *Depth-Anything-V2-Metric-Indoor-Large*
+- *Depth-Anything-V2-Metric Outdoor-Large*
+- *depth_anything_vitl14*
+- *depth_anything_vits14*
+- *DepthPro*
+- *ZoeDepth*
+- *MiDaS 3.0*
+- *DPT-Large*
+- *dpt-dinov2-small-kitti*
+- *dpt-beit-large-512*
+
 
 ## Processing Times
 - **Estimated Times**:
