@@ -25,7 +25,7 @@ from transformers import pipeline
 device, _, _ = get_backend()
 
 # Load the trained divergence correction model
-MODEL_PATH = 'weights/backward_warping_model.keras'
+MODEL_PATH = 'weights/backward_warp_model.keras'
 model = keras.models.load_model(MODEL_PATH)
 
 # Define global flags
