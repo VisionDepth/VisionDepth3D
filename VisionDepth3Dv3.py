@@ -923,12 +923,25 @@ def process_video2(file_path):
 
 
 def open_video():
-    file_path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
+    file_path = filedialog.askopenfilename(
+        filetypes=[
+            ("All Supported Video Files", "*.mp4;*.avi;*.mov;*.mkv;*.flv;*.wmv;*.webm;*.mpeg;*.mpg"),
+            ("MP4 Files", "*.mp4"),
+            ("AVI Files", "*.avi"),
+            ("MOV Files", "*.mov"),
+            ("MKV Files", "*.mkv"),
+            ("FLV Files", "*.flv"),
+            ("WMV Files", "*.wmv"),
+            ("WebM Files", "*.webm"),
+            ("MPEG Files", "*.mpeg;*.mpg"),
+            ("All Files", "*.*")
+        ]
+    )
+
     if file_path:
         status_label.config(text="🔄 Processing video...")
         progress_bar.config(mode="determinate", maximum=100, value=0)
         threading.Thread(target=process_video2, args=(file_path,), daemon=True).start()
-
 
 
 # --- Notebook for Tabs ---
