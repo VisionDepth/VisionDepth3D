@@ -1,10 +1,10 @@
+
 import os
 import sys
 import shutil
 import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog, Label, Button, OptionMenu, StringVar, BooleanVar, Entry
-from tkinter import messagebox
 from tqdm import tqdm
 from PIL import Image, ImageTk,  ImageOps
 import cv2
@@ -16,65 +16,28 @@ import webbrowser
 import json
 import subprocess
 from tensorflow import keras
-import tensorflow as tf
 from collections import deque
+from accelerate.test_utils.testing import get_backend
 import matplotlib.cm as cm
 from transformers import pipeline
-import platform
-import torch
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-# Detect OS
-IS_WINDOWS = platform.system() == "Windows"
-IS_LINUX = platform.system() == "Linux"
-IS_MAC = platform.system() == "Darwin"
-
-# Check CUDA availability
-CUDA_AVAILABLE = False
-
-if IS_LINUX:
-    cuda_devices = tf.config.list_physical_devices('GPU')
-    CUDA_AVAILABLE = bool(cuda_devices)
-    if CUDA_AVAILABLE:
-        print("✅ CUDA detected! Running on GPU.")
-    else:
-        print("⚠️ No CUDA detected! Running on CPU.")
-
-if IS_WINDOWS or IS_MAC:
-    cuda_devices = tf.config.list_physical_devices('GPU')
-    CUDA_AVAILABLE = bool(cuda_devices)  # Converts to True/False
-
-if IS_MAC:
-    try:
-        import tensorflow as tf
-        from tensorflow.python.compiler.mlcompute import mlcompute
-        mlcompute.set_mlc_device(device_name="gpu")  # Use Apple's Metal API
-        CUDA_AVAILABLE = True
-        print("✅ Running TensorFlow on Apple Metal API (M1/M2)")
-    except ImportError:
-        print("⚠️ TensorFlow Metal API not found! Using CPU.")
-        CUDA_AVAILABLE = False
-
-if not CUDA_AVAILABLE:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU mode
-    print("🚨 Running in CPU mode since no GPU was detected!")
+# Automatically detect device (CUDA, CPU, etc.)
+device, _, _ = get_backend()
 
 # Load the trained divergence correction model
 MODEL_PATH = 'weights/backward_warping_model.keras'
 model = keras.models.load_model(MODEL_PATH)
 
-
 # Define global flags
 suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
 cancel_flag = threading.Event()
+suspend_flag = threading.Event()
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
+        base_path = sys._MEIPASS2
     except AttributeError:
         base_path = os.path.abspath(".")
 
@@ -136,11 +99,11 @@ def format_3d_output(left_frame, right_frame, output_format):
         right_frame = apply_aspect_ratio_crop(right_frame, aspect_ratio_value)
 
         # ✅ Resize for Half-OU: Height per eye halved (1920x540 total for 1080p)
-        half_height = left_frame.shape[0] // 2
-        width = left_frame.shape[1]
+        half_height = top_frame.shape[0] // 2
+        width = top_frame.shape[1]
 
-        top_resized = cv2.resize(left_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
-        bottom_resized = cv2.resize(right_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+        top_resized = cv2.resize(top_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
+        bottom_resized = cv2.resize(bottom_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
 
         ou_half_frame = np.vstack((top_resized, bottom_resized))
         print(f"✅ Half-OU Frame Created: {ou_half_frame.shape}")
@@ -235,31 +198,33 @@ def remove_white_edges(image):
     image[mask.astype(bool)] = blurred[mask.astype(bool)]
     return image
     
-
 def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
     depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
     background_mask = (depth_map >= bg_threshold).astype(np.uint8)
 
-    if not hasattr(correct_convergence_shift, "warp_params"):
-        warp_input = np.array([[bg_threshold]])
-        correct_convergence_shift.warp_params = model.predict(warp_input).reshape(3, 3)
-
-    warp_params = correct_convergence_shift.warp_params
+    # 🔥 Update warp per frame (fixes static warping issue)
+    warp_input = np.array([[np.mean(depth_map)]])  # Dynamically adjust per frame
+    warp_params = model.predict(warp_input).reshape(3, 3)
 
     h, w = left_frame.shape[:2]
-    corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h))
-    corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h))
 
-    # ✅ Force consistent sizes
-    corrected_left = cv2.resize(corrected_left, (w, h), interpolation=cv2.INTER_LANCZOS4)
-    corrected_right = cv2.resize(corrected_right, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    # ✅ Use bicubic interpolation for smoother edges
+    corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h), flags=cv2.INTER_CUBIC)
+    corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h), flags=cv2.INTER_CUBIC)
+
+    # ✅ Resize with bicubic to avoid artifacts
+    corrected_left = cv2.resize(corrected_left, (w, h), interpolation=cv2.INTER_CUBIC)
+    corrected_right = cv2.resize(corrected_right, (w, h), interpolation=cv2.INTER_CUBIC)
     background_mask = cv2.resize(background_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    # ✅ Apply mask consistently
-    corrected_left = np.where(background_mask[..., None], corrected_left, left_frame)
-    corrected_right = np.where(background_mask[..., None], corrected_right, right_frame)
+    # ✅ Soft blend background mask to reduce harsh edges
+    background_mask = cv2.GaussianBlur(background_mask.astype(np.float32), (5, 5), 2.0)
+    
+    blended_left = background_mask[..., None] * corrected_left + (1 - background_mask[..., None]) * left_frame
+    blended_right = background_mask[..., None] * corrected_right + (1 - background_mask[..., None]) * right_frame
 
-    return corrected_left, corrected_right
+    return blended_left.astype(np.uint8), blended_right.astype(np.uint8)
+
 
 
 def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
@@ -558,14 +523,11 @@ def start_processing_thread():
     process_thread.start()
 
 def select_input_video():
-    video_path = filedialog.askopenfilename(
-        filetypes=[("Video files", "*.mp4 *.avi *.mkv")],
-        title="Select Input Video",
-        initialdir=os.path.expanduser("~")  # ✅ Works on Windows, macOS, and Linux
-    )
+    video_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
+    if not video_path:
+        return
 
-    if video_path:
-        input_video_path.set(video_path)
+    input_video_path.set(video_path)
 
     # Extract video specs
     cap = cv2.VideoCapture(video_path)
@@ -627,17 +589,6 @@ def process_video():
         messagebox.showerror("Error", "Please select input video, depth map, and output path.")
         return
 
-    if not output_sbs_video_path.get():
-        messagebox.showerror("Error", "Please select an output path for the 3D video.")
-        return
-
-    output_path = output_sbs_video_path.get().strip()
-    if not output_path:
-        messagebox.showerror("Error", "Output path cannot be empty.")
-        return
-
-
-
     cap = cv2.VideoCapture(input_video_path.get())
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -653,7 +604,7 @@ def process_video():
     progress.update()
 
     # Call rendering function based on format
-    if output_format.get() in ["Full-OU", "Half-OU"]:
+    if output_format.get() == "Full-OU" "Half-OU":
         render_ou_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -736,7 +687,7 @@ def reset_settings():
     sharpness_factor.set(0.2)
     blend_factor.set(0.6)
     delay_time.set(1/30)
-    output_format.set("Full-SBS")
+    output_format = tk.StringVar(value="Full-SBS")
     
     messagebox.showinfo("Settings Reset", "All values have been restored to defaults!")
 
@@ -784,28 +735,27 @@ colormap_var = StringVar(root, value="Default")
 invert_var = BooleanVar(root, value=False)
 output_dir = ""
 
-checkpoint = supported_models[selected_model.get()]
-dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-pipe = pipeline("depth-estimation", model=checkpoint, device=device, torch_dtype=dtype)
+if selected_model.get() == "Distill-Any-Depth":
+    from gradio_client import Client, handle_file
+    pipe = Client("xingyang1/Distill-Any-Depth")
+else:
+    checkpoint = supported_models[selected_model.get()]
+    pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+
 
 
 # -----------------------
 # Functions
 # -----------------------
 def update_pipeline(*args):
-    global pipe, checkpoint
-    selected_model_str = selected_model.get()
-
-    if checkpoint == supported_models[selected_model_str]:  # ✅ Prevent redundant reloads
-        print("ℹ️ Model already loaded. Skipping reload.")
-        return
-
-    print(f"🔄 Loading Model: {selected_model_str}...")
-    checkpoint = supported_models[selected_model_str]
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    pipe = pipeline("depth-estimation", model=checkpoint, device=device, torch_dtype=dtype)
-
-    status_label.config(text=f"✅ Model updated: {selected_model_str}")
+    global pipe
+    if selected_model.get() == "Distill-Any-Depth":
+        from gradio_client import Client, handle_file
+        pipe = Client("xingyang1/Distill-Any-Depth")
+    else:
+        checkpoint = supported_models[selected_model.get()]
+        pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+    status_label.config(text=f"✅ Model updated: {selected_model.get()}")
 
 def choose_output_directory():
     global output_dir
@@ -901,15 +851,7 @@ def process_video2(file_path):
     output_filename = f"{name}_depth{ext}"
     output_path = os.path.join(output_dir, output_filename) if output_dir else output_filename
 
-    # Adjust codec based on OS
-    DEFAULT_CODEC = {
-        "Windows": "XVID",
-        "Linux": "H264",
-        "Darwin": "mp4v"
-    }.get(platform.system(), "H264")  # Default to H264 if unknown
-    fourcc = cv2.VideoWriter_fourcc(*DEFAULT_CODEC)
-
-
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') if ext.lower() == ".mp4" else cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
 
     # -----------------------
@@ -963,13 +905,7 @@ def process_video2(file_path):
 
                 # **Upscale back to original resolution before saving**
                 if target_size and target_size != (original_width, original_height):
-                    height_ratio = original_height / depth_frame.shape[0]
-                    width_ratio = original_width / depth_frame.shape[1]
-                    resize_ratio = min(height_ratio, width_ratio)
-
-                    new_size = (int(depth_frame.shape[1] * resize_ratio), int(depth_frame.shape[0] * resize_ratio))
-                    depth_frame = cv2.resize(depth_frame, new_size, interpolation=cv2.INTER_CUBIC)
-
+                    depth_frame = cv2.resize(depth_frame, (original_width, original_height))
 
                 out.write(depth_frame)
 
