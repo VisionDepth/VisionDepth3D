@@ -1,4 +1,4 @@
-# VisionDepth3D - AI-Powered Depth Map Generator and 3D Video Converter  
+# VisionDepth3D - Depth Map Generator and 3D Video Converter  
 ## 🎥 Convert Any 2D Video into Immersive 3D realities—AI precision, cinematic depth, and VR-ready output! 🚀
 
 [![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.9-blue)
@@ -15,7 +15,7 @@
 - [📄 Pulfrich Effect Explained](#pulfrich-effect-explained)
 - [🐛 Troubleshooting](#troubleshooting)
 - [👨‍💻 Dev Notes](#-notes)
-
+- [📜 Acknowledgments & Credits](#-acknowledgments--credits)
 
 ## 🚀 Key Features
 
@@ -190,6 +190,7 @@ Below is a guide to help you understand and adjust each parameter in the GUI.
 
 Some Models Inverse the depth map, check a frame before rendering a whole clip
 and toggle inverse checkbox to generate the Depthmap as higher contrast/white(close object) and lower contrast/black (Far objects) 
+- *Distil Any Depth Large*
 - *Depth Anything V2 Large*
 - *Depth Anything V2 Base*
 - *Depth Anything V2 Small*
@@ -233,7 +234,7 @@ plus 3D render time
 - 🚀 Active Development: This project is constantly evolving. If you encounter any issues, have questions, or suggestions, please feel free to start a conversation in the Discussions tab. Your feedback is always appreciated!
   
 - 👨‍💻 Solo Developer Notice: As a solo developer working on this project during my limited free time (~4 hours per night), I truly appreciate your patience and understanding as I continue to improve the software, squash bugs, and fine-tune features to deliver the best 3D rendering experience possible.
-  
+
 ## Pulfrich Effect Explained
 - **How to Use the Pulfrich Effect in Your Program**
 -- The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
@@ -249,3 +250,33 @@ No manual intervention is required for smooth scene transitions.
 
 - **Delay Time Control**: Modify the Delay Time parameter to fine-tune the temporal offset.
 A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
+
+## 📜 Acknowledgments & Credits
+
+I want to express my gratitude to the amazing creators and contributors behind the depth estimation models used in this project. Your work has made it possible to push the boundaries of 3D rendering and video processing. 🙌
+
+### **Supported Depth Models**
+| Model Name | Creator / Organization | Hugging Face Repository |
+|------------|------------------------|-------------------------|
+| **Distil-Any-Depth-Large** | Keetrap | [Distil-Any-Depth-Large-hf](https://huggingface.co/keetrap/Distil-Any-Depth-Large-hf) |
+| **Depth Anything V2 Large** | Depth Anything Team | [Depth-Anything-V2-Large-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
+| **Depth Anything V2 Base** | Depth Anything Team | [Depth-Anything-V2-Base-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf) |
+| **Depth Anything V2 Small** | Depth Anything Team | [Depth-Anything-V2-Small-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf) |
+| **Depth Anything V1 Large** | LiheYoung | [Depth-Anything-V2-Large](https://huggingface.co/LiheYoung/Depth-Anything-V2-Large) |
+| **Depth Anything V1 Base** | LiheYoung | [depth-anything-base-hf](https://huggingface.co/LiheYoung/depth-anything-base-hf) |
+| **Depth Anything V1 Small** | LiheYoung | [depth-anything-small-hf](https://huggingface.co/LiheYoung/depth-anything-small-hf) |
+| **V2-Metric-Indoor-Large** | Depth Anything Team | [Depth-Anything-V2-Metric-Indoor-Large-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf) |
+| **V2-Metric-Outdoor-Large** | Depth Anything Team | [Depth-Anything-V2-Metric-Outdoor-Large-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf) |
+| **DA_vitl14** | LiheYoung | [depth_anything_vitl14](https://huggingface.co/LiheYoung/depth_anything_vitl14) |
+| **DA_vits14** | LiheYoung | [depth_anything_vits14](https://huggingface.co/LiheYoung/depth_anything_vits14) |
+| **DepthPro** | Apple | [DepthPro-hf](https://huggingface.co/apple/DepthPro-hf) |
+| **ZoeDepth** | Intel | [zoedepth-nyu-kitti](https://huggingface.co/Intel/zoedepth-nyu-kitti) |
+| **MiDaS 3.0** | Intel | [dpt-hybrid-midas](https://huggingface.co/Intel/dpt-hybrid-midas) |
+| **DPT-Large** | Intel | [dpt-large](https://huggingface.co/Intel/dpt-large) |
+| **DinoV2** | Facebook | [dpt-dinov2-small-kitti](https://huggingface.co/facebook/dpt-dinov2-small-kitti) |
+| **dpt-beit-large-512** | Intel | [dpt-beit-large-512](https://huggingface.co/Intel/dpt-beit-large-512) |
+
+**🙏 Thank You!**
+A huge thank you to all the researchers, developers, and contributors who created and shared these models. Your work is inspiring and enables developers like me to build exciting and innovative applications! 🚀💙
+
+
