@@ -20,6 +20,7 @@ from collections import deque
 from accelerate.test_utils.testing import get_backend
 import matplotlib.cm as cm
 from transformers import pipeline
+sys.path.append("modules")
 
 # Automatically detect device (CUDA, CPU, etc.)
 device, _, _ = get_backend()
@@ -83,32 +84,15 @@ def format_3d_output(left_frame, right_frame, output_format):
 
 
     elif output_format == "Full-OU":
-        if left_frame.shape != right_frame.shape:
-            print(f"⚠ Mismatch Detected! Resizing frames for Full-OU... {left_frame.shape} vs {right_frame.shape}")
-            left_frame = cv2.resize(left_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-            right_frame = cv2.resize(right_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-        
-        ou_frame = np.vstack((left_frame, right_frame))  # Final size should be 3840x3216
-        print(f"✅ Full-OU Frame Created: {ou_frame.shape}")
-        return ou_frame
+            return np.vstack((left_frame, right_frame))  # 1920x2160
 
     elif output_format == "Half-OU":
-        # ✅ Apply selected aspect ratio before resizing
-        aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
-        left_frame = apply_aspect_ratio_crop(left_frame, aspect_ratio_value)
-        right_frame = apply_aspect_ratio_crop(right_frame, aspect_ratio_value)
+        # ✅ Half-OU = 1920x540 per eye (for passive 3D TVs)
+        target_height = height // 2
+        left_resized = cv2.resize(left_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
+        right_resized = cv2.resize(right_frame, (width, 540), interpolation=cv2.INTER_LANCZOS4)
 
-        # ✅ Resize for Half-OU: Height per eye halved (1920x540 total for 1080p)
-        half_height = top_frame.shape[0] // 2
-        width = top_frame.shape[1]
-
-        top_resized = cv2.resize(top_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
-        bottom_resized = cv2.resize(bottom_frame, (width, half_height), interpolation=cv2.INTER_LANCZOS4)
-
-        ou_half_frame = np.vstack((top_resized, bottom_resized))
-        print(f"✅ Half-OU Frame Created: {ou_half_frame.shape}")
-        return ou_half_frame
-
+        return np.vstack((left_resized, right_resized))  # 1920x1080
 
     elif output_format == "VR":
         # ✅ VR Headsets require per-eye aspect ratio correction (e.g., Oculus)
@@ -122,7 +106,7 @@ def format_3d_output(left_frame, right_frame, output_format):
     else:
         print(f"⚠ Warning: Unknown output format '{output_format}', defaulting to SBS.")
         return np.hstack((left_frame, right_frame))  # Default to Full-SBS
-        
+            
 
 def generate_anaglyph_3d(left_frame, right_frame):
     """Creates a properly balanced True Red-Cyan Anaglyph 3D effect."""
@@ -148,22 +132,47 @@ def generate_anaglyph_3d(left_frame, right_frame):
 
     return anaglyph
 
-def apply_aspect_ratio_crop(frame, aspect_ratio):
-    """Crops the frame to the selected aspect ratio while maintaining width."""
+def apply_aspect_ratio_crop(frame, aspect_ratio, is_full_ou=False):
+    """Crops the frame to the selected aspect ratio while maintaining width.
+       If is_full_ou is True, handles Full-OU stacking correctly.
+    """
     height, width = frame.shape[:2]
-    target_height = int(width / aspect_ratio)  # Calculate new height for the given aspect ratio
 
-    if target_height >= height:
-        return frame  # No cropping needed
+    # ✅ Debug: Print original frame size
+    print(f"🟢 Original Frame Size: {width}x{height}")
 
-    crop_y = (height - target_height) // 2
-    cropped_frame = frame[crop_y:crop_y + target_height, :]
+    if is_full_ou:
+        # ✅ Split into two halves
+        half_height = height // 2
+        top_half = frame[:half_height, :]
+        bottom_half = frame[half_height:, :]
 
-    print(f"✅ Aspect Ratio Applied | {width}x{target_height} ({aspect_ratio})")
-    return cv2.resize(cropped_frame, (width, target_height), interpolation=cv2.INTER_AREA)  # Ensure resizing is applied correctly
+        # ✅ Crop both halves separately
+        top_cropped = apply_aspect_ratio_crop(top_half, aspect_ratio, is_full_ou=False)
+        bottom_cropped = apply_aspect_ratio_crop(bottom_half, aspect_ratio, is_full_ou=False)
 
+        # ✅ Stack them back together
+        cropped_frame = np.vstack((top_cropped, bottom_cropped))
+    else:
+        # ✅ Calculate the correct target height
+        target_height = int(width / aspect_ratio)
+        if target_height >= height:
+            print("✅ No cropping needed. Returning original frame.")
+            return frame  # No cropping needed
 
+        crop_y = (height - target_height) // 2
+        cropped_frame = frame[crop_y:crop_y + target_height, :]
 
+        # ✅ Debug: Show cropped frame size
+        print(f"✅ Cropped Frame Size: {width}x{target_height} (Aspect Ratio: {aspect_ratio})")
+
+    # ✅ Ensure correct final resizing
+    final_frame = cv2.resize(cropped_frame, (width, cropped_frame.shape[0]), interpolation=cv2.INTER_AREA)
+
+    # ✅ Debug: Check resized frame size
+    print(f"🔵 Resized Frame Size: {final_frame.shape[1]}x{final_frame.shape[0]}")
+
+    return final_frame
 
 # Initialize a history buffer to track black bar detections
 black_bar_history = deque(maxlen=10)  # Stores the last 10 frames
@@ -410,24 +419,30 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
         print("❌ Error: Unable to read the first frame.")
         return
 
-    # ✅ Aspect ratio crop to determine final height
+    # ✅ Get aspect ratio & resize first frame
     aspect_ratio_value = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
     cropped_frame = apply_aspect_ratio_crop(first_frame, aspect_ratio_value)
-    height = cropped_frame.shape[0]  # Update height based on cropped frame
+    height = cropped_frame.shape[0]
 
-    # 🎬 Initialize VideoWriter with correct height (Full-OU: height*2, Half-OU: height)
+    # ✅ Set output height correctly for Half-OU
     output_height = height * 2 if output_format == "Full-OU" else height
-    out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*codec), fps, (width, output_height))
 
-    if not original_cap.isOpened() or not depth_cap.isOpened() or not out.isOpened():
-        print("❌ Error: Unable to open input/depth video or VideoWriter failed.")
+    # 🔥 DEBUG: Print codec info
+    print(f"📝 Selected Codec: {codec} | FPS: {fps} | Resolution: {width}x{output_height}")
+
+    # ✅ Select correct codec
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+
+   # ✅ Initialize VideoWriter
+    out = cv2.VideoWriter(output_video, fourcc, fps, (width, output_height))
+    if not out.isOpened():
+        print("❌ ERROR: VideoWriter failed to initialize. Check codec or resolution.")
         return
-    original_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    depth_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
+        
     total_frames = int(original_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     reference_crop = None
     start_time, prev_time = time.time(), time.time()
+    fps_values = []  # Store last few FPS values for smoothing
 
     for frame_idx in range(total_frames):
         if cancel_flag and cancel_flag.is_set():
@@ -441,6 +456,33 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
         ret2, depth_frame = depth_cap.read()
         if not ret1 or not ret2:
             break
+
+        percentage = (frame_idx / total_frames) * 100
+        elapsed_time = time.time() - start_time
+
+        # ✅ **Calculate FPS with Moving Average**
+        curr_time = time.time()
+        frame_time = curr_time - prev_time  # Time taken for one frame
+
+        if frame_time > 0:
+            fps_calc = 1.0 / frame_time  # FPS based on actual frame time
+            fps_values.append(fps_calc)
+
+        if len(fps_values) > 10:  # Keep last 10 FPS values for smoothing
+            fps_values.pop(0)
+
+        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0  # Compute average FPS
+
+        # ✅ **Update Progress Bar and FPS Display**
+        if progress:
+            progress["value"] = percentage
+            progress.update()
+        if progress_label:
+            progress_label.config(
+                text=f"{percentage:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed_time))}"
+            )
+
+        prev_time = curr_time  # Update previous frame time
 
         # ✅ Black bar removal once, reused
         if reference_crop is None:
@@ -486,33 +528,39 @@ def render_ou_3d(input_video, depth_video, output_video, codec, fps, width, heig
             top_frame[y] = cv2.remap(frame_resized, map_x_top, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
             bottom_frame[y] = cv2.remap(frame_resized, map_x_bottom, map_y[y].reshape(1, -1), interpolation=cv2.INTER_CUBIC)
 
-        # ✅ Apply sharpening
+        # ✅ Apply sharpening filter
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5 + sharpness_factor, -1], [0, -1, 0]])
         top_sharp = cv2.filter2D(top_frame, -1, sharpen_kernel)
         bottom_sharp = cv2.filter2D(bottom_frame, -1, sharpen_kernel)
 
-        # ✅ Format the final 3D output frame
+        # ✅ Ensure the output format function returns a valid frame
         ou_frame = format_3d_output(top_sharp, bottom_sharp, output_format)
+
+        if ou_frame is None:
+            print("❌ Error: format_3d_output() returned None!")
+            return
 
         # ✅ Dynamically check expected size based on output format
         expected_height = height * 2 if output_format == "Full-OU" else height
         expected_width = width  # width stays the same
-
+        
         h, w = ou_frame.shape[:2]
         if (w, h) != (expected_width, expected_height):
-            print(f"⚠ Warning: Frame size mismatch! Expected: {expected_width}x{expected_height}, Got: {w}x{h}")
+            print(f"⚠ Warning: Resizing output to match expected Full-OU dimensions ({expected_width}x{expected_height})")
             ou_frame = cv2.resize(ou_frame, (expected_width, expected_height), interpolation=cv2.INTER_AREA)
 
-        # ✅ Write frame and track success
-        try:
-            out.write(ou_frame)
-        except Exception as e:
-            print(f"❌ Error writing frame {frame_idx}: {e}")
+        # ✅ Final debug check before writing the frame
+        if ou_frame is None or ou_frame.shape[0] == 0 or ou_frame.shape[1] == 0:
+            print("❌ Fatal Error: OU Frame is invalid before writing to file!")
+            return  # Avoid writing a blank/broken frame
+
+        out.write(ou_frame)  # 📝 Now safe to write
+
 
     original_cap.release()
     depth_cap.release()
     out.release()
-    print(f"🎬 OU 3D video generated successfully: {output_video}")
+    print(f"🎬 Full-OU 3D video generated successfully: {output_video}")
 
 
 def start_processing_thread():
@@ -604,7 +652,7 @@ def process_video():
     progress.update()
 
     # Call rendering function based on format
-    if output_format.get() == "Full-OU" "Half-OU":
+    if output_format.get() in ["Full-OU", "Half-OU"]: 
         render_ou_3d(
             input_video_path.get(),
             selected_depth_map.get(),
@@ -712,6 +760,7 @@ background_label.place(x=0, y=0, relwidth=1, relheight=1)
 
 
 supported_models = {
+    "Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
     "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
     "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
     "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -730,32 +779,20 @@ supported_models = {
     "dpt-beit-large-512": "Intel/dpt-beit-large-512"
 }
 
-selected_model = StringVar(root, value="Depth Anything V2 Large")
+selected_model = StringVar(root, value="Distil-Any-Depth-Large")
 colormap_var = StringVar(root, value="Default")
 invert_var = BooleanVar(root, value=False)
 output_dir = ""
-
-if selected_model.get() == "Distill-Any-Depth":
-    from gradio_client import Client, handle_file
-    pipe = Client("xingyang1/Distill-Any-Depth")
-else:
-    checkpoint = supported_models[selected_model.get()]
-    pipe = pipeline("depth-estimation", model=checkpoint, device=device)
-
-
 
 # -----------------------
 # Functions
 # -----------------------
 def update_pipeline(*args):
     global pipe
-    if selected_model.get() == "Distill-Any-Depth":
-        from gradio_client import Client, handle_file
-        pipe = Client("xingyang1/Distill-Any-Depth")
-    else:
-        checkpoint = supported_models[selected_model.get()]
-        pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+    checkpoint = supported_models[selected_model.get()]  # ✅ Assign correctly
+    pipe = pipeline("depth-estimation", model=checkpoint, device=device)
     status_label.config(text=f"✅ Model updated: {selected_model.get()}")
+
 
 def choose_output_directory():
     global output_dir
@@ -944,19 +981,12 @@ def open_video():
         threading.Thread(target=process_video2, args=(file_path,), daemon=True).start()
 
 
+
 # --- Notebook for Tabs ---
 tab_control = ttk.Notebook(root)
 tab_control.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.8)
 
-# --- 3D Video Generator Tab ---
-visiondepth_frame = tk.Frame(tab_control)
-tab_control.add(visiondepth_frame, text="3D Video Generator")
-
-# ✅ Same styled content_frame for VisionDepth3D tab
-visiondepth_content_frame = tk.Frame(visiondepth_frame, highlightthickness=0, bd=0)
-visiondepth_content_frame.pack(fill="both", expand=True)
-
-# --- Depth Estimation GUI (Dummy Tab) ---
+# --- Depth Estimation GUI ---
 depth_estimation_frame = tk.Frame(tab_control)
 tab_control.add(depth_estimation_frame, text="Depth Estimation")
 
@@ -971,6 +1001,25 @@ sidebar.pack(side="left", fill="y")
 # Main Content Frame inside depth_content_frame
 main_content = tk.Frame(depth_content_frame, bg="#2b2b2b")
 main_content.pack(side="right", fill="both", expand=True)
+
+# --- 3D Video Generator Tab ---
+visiondepth_frame = tk.Frame(tab_control)
+tab_control.add(visiondepth_frame, text="3D Video Generator")
+
+# ✅ Same styled content_frame for VisionDepth3D tab
+visiondepth_content_frame = tk.Frame(visiondepth_frame, highlightthickness=0, bd=0)
+visiondepth_content_frame.pack(fill="both", expand=True)
+
+# --- RIFE FPS Interpolation Tab (Coming Soon Placeholder) ---
+rife_fps_frame = tk.Frame(tab_control)  # Create a new frame for RIFE
+tab_control.add(rife_fps_frame, text="RIFE FPS Interpolation")  # Add to notebook
+
+# Centered Label saying "RIFE Coming Soon"
+rife_placeholder_label = tk.Label(rife_fps_frame, text="🛠️ RIFE FPS Interpolation - Coming Soon!", 
+                                  font=("Arial", 16, "bold"), fg="gray")
+rife_placeholder_label.pack(expand=True)  # Center the label
+
+
 
 # --- Sidebar Content ---
 tk.Label(sidebar, text="🛠️ Model", bg="#1c1c1c", fg="white", font=("Arial", 11)).pack(pady=5)
@@ -1009,6 +1058,9 @@ progress_bar = ttk.Progressbar(sidebar, mode="determinate", length=180)
 progress_bar.pack(pady=10)
 status_label = tk.Label(sidebar, text="🔋 Ready", bg="#1c1c1c", fg="white")
 status_label.pack(pady=5)
+
+depth_map_label_depth = tk.Label(sidebar, text="Depth Map (Depth Estimation): None", justify="left", wraplength=200)
+depth_map_label_depth.pack(pady=5)
 
 # --- Main Content: Image previews ---
 frame_preview = tk.Frame(main_content, bg="#2b2b2b")
@@ -1094,7 +1146,7 @@ video_thumbnail_label.grid(row=0, column=0, padx=10, pady=5)
 video_specs_label = tk.Label(top_widgets_frame, text="Resolution: N/A\nFPS: N/A", justify="left")
 video_specs_label.grid(row=0, column=1, padx=10, pady=5)
 
-depth_map_label = tk.Label(top_widgets_frame, text="Depth Map: None", justify="left")
+depth_map_label = tk.Label(top_widgets_frame, text="Depth Map (3D): None", justify="left", wraplength=200)
 depth_map_label.grid(row=1, column=1, padx=10, pady=5)
 
 progress = ttk.Progressbar(top_widgets_frame, orient="horizontal", length=300, mode="determinate")
