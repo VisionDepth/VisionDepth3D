@@ -1,38 +1,47 @@
-
 import os
 import sys
 import shutil
 import tkinter as tk
-from tkinter import ttk
-from tkinter import filedialog, Label, Button, OptionMenu, StringVar, BooleanVar, Entry
+from tkinter import ttk, filedialog, Label, Button, OptionMenu, StringVar, BooleanVar, Entry
 from tqdm import tqdm
-from PIL import Image, ImageTk,  ImageOps
+from PIL import Image, ImageTk, ImageOps
+from transformers import AutoProcessor, AutoModelForDepthEstimation
 import cv2
 import numpy as np
 import time
 import threading
-from threading import Thread
 import webbrowser
 import json
 import subprocess
-from tensorflow import keras
+import onnxruntime as ort  # ONNX Inference
 from collections import deque
-from accelerate.test_utils.testing import get_backend
 import matplotlib.cm as cm
 from transformers import pipeline
+import torch
+
 sys.path.append("modules")
 
 # Automatically detect device (CUDA, CPU, etc.)
-device, _, _ = get_backend()
+device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
 
-# Load the trained divergence correction model
-MODEL_PATH = 'weights/backward_warp_model.keras'
-model = keras.models.load_model(MODEL_PATH)
+# Load the trained ONNX model
+MODEL_PATH = 'weights/backward_warping_model.onnx'
+session = ort.InferenceSession(MODEL_PATH, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+# Extract input & output names
+input_name = session.get_inputs()[0].name
+output_name = session.get_outputs()[0].name
+
+print(f"✅ Loaded ONNX model from {MODEL_PATH} on {device}")
 
 # Define global flags
 suspend_flag = threading.Event()  # ✅ Better for threading-based pausing
 cancel_flag = threading.Event()
-suspend_flag = threading.Event()
+
+
+# ✅ Initialize `pipe` globally to prevent NameError
+pipe = None  # Set to None at the start
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -207,32 +216,51 @@ def remove_white_edges(image):
     image[mask.astype(bool)] = blurred[mask.astype(bool)]
     return image
     
-def correct_convergence_shift(left_frame, right_frame, depth_map, model, bg_threshold=0.3):
+def correct_convergence_shift(left_frame, right_frame, depth_map, session, input_name, output_name, bg_threshold=3.0):
+    """
+    Adjusts convergence shift using depth-based warp parameters from an ONNX model.
+
+    Parameters:
+        left_frame (np.ndarray): Left-eye frame.
+        right_frame (np.ndarray): Right-eye frame.
+        depth_map (np.ndarray): Normalized depth map.
+        session (onnxruntime.InferenceSession): ONNX model session.
+        input_name (str): ONNX model input tensor name.
+        output_name (str): ONNX model output tensor name.
+        bg_threshold (float): Threshold for background separation.
+
+    Returns:
+        np.ndarray: Adjusted left frame.
+        np.ndarray: Adjusted right frame.
+    """
+
+    # Normalize depth map to range [0.1, 1.0]
     depth_map = cv2.normalize(depth_map, None, 0.1, 1.0, cv2.NORM_MINMAX)
     background_mask = (depth_map >= bg_threshold).astype(np.uint8)
 
-    # 🔥 Update warp per frame (fixes static warping issue)
-    warp_input = np.array([[np.mean(depth_map)]])  # Dynamically adjust per frame
-    warp_params = model.predict(warp_input).reshape(3, 3)
+    # 🔥 Use ONNX model for warp prediction
+    warp_input = np.array([[np.mean(depth_map)]], dtype=np.float32)  # Ensure float32 input
+    warp_params = session.run([output_name], {input_name: warp_input})[0].reshape(3, 3)
 
     h, w = left_frame.shape[:2]
 
-    # ✅ Use bicubic interpolation for smoother edges
+    # ✅ Apply perspective warping with bicubic interpolation
     corrected_left = cv2.warpPerspective(left_frame, warp_params, (w, h), flags=cv2.INTER_CUBIC)
     corrected_right = cv2.warpPerspective(right_frame, warp_params, (w, h), flags=cv2.INTER_CUBIC)
 
-    # ✅ Resize with bicubic to avoid artifacts
+    # ✅ Resize with bicubic interpolation to avoid artifacts
     corrected_left = cv2.resize(corrected_left, (w, h), interpolation=cv2.INTER_CUBIC)
     corrected_right = cv2.resize(corrected_right, (w, h), interpolation=cv2.INTER_CUBIC)
     background_mask = cv2.resize(background_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
     # ✅ Soft blend background mask to reduce harsh edges
     background_mask = cv2.GaussianBlur(background_mask.astype(np.float32), (5, 5), 2.0)
-    
+
     blended_left = background_mask[..., None] * corrected_left + (1 - background_mask[..., None]) * left_frame
     blended_right = background_mask[..., None] * corrected_right + (1 - background_mask[..., None]) * right_frame
 
     return blended_left.astype(np.uint8), blended_right.astype(np.uint8)
+
 
 
 
@@ -338,7 +366,8 @@ def render_sbs_3d(input_video, depth_video, output_video, codec, fps, width, hei
         depth_normalized = depth_filtered / 255.0             
         
         # Apply convergence correction BEFORE doing depth-based shifts
-        left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, model)
+        left_frame, right_frame = correct_convergence_shift(left_frame, right_frame, depth_normalized, session, input_name, output_name)
+
                
         # Generate y-coordinate mapping
         map_y = np.repeat(np.arange(height).reshape(-1, 1), width, axis=1).astype(np.float32)
@@ -787,11 +816,31 @@ output_dir = ""
 # -----------------------
 # Functions
 # -----------------------
+
 def update_pipeline(*args):
     global pipe
-    checkpoint = supported_models[selected_model.get()]  # ✅ Assign correctly
-    pipe = pipeline("depth-estimation", model=checkpoint, device=device)
-    status_label.config(text=f"✅ Model updated: {selected_model.get()}")
+
+    selected_checkpoint = selected_model.get()
+    checkpoint = supported_models.get(selected_checkpoint, None)
+
+    if checkpoint is None:
+        status_label.config(text=f"⚠️ Error: Model '{selected_checkpoint}' not found.")
+        return
+
+    try:
+        # ✅ Ensure device is set correctly for PyTorch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # ✅ Explicitly load the image processor
+        processor = AutoProcessor.from_pretrained(checkpoint)
+
+        # ✅ Load the depth-estimation pipeline
+        pipe = pipeline("depth-estimation", model=checkpoint, device=device, image_processor=processor)
+
+        status_label.config(text=f"✅ Model updated: {selected_checkpoint} (Running on {device.upper()})")
+
+    except Exception as e:
+        status_label.config(text=f"❌ Model loading failed: {str(e)}")
 
 
 def choose_output_directory():
