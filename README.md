@@ -73,15 +73,16 @@
 ## Guide Sheet: Install
 
 ### 📌 System Requirements
-- ✔️ This program runs on python 3.9
+- ✔️ This program runs on python 3.12
+- ✔️ This program has been tested on cuda 12.8
 - ✔️ pip required to install dependancies
 - ✔️ Conda (Optional, Recommended for Simplicity)
 - ❌ Linux/macOS is not officially supported until a more stable solution is found
 
-### 📌 Step 1: Download the VisionDepth3Dv2 Program
+### 📌 Step 1: Download the VisionDepth3Dv3 Program
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
 - 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- 3️⃣ Download Backwards warp model [Here](https://drive.google.com/file/d/1uHAceuTt_E5uamILk3VfGgFSQFIQqbjc/view?usp=drive_link) and put in weights folder
+- 3️⃣ Download Backwards warp model [Here](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=sharing) and put in weights folder
 
 ### 📌 Step 2: Check if PyTorch with CUDA Support is installed
 🔍 Find Your CUDA Version:
@@ -101,6 +102,8 @@ nvidia-smi
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 sometimes "pip3" doesnt work just change it to "pip"
+
+if you are running Cuda 12.8 you can install Pytorch Cuda 12.6 and it will work
 
 ### 📌 Step 3: Create Env and Install Required Dependencies 
 
