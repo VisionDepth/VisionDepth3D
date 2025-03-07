@@ -129,7 +129,7 @@ if you are running Cuda 12.8 you can install Pytorch Cuda 12.6 and it will work
 - **2. Create the Conda Environment**
 	To create the environment, run:
    ```
-   conda create -n VD3D python=3.9
+   conda create -n VD3D python=3.12
    conda activate VD3D
    pip install -r requirements.txt
    python VisionDepth3Dv3.py
