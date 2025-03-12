@@ -1,7 +1,7 @@
 # VisionDepth3D - Depth Map Generator and 3D Video Converter  
 ## 🎥 Convert Any 2D Video into Immersive 3D realities—AI precision, cinematic depth, and VR-ready output! 🚀
 
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.9-blue)
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.12-blue)
 
 ## 📖 Table of Contents
 - [🚀 Key Features](#-key-features)
