@@ -1,8 +1,12 @@
 Pillow
+numpy
 transformers
 accelerate
-numpy
-matplotlib
-opencv-python
 tqdm
+onnx
 onnxruntime-gpu
+datasets
+tk
+matplotlib
+sk-video
+moviepy
