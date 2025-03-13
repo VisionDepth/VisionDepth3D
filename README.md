@@ -8,9 +8,7 @@
 - [🎚 Advanced Depth Estimation & 3D Processing](#-advanced-depth-estimation--3d-video-processing)
 - [🖼 GUI Layout](#gui-layout)
 - [📌 System Requirements](#-system-requirements)
-- [📥 Installation](#guide-sheet-install)
-  - [🟢 Pip Installation](#-option-1-install-via-pip-standard-cmd-method)
-  - [🔵 Conda Installation (Recommended)](#-option-2-install-via-conda-recommended)
+- [📥 Installation](#guide-sheet-installation)
 - [🛠 GUI Settings & Adjustments](#guide-sheet-gui-inputs)
 - [📄 Pulfrich Effect Explained](#pulfrich-effect-explained)
 - [🐛 Troubleshooting](#troubleshooting)
@@ -69,73 +67,56 @@
 ### **Example Wigglegram** 
 ![LoganvDeadpool](https://github.com/user-attachments/assets/4afb0525-0ddf-44f4-a4fc-e97814aa0b83)
 
+---
 
-## Guide Sheet: Install
+#  Guide Sheet: Installation
 
-### 📌 System Requirements
-- ✔️ This program runs on python 3.12
-- ✔️ This program has been tested on cuda 12.8
-- ✔️ pip required to install dependancies
-- ✔️ Conda (Optional, Recommended for Simplicity)
-- ❌ Linux/macOS is not officially supported until a more stable solution is found
+## 🔹 System Requirements
+- ✔️ **Python 3.12** (Required)
+- ✔️ **CUDA 12.8** (Tested & Recommended)
+- ✔️ **pip** (Required to install dependencies)
+- ✔️ **Conda** (Optional, Recommended for Simplicity)
+- ❌ **Linux/macOS is not officially supported** (until a more stable solution is found)
 
-### 📌 Step 1: Download the VisionDepth3Dv3 Program
-- 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
-- 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- 3️⃣ Download Backwards warp model [Here](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=sharing) and put in weights folder
+---
 
-### 📌 Step 2: Check if PyTorch with CUDA Support is installed
-🔍 Find Your CUDA Version:
-Before installing PyTorch, check which CUDA version your GPU supports:
-- 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
-- 2️⃣ Run the following command:
-```
-nvcc --version
-```
-or 
-```
-nvidia-smi
-```
-- 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
-  
+## 🔹 Step 1: Download the VisionDepth3D Program
+1️⃣ **Download the VisionDepth3D ZIP file** from the official GitHub repository (Green button).  
+2️⃣ **Extract** the ZIP file to your desired folder, e.g., `C:\VisionDepth3D`.  
+3️⃣ **Download the Backwards Warp Model**  
+   - 📥 [Click Here to Download](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=sharing)  
+   - Move the downloaded file into the **`weights`** folder inside VisionDepth3D.
+4️⃣ **Run `install.bat`** (Double-click)  
+   - This will **create the `VD3DGPU` Conda environment** and install all dependencies.
+ 
+---
+
+## 🔹 Step 2: Install OpenCV with GPU Acceleration
+
+### 📥 **Download the OpenCV GPU Package**
+📥 **Download the ZIP file from GitHub Releases:**  
+🔗 [OpenCV GPU Package v4.12.0](https://github.com/VisionDepth/openCV-GPU/releases/download/v4.12.0/opencv_gpu_custom-4.12.0.zip)
+
+### 📦 **Extract & Install OpenCV**
+1️⃣ **Extract** `opencv_gpu_custom-4.12.0.zip` to any folder.  
+2️⃣ **Run `install_cv2.bat`** (Double-click)  
+
+   - This will **install OpenCV GPU support into the environment**.
+
+✅ **Now, OpenCV GPU is installed!**
+
 ### 📌 Install PyTorch with the Correct CUDA Version  
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-sometimes "pip3" doesnt work just change it to "pip"
+and install inside created environment
+
+⚠️ sometimes "pip3" doesnt work just change it to "pip"
 
 if you are running Cuda 12.8 you can install Pytorch Cuda 12.6 and it will work
 
-### 📌 Step 3: Create Env and Install Required Dependencies 
-
-### 🟢 Option 1: Install via pip (Standard CMD Method)
-- **1️. press (Win + R), type cmd, and hit Enter.**
-- **2. Clone the Repository (Skip this if you downloaded the ZIP and just start from cd)**
-  ```
-  git clone https://github.com/VisionDepth/VisionDepth3D.git
-  cd C:\VisionDepth3D
-  pip install -r requirements.txt
-  python VisionDepth3Dv3.py
-  ```
-
-### 🔵 Option 2: Install via Conda (Recommended)
-
-(Automatically manages dependencies & isolates environment.)
-
-- **1. Clone the Repository (Skip this if you downloaded the ZIP and start from cd)**
-   ```
-   git clone https://github.com/VisionDepth/VisionDepth3D.git
-   cd VisionDepth3D
-   ```
-- **2. Create the Conda Environment**
-	To create the environment, run:
-   ```
-   conda create -n VD3D python=3.12
-   conda activate VD3D
-   pip install -r requirements.txt
-   python VisionDepth3Dv3.py
-   ```
-
 This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
+
+---
 
 ### Guide Sheet: GUI Inputs
 Below is a guide to help you understand and adjust each parameter in the GUI.
