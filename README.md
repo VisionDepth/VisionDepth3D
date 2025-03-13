@@ -75,21 +75,35 @@
 - ✔️ **Python 3.12** (Required)
 - ✔️ **CUDA 12.8** (Tested & Recommended)
 - ✔️ **pip** (Required to install dependencies)
-- ✔️ **Conda** (Optional, Recommended for Simplicity)
+- ✔️ **Conda** (Recommended for Simplicity)
 - ❌ **Linux/macOS is not officially supported** (until a more stable solution is found)
 
 ---
 
 ## 🔹 Step 1: Download the VisionDepth3D Program
+### ⚠️ Make Sure to not install opencv-python, this will overwrite GPU Support
+### If you Have VD3D environment set up already delete it and start fresh
+
+   ```
+ conda remove -n VD3D --all
+   ```
+
 1️⃣ **Download the VisionDepth3D ZIP file** from the official GitHub repository (Green button).  
-2️⃣ **Extract** the ZIP file to your desired folder, e.g., `C:\VisionDepth3D`.  
+2️⃣ **Extract** the ZIP file to your desired folder, e.g., `C:User\VisionDepth3D-Main`.  
 3️⃣ **Download the Backwards Warp Model**  
    - 📥 [Click Here to Download](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=sharing)  
    - Move the downloaded file into the **`weights`** folder inside VisionDepth3D.
 
-4️⃣ **Run `install.bat`** (Double-click)  
-   - This will **create the `VD3DGPU` Conda environment** and install all dependencies.
- 
+4️⃣ **Create Environment**
+   - This will **create the `VD3D` Conda environment** and install all dependancies
+
+   ```
+conda create -n VD3D python=3.12
+conda activate VD3D
+cd C:\User\VisionDepth3D-Main # Change to Path of main script
+pip install -r requirements.txt
+   ```
+
 ---
 
 ## 🔹 Step 2: Install OpenCV with GPU Acceleration
@@ -99,23 +113,35 @@
 🔗 [OpenCV GPU Package v4.12.0](https://github.com/VisionDepth/openCV-GPU/releases/download/v4.12.0/opencv_gpu_custom-4.12.0.zip)
 
 ### 📦 **Extract & Install OpenCV**
-1️⃣ **Extract** `opencv_gpu_custom-4.12.0.zip` to any folder.  
-2️⃣ **Run `install_cv2.bat`** (Double-click)  
+1️⃣ **Extract** `opencv_gpu_custom-4.12.0.zip` to VisionDepth3D-Main Folder.  
+2️⃣ **Run `install_cv2.bat`** (In open environment)  
+
+   ```
+cd C:\User\VisionDepth3D-Main\opencv_gpu_release
+install_cv2.bat
+   ``` 
 
    - This will **install OpenCV GPU support into the environment**.
 
 ✅ **Now, OpenCV GPU is installed!**
 
-### 📌 Install PyTorch with the Correct CUDA Version  
+##🔹 Step 3: Install PyTorch with the Correct CUDA Version  
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-and install inside created environment
+and install inside created VD3D environment
 
 ⚠️ sometimes "pip3" doesnt work just change it to "pip"
 
 if you are running Cuda 12.8 you can install Pytorch Cuda 12.6 and it will work
 
-This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
+## 🔹 Step 4: **Open VisionDepth3D**
+
+   ```
+cd C:\User\VisionDepth3D-Main
+python VisionDepth3D.py
+   ``` 
+
+*This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.*
 
 ---
 
