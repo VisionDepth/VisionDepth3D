@@ -1,28 +1,26 @@
-# VisionDepth3D - Depth Map Generator and 3D Video Converter  
-## Convert Any 2D Video into Immersive 3D realities—AI precision, cinematic depth, and VR-ready output!
+# <h1 align="center">VisionDepth3D</h1>  
+## <h2 align="center">3D Video Converter and Depth map Generator </h2> 
+### <h3 align="center">[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.12-blue)
+</h3>
 
 ---
 
 ## **GUI Layout**
 ![GUITabsSBS](https://github.com/user-attachments/assets/337a6bd3-43ad-4f25-ab63-4563387305d6)
-### **Example Wigglegram** 
-![LoganvDeadpool](https://github.com/user-attachments/assets/4afb0525-0ddf-44f4-a4fc-e97814aa0b83)
 
 ---
 
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Python Version](https://img.shields.io/badge/python-3.12-blue)
-
 ## 📖 Table of Contents
-- [Key Features](#-key-features)
-- [Advanced Depth Estimation & 3D Processing](#-advanced-depth-estimation--3d-video-processing)
+- [Key Features](#key-features)
+- [Advanced Depth Estimation & 3D Processing](#advanced-depth-estimation--3d-video-processing)
 - [GUI Layout](#gui-layout)
 - [System Requirements](#-system-requirements)
 - [Installation](#guide-sheet-installation)
 - [GUI Settings & Adjustments](#guide-sheet-gui-inputs)
 - [Pulfrich Effect Explained](#pulfrich-effect-explained)
 - [Troubleshooting](#troubleshooting)
-- [Dev Notes](#-notes)
-- [Acknowledgments & Credits](#-acknowledgments--credits)
+- [Dev Notes](#notes)
+- [Acknowledgments & Credits](#acknowledgments--credits)
 
 ## Key Features
 
