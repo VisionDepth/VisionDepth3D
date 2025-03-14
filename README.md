@@ -1,6 +1,6 @@
 # <h1 align="center">VisionDepth3D</h1>  
 ## <h2 align="center">3D Video Converter and Depth map Generator </h2> 
-### <h3 align="center">[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) ![Downloads](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/v1.0/total?color=green&label=Downloads%20)![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
+### <h3 align="center">[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) [![Github All Releases](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg)]() ![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
 
 ---
 
