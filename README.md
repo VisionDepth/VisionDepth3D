@@ -10,7 +10,7 @@
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 - [Key Features](#key-features)
 - [Advanced Depth Estimation & 3D Processing](#advanced-depth-estimation--3d-video-processing)
 - [GUI Layout](#gui-layout)
