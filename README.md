@@ -71,11 +71,6 @@
 - Slider Controls for Divergence shift, Depth Transition, Convergence shift, Pulfrich effect and Frame blending
 - Live Controls (Pause, resume, or cancel rendering anytime!)
 
-## **GUI Layout**
-![GUITabsSBS](https://github.com/user-attachments/assets/337a6bd3-43ad-4f25-ab63-4563387305d6)
-### **Example Wigglegram** 
-![LoganvDeadpool](https://github.com/user-attachments/assets/4afb0525-0ddf-44f4-a4fc-e97814aa0b83)
-
 ---
 
 #  Guide Sheet: Installation
