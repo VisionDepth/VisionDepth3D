@@ -96,7 +96,7 @@
    - Move the downloaded file into the **`weights`** folder inside VisionDepth3D.
 
 4️⃣ **Create Environment**
-   - This will **create the `VD3D` Conda environment** and install all dependancies
+   - This will **create the `VD3D` Conda environment** and install all dependencies
 
    ```
 conda create -n VD3D python=3.12
