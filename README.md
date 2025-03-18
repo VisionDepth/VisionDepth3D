@@ -72,77 +72,127 @@
 
 #  Guide Sheet: Installation
 
-## 🔹 System Requirements
-- ✔️ **Python 3.12** (Required)
-- ✔️ **CUDA 12.8** (Tested & Recommended)
-- ✔️ **pip** (Required to install dependencies)
-- ✔️ **Conda** (Recommended for Simplicity)
-- ❌ **Linux/macOS is not officially supported** (until a more stable solution is found)
+### To use this software users must have the following requirements
+- Conda prompt ([Anaconda](https://www.anaconda.com/download/success))(Miniconda Recommended)
+- openCV built with CUDA
+- Pytorch-cu+12.6 ([PyTorch link](https://pytorch.org/get-started/locally/))
+- Python 3.12
+- CUDA 12.8 (Tested & Recommended)
+- VisionDepth3D-Package
 
----
+## -- installation --
+Remove any old visiondepth you may have already downloaded
+```
+conda env list
+```
+remove with
+```
+conda remove -n anyoldVD3D --all #change -n to one you want to remove
+```
 
-## 🔹 Step 1: Download the VisionDepth3D Program
-### ⚠️ Make Sure to not install opencv-python, this will overwrite GPU Support
-### If you Have VD3D environment set up already delete it and start fresh
+**Build openCV+CUDA**
+1. First thing you want to do is create an environment
+```
+conda create -n Name python=3.12 #change -n to desired name of env
+conda activate Name
+```
+2. Next thing to do is download [cmake](https://cmake.org/download/) and openCV Source codes
+[openCV](https://github.com/opencv/opencv) and [openCV_contrib](https://github.com/opencv/opencv_contrib) 
 
-   ```
- conda remove -n VD3D --all
-   ```
+3. create three directories where you are going to use for cmake and openCV folder that will hold your Build Folder, in activated environment  enter:
+```
+cd C:/Users/ # change to desired path of installation
+```
+```
+mkdir openCVCUDA
+```
+4. then extract download opencv source codes to this location for simplicity after you do this you can finish setting up other directories
 
-1️⃣ **Download the VisionDepth3D ZIP file** from the official GitHub repository (Green button).  
-2️⃣ **Extract** the ZIP file to your desired folder, e.g., `C:User\VisionDepth3D-Main`.  
-3️⃣ **Download the Backwards Warp Model**  
-   - [Click Here to Download](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=sharing)  
-   - Move the downloaded file into the **`weights`** folder inside VisionDepth3D.
+```
+mkdir cmake
+mkdir openCV
+cd openCV
+mkdir build
+```
+5. Open cmake and load up openCV and set location to build your binaries like this and press configure (Change paths accordingly)
+![image](https://github.com/user-attachments/assets/4f56d9f9-9fbe-425b-87bb-0fe15bb6fd2f)
 
-4️⃣ **Create Environment**
-   - This will **create the `VD3D` Conda environment** and install all dependencies
+6. Next specify the generator for this project, I use Visual Studio 16 2019 Havent Tested on vs17, Choose a platform for the generator, i chose x64 because that is what I am running, hit finish and the prompt will configure the files
+![image](https://github.com/user-attachments/assets/95dc8c8a-0e5d-4985-904c-1afa41b7dbb7)
 
-   ```
-conda create -n VD3D python=3.12
-conda activate VD3D
-cd C:\User\VisionDepth3D-Main # Change to Path of main script
+7. Once complete you should have a window of generated files
+![image](https://github.com/user-attachments/assets/604ba852-a62d-40af-83f8-a2a68bc5ffa4)
+
+8. toggle these one by one. WITH_CUDA, BUILD_opencv_world, ENABLE_FAST_MATH, Set OPENCV_EXTRA_MODULES_PATH to C:\Users\openCVGPU\opencv_contrib-4.x\modules
+
+![image](https://github.com/user-attachments/assets/6ca661bf-dad8-4f6c-98d1-13357d094b40)
+![image](https://github.com/user-attachments/assets/a7f201e4-06b9-472c-a213-a9a03793cecb)
+![image](https://github.com/user-attachments/assets/e5f14535-0e7f-4c97-ac1a-43557ec2ad53)
+![image](https://github.com/user-attachments/assets/7a6d0b9a-9a64-4436-979d-73a09c0c9036)
+![image](https://github.com/user-attachments/assets/195ad1b6-ad3c-4347-9a13-d5e1b68ab32f)
+![image](https://github.com/user-attachments/assets/87f6ce7e-e6aa-4caa-b27b-f48266462cf3)
+
+9. toggle these three off from test we don't need em
+![image](https://github.com/user-attachments/assets/16196b81-a450-41ce-af48-e170bf375cac)
+
+10. Search CUDA And toggle OPENCV_DNN_CUDA
+![image](https://github.com/user-attachments/assets/38cfb8b1-95ea-425a-a9f2-cd143cd67a64)
+
+11. ###⚠️Important⚠️
+Make sure you specify the paths to the correct environment 
+- PYTHON3_EXECUTABLE: when you created the environment you installed python 3.12 you can find the .exe in the env folder from conda 
+-  PYTHON3_INCLUDE_DIR: set to main Miniconda or Anaconda include folder
+- PYTHON3_LIBRARY: you can set this to the python312.lib in your Miniconda or Anaconda folder
+- PYTHON3_NUMPY_INCLUDE_DIRS: you can set it to numpy installed in environement miniconda3/envs/Name/Lib/site-packages/numpy/_core/include(Change accordingly)
+- PYTHON3_PACKAGES_PATH: set this to your environments site-packages folder inside Lib folder
+
+![image](https://github.com/user-attachments/assets/dfa50faf-574d-4996-bfd4-43940c38e1f7)
+
+12. change CMAKE_INSTALL_PREFIX to the build folder we created 
+![image](https://github.com/user-attachments/assets/af2f689b-0324-4e43-88b5-7ebde4de815a)
+
+Hit configure again to generate more options and update files, An error will pop up but thats ok we still have more to toggle, 
+
+13. Set CUDA_FAST_MATH 
+![image](https://github.com/user-attachments/assets/461a5656-ce0e-45d9-b012-91f9994a2a7a)
+
+14. Enter your CUDA ARCH BIN and PTX for your required system 
+![image](https://github.com/user-attachments/assets/d113d5c8-e2ac-468a-96d8-6948c10d9f57)
+
+15. Click Configure Again and it it should configure correctly, if not check python paths 
+16. Click Generate, then click open project to open Visual Studios generator
+17. in Visual Studios in the top bar where it says debug, change that to Release
+![image](https://github.com/user-attachments/assets/9999a63e-1f1c-4565-9ff4-008ab599b620)
+18. Next up is to build solution, your script will start Building openCV together with the files we generated in cmake, this may take 1-3 hours depending on system
+![image](https://github.com/user-attachments/assets/fd68cb93-9971-4a6b-950a-7f07ba33dd3c)
+19. once that is finished in the solution explorer right click INSTALL and click build, this will install openCV+gpu to environment since we set our python paths 
+![image](https://github.com/user-attachments/assets/731c7f37-4871-4c33-a95f-3de4f5414dbe)
+
+20. Next Check if opencv is installed in activated environment
+```
+opencv_version.exe
+```
+![image](https://github.com/user-attachments/assets/fa08e246-a640-4838-a2c4-002a61956854)
+
+If you Get This you have successfully built openCV with CUDA Support
+
+## Install VisionDepth3D
+next change directories to the place you unzipped the VisionDepth3D-Package and install requirements
+```
+cd VisionDepth3D-Package
 pip install -r requirements.txt
-   ```
+```
+after it finishes install the latest pytorch+cu126 
+```
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+After that is finished Launch VisionDepth3D
+```
+python VisionDepth3Dv4.py
+```
 
----
-
-## 🔹 Step 2: Install OpenCV with GPU Acceleration
-
-### **Download the OpenCV GPU Package**
- **Download the ZIP file from GitHub Releases:**  
-🔗 [OpenCV GPU Package v4.12.0](https://github.com/VisionDepth/openCV-GPU/releases/download/v4.12.0/opencv_gpu_custom-4.12.0.zip)
-
-### **Extract & Install OpenCV**
-1️⃣ **Extract** `opencv_gpu_custom-4.12.0.zip` to VisionDepth3D-Main Folder.  
-2️⃣ **Run `install_cv2.bat`** (In open environment)  
-
-   ```
-cd C:\User\VisionDepth3D-Main\opencv_gpu_release
-install_cv2.bat
-   ``` 
-
-   - This will **install OpenCV GPU support into the environment**.
-
-✅ **Now, OpenCV GPU is installed!**
-
-##🔹 Step 3: Install PyTorch with the Correct CUDA Version  
-Go to the official PyTorch website to find the best install command for your setup:
-🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-and install inside created VD3D environment
-
-⚠️ sometimes "pip3" doesnt work just change it to "pip"
-
-if you are running Cuda 12.8 you can install Pytorch Cuda 12.6 and it will work
-
-## 🔹 Step 4: **Open VisionDepth3D**
-
-   ```
-cd C:\User\VisionDepth3D-Main
-python VisionDepth3D.py
-   ``` 
-
-*This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.*
+Congratulations! you have successfully built opencv with CUDA support and installed VisionDepth3D 
+Enjoy!
 
 ---
 
