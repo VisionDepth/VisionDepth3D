@@ -78,6 +78,7 @@
 - Pytorch-cu+12.6 ([PyTorch link](https://pytorch.org/get-started/locally/))
 - Python 3.12
 - CUDA 12.8 (Tested & Recommended)
+- cuDNN 9.8.0
 - VisionDepth3D-Package
 
 ## -- installation --
