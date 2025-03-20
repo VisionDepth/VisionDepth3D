@@ -91,46 +91,52 @@ conda remove -n anyoldVD3D --all #change -n to one you want to remove
 ```
 
 **Build openCV+CUDA**
-1. First thing you want to do is create an environment
+1. First thing to do is download the VisionDepth3D-Package and unzip the folder to a directory you prefer. (C:/users/VisionDepth3D-Package etc.)
+2. Next thing to do is create an environment
 ```
-conda create -n Name python=3.12 #change -n to desired name of env
-conda activate Name
+conda create -n VisionDepth3D python=3.12 
+conda activate VisionDepth3D
+cd VisionDepth3D-Package
 ```
-2. Next thing to do is download [cmake](https://cmake.org/download/) and openCV Source codes
-[openCV](https://github.com/opencv/opencv) and [openCV_contrib](https://github.com/opencv/opencv_contrib) 
+3. After that download the latest versions of openCV Source codes
+[openCV](https://github.com/opencv/opencv) and [openCV_contrib](https://github.com/opencv/opencv_contrib) you can either download the zip file they provide ![image](https://github.com/user-attachments/assets/285b5b5b-7c12-4ac0-8edb-f6fccb437d87)
+![image](https://github.com/user-attachments/assets/577123ef-21ef-4641-91c1-68f55d3f9782)
 
-3. create three directories where you are going to use for cmake and openCV folder that will hold your Build Folder, in activated environment  enter:
-```
-cd C:/Users/ # change to desired path of installation
-```
-```
-mkdir openCVCUDA
-```
-4. then extract download opencv source codes to this location for simplicity after you do this you can finish setting up other directories
 
+or clone their repo into VisionDepth3D-Package file folder ("cd path/to/VisionDepth3D-Package" first if not in environment):
 ```
-mkdir cmake
-mkdir openCV
-cd openCV
-mkdir build
+git clone https://github.com/opencv/opencv_contrib.git
+git clone https://github.com/opencv/opencv.git
 ```
-5. Open cmake and load up openCV and set location to build your binaries like this and press configure (Change paths accordingly)
-![image](https://github.com/user-attachments/assets/4f56d9f9-9fbe-425b-87bb-0fe15bb6fd2f)
 
-6. Next specify the generator for this project, I use Visual Studio 16 2019 Havent Tested on vs17, Choose a platform for the generator, i chose x64 because that is what I am running, hit finish and the prompt will configure the files
+4. Download [CMake](https://cmake.org/download/)  from the Official Website and open GUI Application, once in the gui set "where is source code" to 
+![image](https://github.com/user-attachments/assets/4021ce84-1b5b-4cfc-9fb6-e0f1a6e77781)
+![image](https://github.com/user-attachments/assets/0a97e437-b4d1-461e-892e-9e9170186871)
+
+
+5. After setting the source code set "where to build the binaries" to the cmake folder inside Vision Depth3D-Package 
+![image](https://github.com/user-attachments/assets/8cc1bc62-b8c3-4b1d-8a87-03acf84923e3)
+![image](https://github.com/user-attachments/assets/131e0445-0ddc-400e-866f-7449db68d76f)
+
+6. Next click configure 
+![image](https://github.com/user-attachments/assets/a1478ab7-8adf-4cb5-b2a1-f19028e61ef7)
+and a window will pop up asking you to specify the generator for this project, I use Visual Studio 16 2019 Havent Tested on vs17, Choose a platform for the generator, i chose x64 because that is what I am running, hit finish and the prompt will configure the files
 ![image](https://github.com/user-attachments/assets/95dc8c8a-0e5d-4985-904c-1afa41b7dbb7)
 
 7. Once complete you should have a window of generated files
-![image](https://github.com/user-attachments/assets/604ba852-a62d-40af-83f8-a2a68bc5ffa4)
+![image](https://github.com/user-attachments/assets/4b25ea13-3c90-4219-8823-f1abbf5a33ee)
 
-8. toggle these one by one. WITH_CUDA, BUILD_opencv_world, ENABLE_FAST_MATH, Set OPENCV_EXTRA_MODULES_PATH to C:\Users\openCVGPU\opencv_contrib-4.x\modules
-
+8. toggle these one by one. 
+- WITH_CUDA ✅
 ![image](https://github.com/user-attachments/assets/6ca661bf-dad8-4f6c-98d1-13357d094b40)
+- BUILD_opencv_world ✅
 ![image](https://github.com/user-attachments/assets/a7f201e4-06b9-472c-a213-a9a03793cecb)
+- ENABLE_FAST_MATH ✅
 ![image](https://github.com/user-attachments/assets/e5f14535-0e7f-4c97-ac1a-43557ec2ad53)
+- OPENCV_EXTRA_MODULES_PATH to 📂 C:\Users\VisionDepth3D-Package\opencv_contrib-4.x\modules
 ![image](https://github.com/user-attachments/assets/7a6d0b9a-9a64-4436-979d-73a09c0c9036)
-![image](https://github.com/user-attachments/assets/195ad1b6-ad3c-4347-9a13-d5e1b68ab32f)
-![image](https://github.com/user-attachments/assets/87f6ce7e-e6aa-4caa-b27b-f48266462cf3)
+![image](https://github.com/user-attachments/assets/ffc280a0-af44-43cb-bb34-3a1701d2ace6)
+![image](https://github.com/user-attachments/assets/06d6f473-4792-4b42-88c3-7b8b9fc77620)
 
 9. toggle these three off from test we don't need em
 ![image](https://github.com/user-attachments/assets/16196b81-a450-41ce-af48-e170bf375cac)
@@ -138,20 +144,32 @@ mkdir build
 10. Search CUDA And toggle OPENCV_DNN_CUDA
 ![image](https://github.com/user-attachments/assets/38cfb8b1-95ea-425a-a9f2-cd143cd67a64)
 
-11. ###⚠️Important⚠️
-Make sure you specify the paths to the correct environment 
-- PYTHON3_EXECUTABLE: when you created the environment you installed python 3.12 you can find the .exe in the env folder from conda 
--  PYTHON3_INCLUDE_DIR: set to main Miniconda or Anaconda include folder
-- PYTHON3_LIBRARY: you can set this to the python312.lib in your Miniconda or Anaconda folder
-- PYTHON3_NUMPY_INCLUDE_DIRS: you can set it to numpy installed in environement miniconda3/envs/Name/Lib/site-packages/numpy/_core/include(Change accordingly)
-- PYTHON3_PACKAGES_PATH: set this to your environments site-packages folder inside Lib folder
+11.  ### ⚠️Important⚠️
+Make sure you specify the paths to VisionDepth3D environment python we created
+![image](https://github.com/user-attachments/assets/f9212ed5-c569-466f-bdaf-6c25e41df54a)
 
-![image](https://github.com/user-attachments/assets/dfa50faf-574d-4996-bfd4-43940c38e1f7)
+when you created the conda environment you installed python=3.12 as well, when setting these inputs go to the miniconda3 or anaconda folder to find your environment folder , these are snaps of my miniconda3 env  folder for example if you see VD3D in the snaps this is just my original VisionDepth3D environment, ignore and just make sure you are in the created VisionDepth3D environment, the first snap here is just how the env folder looks like, 
+![image](https://github.com/user-attachments/assets/791afea9-52a8-44f7-bc5b-fcd81fd1476b)
+
+- PYTHON3_EXECUTABLE: when you created the environment you installed python 3.12 you can find the .exe in the VisionDepth env folder from conda should be in an file folder like this 
+![image](https://github.com/user-attachments/assets/c8646a46-a9b0-4b89-85a0-8ec753aa6180)
+
+-  PYTHON3_INCLUDE_DIR: set to main Miniconda or Anaconda include folder 
+![image](https://github.com/user-attachments/assets/46d9d01c-0183-42e2-850a-944bd9a3461c)
+
+- PYTHON3_LIBRARY: you can set this to the python312.lib in your Miniconda or Anaconda folder 
+![image](https://github.com/user-attachments/assets/031837a4-5ca7-497d-bb64-f505be8e707c)
+
+- PYTHON3_NUMPY_INCLUDE_DIRS: you can set it to numpy installed in environement miniconda3/envs/VisionDepth3D/Lib/site-packages/numpy/_core/include if numpy folder is missing "pip install numpy"
+![image](https://github.com/user-attachments/assets/c862b1c9-5005-478d-82cb-41a09133eedb)
+
+- PYTHON3_PACKAGES_PATH: set this to your environments site-packages folder inside Lib folder
+![image](https://github.com/user-attachments/assets/e81a6194-a555-4717-844a-ba7be9499384)
 
 12. change CMAKE_INSTALL_PREFIX to the build folder we created 
-![image](https://github.com/user-attachments/assets/af2f689b-0324-4e43-88b5-7ebde4de815a)
+![image](https://github.com/user-attachments/assets/4a21f40b-f0ab-4e9b-bba2-9ee556f76180)
 
-Hit configure again to generate more options and update files, An error will pop up but thats ok we still have more to toggle, 
+Hit configure again to generate more options and update files, An error will pop up but that is ok we still have more to toggle, 
 
 13. Set CUDA_FAST_MATH 
 ![image](https://github.com/user-attachments/assets/461a5656-ce0e-45d9-b012-91f9994a2a7a)
@@ -160,12 +178,12 @@ Hit configure again to generate more options and update files, An error will pop
 ![image](https://github.com/user-attachments/assets/d113d5c8-e2ac-468a-96d8-6948c10d9f57)
 
 15. Click Configure Again and it it should configure correctly, if not check python paths 
-16. Click Generate, then click open project to open Visual Studios generator
+16. Once you get a configure complete click Generate, then click open project to open Visual Studios generator
 17. in Visual Studios in the top bar where it says debug, change that to Release
 ![image](https://github.com/user-attachments/assets/9999a63e-1f1c-4565-9ff4-008ab599b620)
-18. Next up is to build solution, your script will start Building openCV together with the files we generated in cmake, this may take 1-3 hours depending on system
+18. Next up is to build solution (Ctrl+Shift+B), and script will start Building openCV together with the files we generated in cmake, this may take 1-3 hours depending on system
 ![image](https://github.com/user-attachments/assets/fd68cb93-9971-4a6b-950a-7f07ba33dd3c)
-19. once that is finished in the solution explorer right click INSTALL and click build, this will install openCV+gpu to environment since we set our python paths 
+19. once that is finished in the solution explorer right click on INSTALL name and click build, this will install openCV+gpu to environment since we set our python paths 
 ![image](https://github.com/user-attachments/assets/731c7f37-4871-4c33-a95f-3de4f5414dbe)
 
 20. Next Check if opencv is installed in activated environment
@@ -177,9 +195,8 @@ opencv_version.exe
 If you Get This you have successfully built openCV with CUDA Support
 
 ## Install VisionDepth3D
-next change directories to the place you unzipped the VisionDepth3D-Package and install requirements
+While in VisionDepth3D Environment and VisionDepth3D-Package directory, install requirements  
 ```
-cd VisionDepth3D-Package
 pip install -r requirements.txt
 ```
 after it finishes install the latest pytorch+cu126 
@@ -188,7 +205,7 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 ```
 After that is finished Launch VisionDepth3D
 ```
-python VisionDepth3Dv4.py
+python VisionDepth3D.py
 ```
 
 Congratulations! you have successfully built opencv with CUDA support and installed VisionDepth3D 
