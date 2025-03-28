@@ -1,6 +1,6 @@
 # <h1 align="center">VisionDepth3D</h1>  
 ## <h2 align="center">3D Video Converter and Depth map Generator </h2> 
-### <h3 align="center">[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FVisionDepth%2FVisionDepth3D&count_bg=%23AA1400&title_bg=%235E5E5E&icon=&icon_color=%23ACAAAA&title=Page+Views&edge_flat=false)](https://hits.seeyoufarm.com) [![Github All Releases](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg)]() ![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
+### <h3 align="center">[![Github All Releases](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg)]() ![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
 
 ---
 
@@ -14,7 +14,7 @@
 - [Advanced Depth Estimation & 3D Processing](#advanced-depth-estimation--3d-video-processing)
 - [GUI Layout](#gui-layout)
 - [System Requirements](#-system-requirements)
-- [Installation](#guide-sheet-installation)
+- [Installation](#guide-sheet-install)
 - [GUI Settings & Adjustments](#guide-sheet-gui-inputs)
 - [Pulfrich Effect Explained](#pulfrich-effect-explained)
 - [Troubleshooting](#troubleshooting)
@@ -25,23 +25,15 @@
 
 ### Depth Estimation Models via Transformers
  - Multi-Model AI Support – Choose from cutting-edge depth estimation models like Depth Anything V2, MiDaS 3.0, ZoeDepth, DinoV2, and more.
- - Real-Time Depth Processing – GPU-accelerated estimation with dynamic scaling for enhanced efficiency.
+ - Real-Time Depth Processing – GPU estimation with dynamic scaling for enhanced efficiency.
  - Simple pick and download Depth model and cached for future uses
  - Adaptive Depth Smoothing – Intelligent filtering reduces noise while preserving sharp depth details.
- - Customizable Depth Formats – Export in Full-SBS, Half-SBS, Full-OU, Half-OU, Anaglyph 3D, or VR-optimized formats.
- - Precision Depth Convergence – Advanced background isolation and convergence shift correction for realistic 3D results.
- - Batch Video Processing – Accelerate video depth conversion with optimized batch inference.
 
-### Advanced Depth Estimation & 3D Video Processing
+### Advanced 3D Video Processing
+ - Full GPU utilization for pixel shifting 
  - AI-Powered Depth Shifting – Generate precise depth-based parallax effects for immersive 3D visuals.
  - Customizable Depth Mapping – Fine-tune foreground, midground, and background shifts for accurate depth perception.
  - Pulfrich Effect Blending – Motion-aware depth enhancement for fluid cinematic depth transitions.
- - Frame-Accurate Depth Tracking – Consistent per-frame depth mapping with smart scene correction for precise rendering.
-  
-### AI-Powered Convergence Correction
- - Deep-Learning Warp Model – Auto-corrects divergence for natural 3D separation
- - Smart Depth Normalization – Dynamic depth scaling per frame
- - Bilateral Filtering – Sharpens depth maps & reduces noise artifacts
 
 ### Aspect Ratio Support
 **Select from a variety of aspect ratios for cinematic and immersive experiences:**
@@ -54,163 +46,86 @@
 
 ### Smart Pre-Processing
 - Automatic Black Bar Detection & Removal (Removes letterboxing for true full-frame 3D!)
-- White Edge Correction (Blends edges seamlessly with median blur!)
 
 ### Real-Time Performance Insights
 **Monitor your rendering performance in real-time with intuitive feedback tools:**
 - FPS Tracker (Displays real-time frames-per-second speed!)
 - Interactive Progress Indicators (Live tracking of render progress!)
 
-### Persistent User Settings
-- Auto-Save Preferences (Restores previous depth settings on relaunch!)
-
 ### Interactive Tkinter GUI
 - Slider Controls for Divergence shift, Depth Transition, Convergence shift, Pulfrich effect and Frame blending
 - Live Controls (Pause, resume, or cancel rendering anytime!)
+- Multiple tabs to make this a one of a kind 3D suite
 
 ---
 
-#  Guide Sheet: Installation
+## Guide Sheet: Install
 
-### To use this software users must have the following requirements
-- Conda prompt ([Anaconda](https://www.anaconda.com/download/success))(Miniconda Recommended)
-- openCV built with CUDA
-- Pytorch-cu+12.6 ([PyTorch link](https://pytorch.org/get-started/locally/))
-- Python 3.12
-- CUDA 12.8 (Tested & Recommended)
-- cuDNN 9.8.0
-- VisionDepth3D-Package
+### 📌 System Requirements
+- ✔️ This program runs on python 3.12
+- ✔️ This program has been tested on cuda 12.8
+- ✔️ Conda (Optional, Recommended for Simplicity)
+- ❌ Linux/macOS is not officially supported until a more stable solution is found
 
-## -- installation --
-Remove any old visiondepth you may have already downloaded
+### 📌 Step 1: Download the VisionDepth3D Program
+- 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
+- 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
+- 3️⃣ Download RIFE model [Here](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=drive_link) and put in weights folder
+
+
+### 📌 Step 2: Create Env and Install Required Dependencies 
+
+### 🟢 Option 1: Install via pip (Standard CMD Method)
+- **1️. press (Win + R), type cmd, and hit Enter.**
+- **2. Clone the Repository (Skip the git clone if you downloaded the ZIP and start from cd)**
+  ```
+  git clone https://github.com/VisionDepth/VisionDepth3D.git
+  cd C:\VisionDepth3D-main
+  pip install -r requirements.txt
+  ```
+  - continue to installing pytorch with cuda and then run VisionDepth3D.bat 
+  - 
+### 🔵 Option 2: Install via Conda (Recommended)
+
+(Automatically manages dependencies & isolates environment.)
+
+- **1. Clone the Repository (Skip the git clone if you downloaded the ZIP and start from cd)**
+- **2. Create the Conda Environment**
+	To create the environment, copy and past this in conda to run:
+   ```
+   git clone https://github.com/VisionDepth/VisionDepth3D.git
+   cd VisionDepth3D-main
+   conda create -n VD3D python=3.12
+   conda activate VD3D
+   pip install -r requirements.txt
+   ```
+
+### 📌 Step 3: Check if CUDA is installed
+🔍 Find Your CUDA Version:
+Before installing PyTorch, check which CUDA version your GPU supports:
+- 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
+- 2️⃣ Run the following command:
 ```
-conda env list
+nvcc --version
 ```
-remove with
+or 
 ```
-conda remove -n anyoldVD3D --all #change -n to one you want to remove
+nvidia-smi
 ```
+- 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
+  
+### 📌 Install PyTorch with the Correct CUDA Version  
+Go to the official PyTorch website to find the best install command for your setup:
+🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-**Build openCV+CUDA**
-1. First thing to do is download the VisionDepth3D-Package and unzip the folder to a directory you prefer. (C:/users/VisionDepth3D-Package etc.)
-2. Next thing to do is create an environment
+if you are running Cuda 12.8 install Pytorch(nightly)-Cuda 12.8, if that doesnt work use 12.6 version
+
+- Once Pytorch and all dependancies are installed run the following command:
 ```
-conda create -n VisionDepth3D python=3.12 
-conda activate VisionDepth3D
-cd VisionDepth3D-Package
+VisionDepth3D.bat
 ```
-3. After that download the latest versions of openCV Source codes
-[openCV](https://github.com/opencv/opencv) and [openCV_contrib](https://github.com/opencv/opencv_contrib) you can either download the zip file they provide ![image](https://github.com/user-attachments/assets/285b5b5b-7c12-4ac0-8edb-f6fccb437d87)
-![image](https://github.com/user-attachments/assets/577123ef-21ef-4641-91c1-68f55d3f9782)
-
-
-or clone their repo into VisionDepth3D-Package file folder ("cd path/to/VisionDepth3D-Package" first if not in environment):
-```
-git clone https://github.com/opencv/opencv_contrib.git
-git clone https://github.com/opencv/opencv.git
-```
-
-4. Download [CMake](https://cmake.org/download/)  from the Official Website and open GUI Application, once in the gui set "where is source code" to 
-![image](https://github.com/user-attachments/assets/4021ce84-1b5b-4cfc-9fb6-e0f1a6e77781)
-![image](https://github.com/user-attachments/assets/0a97e437-b4d1-461e-892e-9e9170186871)
-
-
-5. After setting the source code set "where to build the binaries" to the cmake folder inside Vision Depth3D-Package 
-![image](https://github.com/user-attachments/assets/8cc1bc62-b8c3-4b1d-8a87-03acf84923e3)
-![image](https://github.com/user-attachments/assets/131e0445-0ddc-400e-866f-7449db68d76f)
-
-6. Next click configure 
-![image](https://github.com/user-attachments/assets/a1478ab7-8adf-4cb5-b2a1-f19028e61ef7)
-and a window will pop up asking you to specify the generator for this project, I use Visual Studio 16 2019 Havent Tested on vs17, Choose a platform for the generator, i chose x64 because that is what I am running, hit finish and the prompt will configure the files
-![image](https://github.com/user-attachments/assets/95dc8c8a-0e5d-4985-904c-1afa41b7dbb7)
-
-7. Once complete you should have a window of generated files
-![image](https://github.com/user-attachments/assets/4b25ea13-3c90-4219-8823-f1abbf5a33ee)
-
-8. toggle these one by one. 
-- WITH_CUDA ✅
-![image](https://github.com/user-attachments/assets/6ca661bf-dad8-4f6c-98d1-13357d094b40)
-- BUILD_opencv_world ✅
-![image](https://github.com/user-attachments/assets/a7f201e4-06b9-472c-a213-a9a03793cecb)
-- ENABLE_FAST_MATH ✅
-![image](https://github.com/user-attachments/assets/e5f14535-0e7f-4c97-ac1a-43557ec2ad53)
-- OPENCV_EXTRA_MODULES_PATH to 📂 C:\Users\VisionDepth3D-Package\opencv_contrib-4.x\modules
-![image](https://github.com/user-attachments/assets/7a6d0b9a-9a64-4436-979d-73a09c0c9036)
-![image](https://github.com/user-attachments/assets/ffc280a0-af44-43cb-bb34-3a1701d2ace6)
-![image](https://github.com/user-attachments/assets/06d6f473-4792-4b42-88c3-7b8b9fc77620)
-
-9. toggle these three off from test we don't need em
-![image](https://github.com/user-attachments/assets/16196b81-a450-41ce-af48-e170bf375cac)
-
-10. Search CUDA And toggle OPENCV_DNN_CUDA
-![image](https://github.com/user-attachments/assets/38cfb8b1-95ea-425a-a9f2-cd143cd67a64)
-
-11.  ### ⚠️Important⚠️
-Make sure you specify the paths to VisionDepth3D environment python we created
-![image](https://github.com/user-attachments/assets/f9212ed5-c569-466f-bdaf-6c25e41df54a)
-
-when you created the conda environment you installed python=3.12 as well, when setting these inputs go to the miniconda3 or anaconda folder to find your environment folder , these are snaps of my miniconda3 env  folder for example if you see VD3D in the snaps this is just my original VisionDepth3D environment, ignore and just make sure you are in the created VisionDepth3D environment, the first snap here is just how the env folder looks like, 
-![image](https://github.com/user-attachments/assets/791afea9-52a8-44f7-bc5b-fcd81fd1476b)
-
-- PYTHON3_EXECUTABLE: when you created the environment you installed python 3.12 you can find the .exe in the VisionDepth env folder from conda should be in an file folder like this 
-![image](https://github.com/user-attachments/assets/c8646a46-a9b0-4b89-85a0-8ec753aa6180)
-
--  PYTHON3_INCLUDE_DIR: set to main Miniconda or Anaconda include folder 
-![image](https://github.com/user-attachments/assets/46d9d01c-0183-42e2-850a-944bd9a3461c)
-
-- PYTHON3_LIBRARY: you can set this to the python312.lib in your Miniconda or Anaconda folder 
-![image](https://github.com/user-attachments/assets/031837a4-5ca7-497d-bb64-f505be8e707c)
-
-- PYTHON3_NUMPY_INCLUDE_DIRS: you can set it to numpy installed in environement miniconda3/envs/VisionDepth3D/Lib/site-packages/numpy/_core/include if numpy folder is missing "pip install numpy"
-![image](https://github.com/user-attachments/assets/c862b1c9-5005-478d-82cb-41a09133eedb)
-
-- PYTHON3_PACKAGES_PATH: set this to your environments site-packages folder inside Lib folder
-![image](https://github.com/user-attachments/assets/e81a6194-a555-4717-844a-ba7be9499384)
-
-12. change CMAKE_INSTALL_PREFIX to the build folder we created 
-![image](https://github.com/user-attachments/assets/4a21f40b-f0ab-4e9b-bba2-9ee556f76180)
-
-Hit configure again to generate more options and update files, An error will pop up but that is ok we still have more to toggle, 
-
-13. Set CUDA_FAST_MATH 
-![image](https://github.com/user-attachments/assets/461a5656-ce0e-45d9-b012-91f9994a2a7a)
-
-14. Enter your CUDA ARCH BIN and PTX for your required system 
-![image](https://github.com/user-attachments/assets/d113d5c8-e2ac-468a-96d8-6948c10d9f57)
-
-15. Click Configure Again and it it should configure correctly, if not check python paths 
-16. Once you get a configure complete click Generate, then click open project to open Visual Studios generator
-17. in Visual Studios in the top bar where it says debug, change that to Release
-![image](https://github.com/user-attachments/assets/9999a63e-1f1c-4565-9ff4-008ab599b620)
-18. Next up is to build solution (Ctrl+Shift+B), and script will start Building openCV together with the files we generated in cmake, this may take 1-3 hours depending on system
-![image](https://github.com/user-attachments/assets/fd68cb93-9971-4a6b-950a-7f07ba33dd3c)
-19. once that is finished in the solution explorer right click on INSTALL name and click build, this will install openCV+gpu to environment since we set our python paths 
-![image](https://github.com/user-attachments/assets/731c7f37-4871-4c33-a95f-3de4f5414dbe)
-
-20. Next Check if opencv is installed in activated environment
-```
-opencv_version.exe
-```
-![image](https://github.com/user-attachments/assets/fa08e246-a640-4838-a2c4-002a61956854)
-
-If you Get This you have successfully built openCV with CUDA Support
-
-## Install VisionDepth3D
-While in VisionDepth3D Environment and VisionDepth3D-Package directory, install requirements  
-```
-pip install -r requirements.txt
-```
-after it finishes install the latest pytorch+cu126 
-```
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-```
-After that is finished Launch VisionDepth3D
-```
-python VisionDepth3D.py
-```
-
-Congratulations! you have successfully built opencv with CUDA support and installed VisionDepth3D 
-Enjoy!
+Congrats you have successfully downloaded VisionDepth3D! 
+This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
 
 ---
 
@@ -338,7 +253,8 @@ I want to express my gratitude to the amazing creators and contributors behind t
 ### **Supported Depth Models**
 | Model Name | Creator / Organization | Hugging Face Repository |
 |------------|------------------------|-------------------------|
-| **Distil-Any-Depth-Large** | Keetrap | [Distil-Any-Depth-Large-hf](https://huggingface.co/keetrap/Distil-Any-Depth-Large-hf) |
+| **Distil-Any-Depth-Large** | xingyang1 | [Distil-Any-Depth-Large-hf](xingyang1/Distill-Any-Depth-Large-hf) |
+| **Distil-Any-Depth-Small** | xingyang1 | [Distil-Any-Depth-Small-hf](xingyang1/Distill-Any-Depth-Small-hf) |
 | **Depth Anything V2 Large** | Depth Anything Team | [Depth-Anything-V2-Large-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
 | **Depth Anything V2 Base** | Depth Anything Team | [Depth-Anything-V2-Base-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf) |
 | **Depth Anything V2 Small** | Depth Anything Team | [Depth-Anything-V2-Small-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf) |
