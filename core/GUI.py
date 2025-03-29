@@ -983,7 +983,6 @@ tk.Button(
 
 # Ensure settings are saved when the program closes
 def on_exit():
-    stop_audio()           # 🔇 Kill ffplay audio process
     save_settings()        # 💾 Save settings
     root.destroy()         # ❌ Close GUI
 
