@@ -58,7 +58,6 @@ from VDPlayer import (
     pause_video,
     stop_video,
     open_fullscreen,
-    stop_audio,
 )
 
 
