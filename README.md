@@ -70,7 +70,7 @@
 ### 📌 Step 1: Download the VisionDepth3D Program
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
 - 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- 3️⃣ Download RIFE model [Here](https://drive.google.com/file/d/1BbcWwWR0IrQEIIuVFiTB0biosYn5DcOz/view?usp=drive_link) and put in weights folder
+- 3️⃣ Download RIFE model [Here](https://drive.google.com/file/d/16SLYOgHw5VSBp1UgmGRLkBBKJQD-hGZW/view?usp=sharing) and put in weights folder
 
 
 ### 📌 Step 2: Create Env and Install Required Dependencies 
