@@ -53,6 +53,7 @@ def load_video(video_frame, seek, label):
             pass
         cap = None
 
+
     is_playing = False
     last_frame_time = 0
 
@@ -66,7 +67,6 @@ def load_video(video_frame, seek, label):
             return
 
         is_playing = True
-        threading.Thread(target=play_audio_with_ffplay, args=(file,), daemon=True).start()
         play_video(video_frame, seek, label)
 
 
@@ -76,13 +76,12 @@ def play(video_frame, seek, label):
         return
     is_playing = True
     last_frame_time = time.time()
-    threading.Thread(target=play_audio, args=(current_video_path,), daemon=True).start()
     play_video(video_frame, seek, label)
 
 def pause_video(video_frame, seek, label):
     global is_playing, playback_loop_id
     is_playing = False
-    
+
     if playback_loop_id:
         video_frame.after_cancel(playback_loop_id)
         playback_loop_id = None
@@ -90,7 +89,7 @@ def pause_video(video_frame, seek, label):
 def stop_video(video_frame, seek, label):
     global cap, is_playing, playback_loop_id
     is_playing = False
-    
+
 
     if playback_loop_id:
         try:
