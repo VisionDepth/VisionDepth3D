@@ -53,7 +53,6 @@ def load_video(video_frame, seek, label):
             pass
         cap = None
 
-    stop_audio()
     is_playing = False
     last_frame_time = 0
 
