@@ -26,33 +26,56 @@ Powered by AI. Optimized for speed. Designed for creators. </h2>
 ## Key Features – VisionDepth3D All-in-One 3D Suite
 
 ### AI-Powered Depth Estimation (GPU Accelerated)
-- Multi-model support: Depth Anything V2, MiDaS 3.0, ZoeDepth, DPT, DinoV2, and more
-- One-click model downloads (cached locally for fast reuse)
-- Fully GPU-accelerated via PyTorch (no OpenCV CUDA builds required)
-- Adaptive depth smoothing for clean, flicker-free results
+- Seamless integration with over 20+ state-of-the-art transformer-based models (Depth Anything, MiDaS, DPT, ZoeDepth, DepthPro, DinoV2, and more)
+- One-click model selection with automatic download + caching (no CLI or config needed)
+- Fully GPU-accelerated via PyTorch – no need to compile OpenCV with CUDA
+- Batch processing support for image folders and video sequences (frame-accurate output)
+- Adaptive depth smoothing and normalization for stable, flicker-free results
+- Built-in color inversion, colormaps (Viridis, Magma, Inferno, etc.), and image previews
+- Automatic resolution detection and intelligent batching
+- Progress bar, FPS tracker, and time estimates for all operations
+- Cancel and pause support for long render tasks
+- Respects scene continuity with smooth per-frame depth transitions
 
-### Advanced 3D Video Rendering Engine
-- Real-time pixel shifting for HSBS, Anaglyph, and Over/Under 3D formats
-- Depth-based stereo parallax generation (foreground/midground/background tuning)
-- Pulfrich Effect blending for motion-driven depth enhancements
-- Adjustable convergence, divergence, and depth transition settings
-- Optional sharpening and output aspect ratio correction
 
-### RIFE Frame Interpolation (ONNX Runtime)
-- Built-in RIFE ONNX model for smooth FPS upscaling (2x, 4x, 8x)
-- Full GPU acceleration with ETA, FPS counter, and progress tracking
-- Real-time interpolation of both video and depth maps
-- Output matches frame count and resolution for perfect sync in stereo rendering
+### Advanced 3D Video Rendering Engine (Real-Time Stereo Composer)
+- GPU-accelerated stereo rendering using PyTorch (CUDA-optimized)
+- True depth-parallax pixel shifting with foreground, midground, and background control
+- Real-time 3D formatting: Full-SBS, Half-SBS, Anaglyph, Over/Under, and VR-ready modes
+- Pulfrich effect blending with motion-aware left-eye delay & scene change handling
+- Sharpening filters, black bar removal, and full resolution control
+- Dynamic aspect ratio correction (16:9, 2.39:1, 4:3, 2.76:1, etc.)
+- Temporal smoothing for stable depth transitions across frames
+- Gradient-aware artifact suppression for clean pixel warping
+- Interactive GUI controls: pause, resume, cancel with live FPS and progress
+- Output fully compatible with media players and VR video apps
 
-### Audio & Video Sync Support
-- Automatically reattaches original audio after SBS rendering
-- Clean muxing via ffmpeg-python (no external dependency needed)
-- Ensures final 3D output is playable and shareable immediately
+
+### Frame Stitching + RIFE Frame Interpolation (ONNX Accelerated)
+- Built-in RIFE model (ONNX) for real-time frame interpolation on GPU
+- Supports 2x, 4x, and 8x FPS upscaling between original video frames
+- Full-resolution frame export using OpenCV with real-time resizing
+- Automatically processes folder of raw frames and rebuilds interpolated video
+- Maintains consistent resolution, frame count, and aspect ratio
+- Adjustable output resolution and codec (XVID, MP4V, MJPG, etc.)
+- Integrated ETA, FPS tracker, and live progress bar via GUI
+- No PyTorch required — lightweight ONNX runtime with CUDA acceleration
+- Seamless integration with downstream depth mapping and 3D rendering
+
+
+### Audio & Video Support
+- One-Click Audio Extraction – Rip original audio tracks from source videos using clean FFmpeg logic.
+- Automatic Re-Attach After 3D Rendering – Re-mux original audio back into your 3D SBS or processed video with perfect sync.
+- Multiple Audio Codec Support – Choose between AAC, MP3, or WAV formats with adjustable bitrates (128k to 320k).
+- No External Tools Needed – Fully integrated using ffmpeg-python, with no CLI commands or shell scripts required.
 
 ### Built-in Video Preview Player
-- VDPlayer tab with load, play, pause, stop, and fullscreen
-- Stereo-friendly layout for previewing your SBS outputs
-- Timeline scrubber and timestamp display
+- Seamless Playback – Load and preview your 3D SBS outputs directly inside the app.
+- Stereo-Optimized Layout – Designed for viewing Half-SBS or Full-SBS outputs with proper scaling.
+- Interactive Timeline Scrubbing – Jump to any frame with an intuitive seek bar and timestamp display.
+- Basic Controls Built-In – Play, Pause, Stop, and Fullscreen playback support.
+- Real-Time Frame Display – Lightweight display system optimized with PIL + OpenCV for smooth GUI playback.
+
 
 ### Smart UI & Workflow Enhancements
 - Multi-tab GUI built in Tkinter (clean layout, responsive controls)
