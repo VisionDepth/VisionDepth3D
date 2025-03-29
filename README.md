@@ -1,5 +1,7 @@
 # <h1 align="center">VisionDepth3D</h1>  
-## <h2 align="center">3D Video Converter and Depth map Generator </h2> 
+## <h2 align="center">VisionDepth3D: The All-in-One 3D Suite for Creators
+From depth maps to final render — everything you need to turn flat 2D footage into cinematic 3D.
+Powered by AI. Optimized for speed. Designed for creators. </h2> 
 ### <h3 align="center">[![Github All Releases](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg)]() ![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
 
 ---
@@ -21,41 +23,49 @@
 - [Dev Notes](#notes)
 - [Acknowledgments & Credits](#acknowledgments--credits)
 
-## Key Features
+## Key Features – VisionDepth3D All-in-One 3D Suite
 
-### Depth Estimation Models via Transformers
- - Multi-Model AI Support – Choose from cutting-edge depth estimation models like Depth Anything V2, MiDaS 3.0, ZoeDepth, DinoV2, and more.
- - Real-Time Depth Processing – GPU estimation with dynamic scaling for enhanced efficiency.
- - Simple pick and download Depth model and cached for future uses
- - Adaptive Depth Smoothing – Intelligent filtering reduces noise while preserving sharp depth details.
+### AI-Powered Depth Estimation (GPU Accelerated)
+- Multi-model support: Depth Anything V2, MiDaS 3.0, ZoeDepth, DPT, DinoV2, and more
+- One-click model downloads (cached locally for fast reuse)
+- Fully GPU-accelerated via PyTorch (no OpenCV CUDA builds required)
+- Adaptive depth smoothing for clean, flicker-free results
 
-### Advanced 3D Video Processing
- - Full GPU utilization for pixel shifting 
- - AI-Powered Depth Shifting – Generate precise depth-based parallax effects for immersive 3D visuals.
- - Customizable Depth Mapping – Fine-tune foreground, midground, and background shifts for accurate depth perception.
- - Pulfrich Effect Blending – Motion-aware depth enhancement for fluid cinematic depth transitions.
+### Advanced 3D Video Rendering Engine
+- Real-time pixel shifting for HSBS, Anaglyph, and Over/Under 3D formats
+- Depth-based stereo parallax generation (foreground/midground/background tuning)
+- Pulfrich Effect blending for motion-driven depth enhancements
+- Adjustable convergence, divergence, and depth transition settings
+- Optional sharpening and output aspect ratio correction
 
-### Aspect Ratio Support
-**Select from a variety of aspect ratios for cinematic and immersive experiences:**
- - 16:9 (Default) – Standard HD/UHD format
- - 2.39:1 (CinemaScope) – Widescreen cinematic experience
- - 21:9 (UltraWide) – Perfect for ultrawide monitors
- - 4:3 (Classic Films) – Retro 3D format
- - 1:1 (Square) – Social media-friendly format
- - 2.35:1 & 2.76:1 – Cinematic widescreen options
+### RIFE Frame Interpolation (ONNX Runtime)
+- Built-in RIFE ONNX model for smooth FPS upscaling (2x, 4x, 8x)
+- Full GPU acceleration with ETA, FPS counter, and progress tracking
+- Real-time interpolation of both video and depth maps
+- Output matches frame count and resolution for perfect sync in stereo rendering
 
-### Smart Pre-Processing
-- Automatic Black Bar Detection & Removal (Removes letterboxing for true full-frame 3D!)
+### Audio & Video Sync Support
+- Automatically reattaches original audio after SBS rendering
+- Clean muxing via ffmpeg-python (no external dependency needed)
+- Ensures final 3D output is playable and shareable immediately
 
-### Real-Time Performance Insights
-**Monitor your rendering performance in real-time with intuitive feedback tools:**
-- FPS Tracker (Displays real-time frames-per-second speed!)
-- Interactive Progress Indicators (Live tracking of render progress!)
+### Built-in Video Preview Player
+- VDPlayer tab with load, play, pause, stop, and fullscreen
+- Stereo-friendly layout for previewing your SBS outputs
+- Timeline scrubber and timestamp display
 
-### Interactive Tkinter GUI
-- Slider Controls for Divergence shift, Depth Transition, Convergence shift, Pulfrich effect and Frame blending
-- Live Controls (Pause, resume, or cancel rendering anytime!)
-- Multiple tabs to make this a one of a kind 3D suite
+### Smart UI & Workflow Enhancements
+- Multi-tab GUI built in Tkinter (clean layout, responsive controls)
+- Real-time progress bars and FPS/ETA indicators during all operations
+- Black bar removal for full-frame rendering
+- Persistent settings saved between sessions
+- One-click launcher for Conda environments (no install hassle)
+
+### Formats & Aspect Ratio Support
+- Output formats: Full-SBS, Half-SBS, Red/Cyan Anaglyph
+- Aspect Ratios: 16:9, 2.39:1, 21:9, 4:3, 1:1, 2.35:1, 2.76:1
+- Codec selection: MP4V, XVID, MJPG, DIVX
+
 
 ---
 
