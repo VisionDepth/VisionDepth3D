@@ -19,34 +19,6 @@ audio_process = None
 current_video_path = None
 last_frame_time = 0
 
-# ───────────────────────────── Audio ───────────────────────────────
-
-def play_audio_with_ffplay(video_path):
-    global audio_process
-    if not video_path or audio_process:
-        return
-    try:
-        audio_process = subprocess.Popen(
-            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", video_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
-        )
-    except Exception as e:
-        print(f"⚠️ Audio playback error: {e}")
-
-def stop_audio():
-    global audio_process
-    if audio_process:
-        try:
-            if platform.system() == "Windows":
-                audio_process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                audio_process.terminate()
-        except Exception as e:
-            print(f"⚠️ Audio stop error: {e}")
-        audio_process = None
-
 # ───────────────────────────── Utils ───────────────────────────────
 def format_time(ms):
     total_seconds = int(ms / 1000)
@@ -111,7 +83,7 @@ def play(video_frame, seek, label):
 def pause_video(video_frame, seek, label):
     global is_playing, playback_loop_id
     is_playing = False
-    stop_audio()
+    
     if playback_loop_id:
         video_frame.after_cancel(playback_loop_id)
         playback_loop_id = None
@@ -119,7 +91,7 @@ def pause_video(video_frame, seek, label):
 def stop_video(video_frame, seek, label):
     global cap, is_playing, playback_loop_id
     is_playing = False
-    stop_audio()
+    
 
     if playback_loop_id:
         try:
@@ -212,6 +184,5 @@ def play_fullscreen():
 def close_fullscreen():
     global fullscreen_window
     if fullscreen_window and fullscreen_window.winfo_exists():
-        stop_audio()
         fullscreen_window.destroy()
         fullscreen_window = None
