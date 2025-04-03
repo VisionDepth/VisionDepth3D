@@ -1,3 +1,4 @@
+accelerate
 onnxruntime-gpu
 numpy
 opencv-python
@@ -6,4 +7,4 @@ tqdm
 matplotlib
 transformers
 ffmpeg-python
-accelerate
+scipy
