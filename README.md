@@ -12,83 +12,93 @@ Powered by AI. Optimized for speed. Designed for creators. </h2>
 ---
 
 ## Table of Contents
-- [Key Features](#key-features)
-- [Advanced Depth Estimation & 3D Processing](#advanced-depth-estimation--3d-video-processing)
-- [GUI Layout](#gui-layout)
-- [System Requirements](#-system-requirements)
-- [Installation](#guide-sheet-install)
-- [GUI Settings & Adjustments](#guide-sheet-gui-inputs)
-- [Pulfrich Effect Explained](#pulfrich-effect-explained)
+- [Key Features](#key-features--visiondepth3d-all-in-one-3d-suite)
+- [Guide Sheet: Install](#guide-sheet-install)
+- [Guide Sheet: GUI Inputs](#guide-sheet-gui-inputs)
+- [Pulfrich Effect Quick Guide](#pulfrich-effect-quick-guide)
 - [Troubleshooting](#troubleshooting)
-- [Dev Notes](#notes)
+- [Dev Notes](#dev-notes)
 - [Acknowledgments & Credits](#acknowledgments--credits)
 
-## Key Features – VisionDepth3D All-in-One 3D Suite
 
-### AI-Powered Depth Estimation (GPU Accelerated)
-- Seamless integration with over 20+ state-of-the-art transformer-based models (Depth Anything, MiDaS, DPT, ZoeDepth, DepthPro, DinoV2, and more)
-- One-click model selection with automatic download + caching (no CLI or config needed)
-- Fully GPU-accelerated via PyTorch – no need to compile OpenCV with CUDA
-- Batch processing support for image folders and video sequences (frame-accurate output)
-- Adaptive depth smoothing and normalization for stable, flicker-free results
-- Built-in color inversion, colormaps (Viridis, Magma, Inferno, etc.), and image previews
-- Automatic resolution detection and intelligent batching
-- Progress bar, FPS tracker, and time estimates for all operations
-- Cancel and pause support for long render tasks
-- Respects scene continuity with smooth per-frame depth transitions
+# Key Features – VisionDepth3D All-in-One 3D Suite
 
+## AI-Powered Depth Estimation (GPU Accelerated)
+- Seamless integration with 20+ transformer-based depth models: **ZoeDepth, Depth Anything, MiDaS, DPT, DepthPro, DinoV2**, and more
+- One-click model selection with **automatic downloads**, no CLI setup or config files
+- **PyTorch GPU acceleration** (no OpenCV recompile needed)
+- Batch support for both **video sequences and image folders**
+- **Temporal smoothing**, intelligent scene-adaptive normalization
+- Built-in **color inversion**, customizable **colormaps** (Viridis, Inferno, Magma)
+- Real-time frame-by-frame **progress bar, FPS display, and ETA tracking**
+- Auto-resizing, smart batching, and graceful handling of large resolutions
+- Pause/resume/cancel supported during all GPU operations
 
-### Advanced 3D Video Rendering Engine (Real-Time Stereo Composer)
-- GPU-accelerated stereo rendering using PyTorch (CUDA-optimized)
-- True depth-parallax pixel shifting with foreground, midground, and background control
-- Real-time 3D formatting: Full-SBS, Half-SBS, Anaglyph, Over/Under, and VR-ready modes
-- Pulfrich effect blending with motion-aware left-eye delay & scene change handling
-- Sharpening filters, black bar removal, and full resolution control
-- Dynamic aspect ratio correction (16:9, 2.39:1, 4:3, 2.76:1, etc.)
-- Temporal smoothing for stable depth transitions across frames
-- Gradient-aware artifact suppression for clean pixel warping
-- Interactive GUI controls: pause, resume, cancel with live FPS and progress
-- Output fully compatible with media players and VR video apps
+## Advanced 3D Rendering Engine (Real-Time Stereo Composer)
+- **Pixel-accurate depth parallax shifting** using CUDA + PyTorch
+- Full control over **foreground(pop) / midground(balance) / background(pull) parallax**
+- **Half-SBS, Full-SBS, VR, Passive Interlaced, Anaglyph, and Dynamic Floating Window** formats
+- Dynamic floating window with **cinema-style masking that slides and eases smoothly**
+- Built-in **Pulfrich effect renderer** (motion delay-based left-eye blending)
+- **Feathered shift masking**, sharpening, and edge-aware smoothing
+- **Subject tracking-based convergence** for natural stereo alignment
+- GPU-accelerated real-time processing with live GUI stats (FPS, elapsed time, %)
+- Output is compatible with **Quest VR, YouTube 3D, and most stereo players**
 
+## RIFE Frame Interpolation (ONNX Runtime)
+- Integrated **RIFE ONNX** model (no PyTorch required) for real-time frame doubling
+- Interpolation modes: **2x, 4x, 8x FPS** with smooth motion blending
+- Folder-based processing of raw frames + automatic **video reassembly**
+- Preserves **frame resolution, count, audio sync**, and aspect ratio
+- Supports preview and export at high quality using FFmpeg codecs
+- Real-time progress tracking + FPS + ETA built into GUI
 
-### Frame Stitching + RIFE Frame Interpolation (ONNX Accelerated)
-- Built-in RIFE model (ONNX) for real-time frame interpolation on GPU
-- Supports 2x, 4x, and 8x FPS upscaling between original video frames
-- Full-resolution frame export using OpenCV with real-time resizing
-- Automatically processes folder of raw frames and rebuilds interpolated video
-- Maintains consistent resolution, frame count, and aspect ratio
-- Adjustable output resolution and codec (XVID, MP4V, MJPG, etc.)
-- Integrated ETA, FPS tracker, and live progress bar via GUI
-- No PyTorch required — lightweight ONNX runtime with CUDA acceleration
-- Seamless integration with downstream depth mapping and 3D rendering
+## 4x Super Resolution Upscaling (Real-ESRGAN Powered – ONNX GPU)
+- Integrated **Real-ESRGAN (x4) super-resolution model**, exported to ONNX with full GPU support
+- Batch upscaling with intelligent **VRAM-aware batching** (1–8 frames)
+- Supports **720p ➜ 1080p**, **1080p ➜ 4K**, or any custom resolution
+- Automatically resizes final frames to match output format and target resolution
+- Lightning-fast **CUDA-accelerated ONNX runtime** (no PyTorch required)
+- Full integration with frame renderer: upscales after 3D rendering or interpolation
+- Clean, artifact-free outputs using enhanced fp16 inference for visual clarity
+- Progress bar, FPS counter, ETA timer integrated into the GUI
+- Fully exportable to video with codec support: **MP4V, XVID, MJPG, FFmpeg NVENC**
 
+## Smart Depth-Aware Effects
+- **Gradient-aware artifact suppression** near depth edges (limbs, hair)
+- **Feathered transition masks** to avoid ghosting and popping
+- Depth-aware **sharpening and blending** for polished 3D output
+- **Dynamic bar generation** for floating window masking that **eases smoothly** like theatrical films
+- Real-time **zero parallax estimation and smoothing** per-frame
 
-### Audio & Video Support
-- One-Click Audio Extraction – Rip original audio tracks from source videos using clean FFmpeg logic.
-- Automatic Re-Attach After 3D Rendering – Re-mux original audio back into your 3D SBS or processed video with perfect sync.
-- Multiple Audio Codec Support – Choose between AAC, MP3, or WAV formats with adjustable bitrates (128k to 320k).
-- No External Tools Needed – Fully integrated using ffmpeg-python, with no CLI commands or shell scripts required.
+## Audio + Video Re-Integration
+- Audio button to directly rip and attach audio from source video using **FFmpeg**
+- Format choices: **AAC, MP3, WAV** with adjustable bitrate
+- Built-in tools, no shell commands needed – fully GUI-based
 
-### Built-in Video Preview Player
-- Seamless Playback – Load and preview your 3D SBS outputs directly inside the app.
-- Stereo-Optimized Layout – Designed for viewing Half-SBS or Full-SBS outputs with proper scaling.
-- Interactive Timeline Scrubbing – Jump to any frame with an intuitive seek bar and timestamp display.
-- Basic Controls Built-In – Play, Pause, Stop, and Fullscreen playback support.
-- Real-Time Frame Display – Lightweight display system optimized with PIL + OpenCV for smooth GUI playback.
+## Preview System with Format Testing
+- Choose preview format: **Passive Interlaced**, **HSBS**, **Shift Heatmap**
+- Live preview on frame for quick tuning
+- Auto-exports as image preview file, no temp videos needed
+- Toggle convergence depth and parallax before full render
 
+## Real-Time 3D Player (VDPlayer)
+- Lightweight player built for **Half-SBS, Full-SBS**, and **VR** output
+- Fast seeking, play/pause/fullscreen toggles
+- Timestamp scrubber + resolution-aware display
+- Designed to instantly preview 3D results without leaving the app
 
-### Smart UI & Workflow Enhancements
-- Multi-tab GUI built in Tkinter (clean layout, responsive controls)
-- Real-time progress bars and FPS/ETA indicators during all operations
-- Black bar removal for full-frame rendering
-- Persistent settings saved between sessions
-- One-click launcher for Conda environments (no install hassle)
+## Smart GUI & Workflow Features
+- Multi-tab **Tkinter interface**, responsive and persistent settings
+- Pause, resume, and cancel buttons for all rendering threads
+- Codec selector with **GPU NVENC options** (H.264, HEVC, AV1-ready)
+- **One-click launcher**, no pip/CLI scripting needed
+- slider recall, and auto-cropping for black bars
 
-### Formats & Aspect Ratio Support
-- Output formats: Full-SBS, Half-SBS, Red/Cyan Anaglyph
-- Aspect Ratios: 16:9, 2.39:1, 21:9, 4:3, 1:1, 2.35:1, 2.76:1
-- Codec selection: MP4V, XVID, MJPG, DIVX
-
+## Supported Output Formats & Aspect Ratios
+- Formats: **Half-SBS**, **Full-SBS**, **VR Mode**, **Red-Cyan Anaglyph**, **Passive Interlaced**
+- Ratios: **16:9**, **CinemaScope (2.39:1)**, **2.76:1**, **4:3**, **21:9**, **Square 1:1**, **Classic 2.35:1**
+- Supports export in **MP4, MKV, AVI** with codecs: **XVID, MP4V, MJPG, DIVX**, and **FFmpeg NVENC**
 
 ---
 
@@ -103,8 +113,7 @@ Powered by AI. Optimized for speed. Designed for creators. </h2>
 ### 📌 Step 1: Download the VisionDepth3D Program
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
 - 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- 3️⃣ Download RIFE model [Here](https://drive.google.com/file/d/16SLYOgHw5VSBp1UgmGRLkBBKJQD-hGZW/view?usp=sharing) and put in weights folder
-
+- 3️⃣ Download model [Here](https://drive.google.com/file/d/16SLYOgHw5VSBp1UgmGRLkBBKJQD-hGZW/view?usp=sharing) and extract them into weights folder
 
 ### 📌 Step 2: Create Env and Install Required Dependencies 
 
@@ -162,122 +171,119 @@ This snippet guides users through cloning the repo, creating and activating the 
 
 ---
 
-### Guide Sheet: GUI Inputs
-Below is a guide to help you understand and adjust each parameter in the GUI.
+## Guide Sheet: GUI Inputs
+Use the GUI to fine-tune your 3D conversion settings.
 
 ### 1. Codec
-- **Description**: Specifies the codec used for encoding the output video.
-- **Default**: `mp4v`
-- **Options**: 
-  - `mp4v` (MP4 format)
-  - `XVID` (MKV format)
-  - Others supported by OpenCV.
+- **Description**: Sets the output video encoder.
+- **Default**: `mp4v` (CPU)
+- **Options**:
+  - `mp4v`, `XVID`, `DIVX` – CPU-based
+  - `libx264`, `libx265` – High-quality software (CPU)
+  - `h264_nvenc`, `hevc_nvenc` – GPU-accelerated (NVIDIA)
 
-
-### 2. Divergence Shift
-- **Description**: Controls the amount of pixel shift for objects in the foreground.
-- **Default**: `4.8`
-- **Recommended Range**: `3.0` to `8.0`
-- **Effect**: Higher values create a stronger 3D effect for objects closest to the viewer.
-
-
-### 3. Depth Transition 
-- **Description**: Controls the amount of pixel shift for midground objects.
-- **Default**: `1.9`
-- **Recommended Range**: `1.0` to `5.0`
-- **Effect**: Fine-tune this value to balance the depth effect between divergence and convergence.
-
-### 4. Convergence Shift
-- **Description**: Controls the amount of pixel shift for Depth.
-- **Default**: `-2.8`
-- **Recommended Range**: `-5.0` to `0.0`
-- **Effect**: Use Negative values to push objects farther back, creating more depth.
-
+---
+### 2. Convergence Shift *(Foreground / Popping out)*
+- **Description**: Pops foreground objects out of the screen.
+- **Default**: `6.5`
+- **Range**: `3.0` to `8.0`
+- **Effect**: Strong values create noticeable 3D "pop" in close objects.
+---
+### 3. Depth Transition *(Midground)*
+- **Description**: Depth for mid-layer transition between foreground and background.
+- **Default**: `1.5`
+- **Range**: `-3.0` to `5.0`
+- **Effect**: Smooths the 3D transition — higher values exaggerate depth between layers.
+---
+### 4. Divergence Shift *(Screen Plane / Background)*
+- **Description**: Shift depth for background layers (far away).
+- **Default**: `-12.0`
+- **Range**: `-10.0` to `0.0`
+- **Effect**: More negative pushes content into the screen (deeper background).
+---
 ### 5. Sharpness Factor
-- **Description**: Adjusts the sharpness of the final output video.
-- **Default**: `0`
+- **Description**: Applies a sharpening filter to the output.
+- **Default**: `0.2`
 - **Range**: `-1.0` (softer) to `1.0` (sharper)
-- **Effect**: Higher values make edges more distinct, but excessive sharpness can introduce artifacts like over brightness.
-
-### 6. Blend Factor (Pulfrich Effect)
-- **Description**: Controls the blending ratio between delayed and current frames for the Pulfrich effect.
+- **Effect**: Brings clarity to 3D edges; avoid over-sharpening to reduce halos.
+---
+### 6. Blend Factor (Pulfrich)
+- **Description**: Blends delayed and current frames for Pulfrich-style motion depth.
 - **Default**: `0.5`
-- **Recommended Range**: `0.3` (subtle) to `0.7` (strong effect)
-- **Effect**: Higher values enhance the Pulfrich effect but may make scene transitions harder on the eyes.
-
-### 7. Delay Time (Pulfrich Effect)
-- **Description**: Specifies the temporal delay (in seconds) to create the Pulfrich effect.
+- **Range**: `0.3` (subtle) to `0.7` (stronger)
+- **Effect**: Controls temporal depth perception. Higher = more blur in motion.
+---
+### 7. Delay Time (Pulfrich)
+- **Description**: How many seconds to delay the Pulfrich ghost frame.
 - **Default**: `1/30`
-- **Recommended Range**: `1/50` to `1/20`
-- **Effect**: Lower values (e.g., `1/50`) reduce the delay, creating a more subtle effect.
-
-
-## Depth Map File Requirements
-### 1. Create a Depth map from Depth Generator Tab or use an existing
-**Lots of models to choose from!** 
-
-Some Models Inverse the depth map, check a frame before rendering a whole clip
-and toggle inverse checkbox to generate the Depthmap as higher contrast/white(close object) and lower contrast/black (Far objects) 
-- *Distil Any Depth Large*
-- *Depth Anything V2 Large*
-- *Depth Anything V2 Base*
-- *Depth Anything V2 Small*
-- *Depth Anything V1 Large*
-- *Depth Anything V1 Base*
-- *Depth Anything V1 Small*
-- *Depth-Anything-V2-Metric-Indoor-Large*
-- *Depth-Anything-V2-Metric Outdoor-Large*
-- *depth_anything_vitl14*
-- *depth_anything_vits14*
-- *DepthPro*
-- *ZoeDepth*
-- *MiDaS 3.0*
-- *DPT-Large*
-- *dpt-dinov2-small-kitti*
-- *dpt-beit-large-512*
-
-
-## Processing Times
-- **Estimated Times**:
-  - A 30-second clip: ~1-4mins.
-  - Full-length videos: ~5-24 hours+.
-plus 3D render time	
-
+- **Range**: `1/50` to `1/20`
+- **Effect**: Smaller values = subtle motion depth, larger = stronger Pulfrich 3D.
 ---
-
+### 8. Feather Strength *(Edge Anti-Aliasing)*
+- **Description**: Softens hard 3D edges using depth gradients.
+- **Default**: `10.0`
+- **Range**: `0` to `20`
+- **Effect**: Reduces ghosting artifacts and hard cutouts around subjects.
+---
+### 9. Feather Blur Size
+- **Description**: How wide the smoothing kernel should be.
+- **Default**: `9`
+- **Range**: `1` to `15`
+- **Effect**: Larger = more smoothing, helps reduce halo noise on edges.
+---
+### 10. FFmpeg Codec & CRF Quality
+- **Codec**: Choose GPU-accelerated encoders (`h264_nvenc`, `hevc_nvenc`) for faster renders.
+- **CRF (Constant Rate Factor)**:
+  - **Default**: `23`
+  - **Range**: `0` (lossless) to `51` (worst)
+  - Lower values = better visual quality.
+---
+### 11. Dynamic Subject Locking *(New!)*
+- **Checkbox**: **Lock Subject to Screen**
+- **Effect**: Enables **Dynamic Zero Parallax Tracking** — the depth plane will automatically follow the subject’s depth to minimize excessive 3D warping.
+- **Great for**: Human characters or central objects in motion.
+---
+## Depth Map Tips
+- Match **resolution** and **FPS** between your input video and depth map.
+- Use the **Inverse Depth** checkbox if bright = far instead of close.
+- Recommended depth models:
+  - `ZoeDepth`, `Depth Anything V2`, `MiDaS`, `DPT-Large`, etc.
+  - Choose *Large* models for better fidelity.
+---
+## Rendering Time Estimates
+| Clip Length | Estimated Time (with GPU) |
+|-------------|---------------------------|
+| 30 seconds  | 1–4 mins                  |
+| 5 minutes   | 10–25 mins                |
+| Full Movie  | 6–24+ hours               |
+---
 ## Example Workflow
-1. Select your input video (`.mp4`, `.avi`, `.mkv`) and output file path.
-2. Select your Depth map Video, make sure both video files are same width and  height and FPS 
-3. Adjust rendering parameters for the desired 3D effect.
-4. Click "Generate 3D SBS Video" to process.
-
-## Troubleshooting
-- **Black Screens or Artifacts**:
-  - Ensure the depth map matches the input video's resolution and frame rate.
-  - Adjust `blend_factor` and `delay_time` for smoother transitions between scenes. this effect is supposed to 
-
+1. Load video and matching depth map.
+2. Choose output format (Half-SBS, Full-SBS, Anaglyph, etc.).
+3. Enable "Lock Subject to Screen" for tracked parallax.
+4. Set feather smoothing to around `10` and blur `9` for cleanest edges.
+5. Set encoder: use NVENC for speed (`h264_nvenc`), or `libx264` for max compatibility.
+6. Hit **"Generate 3D Video"** and let it roll!
 ---
-
-## Notes
-- Active Development: This project is constantly evolving. If you encounter any issues, have questions, or suggestions, please feel free to start a conversation in the Discussions tab. Your feedback is always appreciated!
-  
-- Solo Developer Notice: As a solo developer working on this project during my limited free time (~4 hours per night), I truly appreciate your patience and understanding as I continue to improve the software, squash bugs, and fine-tune features to deliver the best 3D rendering experience possible.
-
-## Pulfrich Effect Explained
-- **How to Use the Pulfrich Effect in Your Program**
--- The Pulfrich effect in your program creates a dynamic 3D experience by introducing a temporal delay between the left and right views, simulating depth perception based on motion. Here's how to use it effectively:
-
-- **Enable Pulfrich Effect**: The effect is automatically applied when generating Half-SBS 3D videos.
-It works by blending current and delayed frames to enhance depth perception during motion.
-
-- **Adjust Blend Factor**: Use the Blend Factor slider or parameter to control the intensity of the Pulfrich effect.
-Higher values increase the blending between delayed and current frames, while lower values reduce it.
-
-- **Scene Change Handling**: the program detects scene changes automatically and dynamically reduces blending to avoid artifacts in abrupt transitions.
-No manual intervention is required for smooth scene transitions.
-
-- **Delay Time Control**: Modify the Delay Time parameter to fine-tune the temporal offset.
-A smaller delay creates subtle depth, while a larger delay produces more pronounced effects.
+## Pulfrich Effect Quick Guide
+- Works by blending **delayed + current frames** for moving objects.
+- Best for **lateral motion** scenes (walking, panning, cars, etc.).
+- Tune:
+  - `blend_factor` = 0.4–0.6
+  - `delay_time` = ~1/30
+- Scene changes are automatically smoothed!
+---
+## Troubleshooting
+- **Black/Empty Output**: Wrong depth map resolution or mismatch with input FPS.
+- **Halo/Artifacts**:
+  - Increase feather strength and blur size.
+  - Enable subject tracking and clamp the zero parallax offset.
+- **Out of Memory (OEM)**:
+  - Enable FFmpeg rendering for better memory usage.
+  - Use `libx264` or `h264_nvenc` and avoid long clips in one go.
+---
+## Dev Notes
+This tool is being developed by a solo dev with nightly grind energy (🕐 ~4 hours a night). If you find it helpful, let me know — feedback, bug reports, and feature ideas are always welcome!
 
 ## Acknowledgments & Credits
 
