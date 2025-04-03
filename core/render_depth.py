@@ -17,7 +17,6 @@ suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 cancel_requested = threading.Event()
 
-
 # ---Depth Estimation---
 
 # ✅ Define local model storage path
@@ -131,6 +130,14 @@ def choose_output_directory(output_label_widget, output_dir_var):
         output_dir_var.set(selected_directory)
         output_label_widget.config(text=f"📁 {selected_directory}")
 
+def get_dynamic_batch_size(base=4, scale_factor=1.0, max_limit=32, reserve_vram_gb=1.0):
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        total_vram = props.total_memory / (1024 ** 3)
+        usable_vram = max(0, total_vram - reserve_vram_gb)
+        estimated_batch = int(base * usable_vram * scale_factor)
+        return min(estimated_batch, max_limit)
+    return base
 
 def process_image_folder(batch_size_widget, output_dir_var, status_label, progress_bar, root):
     folder_path = filedialog.askdirectory(title="Select Folder Containing Images")
@@ -150,13 +157,14 @@ def process_image_folder(batch_size_widget, output_dir_var, status_label, progre
 
 def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, status_label, progress_bar, root, cancel_requested):
     try:
-        batch_size = int(batch_size_widget.get().strip())
+        user_value = batch_size_widget.get().strip()
+        batch_size = int(user_value) if user_value else get_dynamic_batch_size()
         if batch_size <= 0:
             raise ValueError
     except Exception:
-        batch_size = 8
-        status_label.config(text="⚠️ Invalid batch size. Using default (8).")
-
+        batch_size = get_dynamic_batch_size()
+        status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
+        
     image_files = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
@@ -391,12 +399,13 @@ def process_videos_in_folder(
 
     # ✅ Retrieve batch size safely from widget
     try:
-        batch_size = int(batch_size_widget.get().strip())
+        user_value = batch_size_widget.get().strip()
+        batch_size = int(user_value) if user_value else get_dynamic_batch_size()
         if batch_size <= 0:
             raise ValueError
     except Exception:
-        batch_size = 8
-        status_label.config(text="⚠️ Invalid batch size. Using default batch size (8).")
+        batch_size = get_dynamic_batch_size()
+        status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
     # ✅ Process each video with updated pipeline
     for video_file in video_files:
@@ -444,12 +453,12 @@ def process_video2(
 
     input_dir, input_filename = os.path.split(file_path)
     name, _ = os.path.splitext(input_filename)
-    output_filename = f"{name}_depth.mp4"
+    output_filename = f"{name}_depth.mkv"
     output_path = os.path.join(output_dir, output_filename)
 
     print(f"📁 Saving video to: {output_path}")
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
 
     if not out.isOpened():
@@ -548,12 +557,13 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var):
         cap.release()
 
         try:
-            batch_size = int(batch_size_widget.get().strip())
+            user_value = batch_size_widget.get().strip()
+            batch_size = int(user_value) if user_value else get_dynamic_batch_size()
             if batch_size <= 0:
                 raise ValueError
-        except ValueError:
-            batch_size = 8
-            status_label.config(text="⚠️ Invalid batch size. Using default batch size (8).")
+        except Exception:
+            batch_size = get_dynamic_batch_size()
+            status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
         threading.Thread(
             target=process_video2,
