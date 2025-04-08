@@ -1,8 +1,18 @@
-# <h1 align="center">VisionDepth3D</h1>  
-## <h2 align="center">VisionDepth3D: The All-in-One 3D Suite for Creators
-From depth maps to final render — everything you need to turn flat 2D footage into cinematic 3D.
-Powered by AI. Optimized for speed. Designed for creators. </h2> 
-### <h3 align="center">[![Github All Releases](https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg)]() ![Python Version](https://img.shields.io/badge/python-3.12-blue)</h3>
+<h1 align="center">VisionDepth3D</h1>
+
+<h2 align="center">The All-in-One 3D Suite for Creators</h2>
+
+<p align="center">
+  <em>This is Hybrid 3D.<br>
+  Built from AI depth + custom stereo logic —<br>
+  Designed for cinema in VR.</em>
+</p>
+
+<h3 align="center">
+  <a href="#"><img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Github All Releases"></a>
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
+</h3>
+
 
 ---
 
