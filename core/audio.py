@@ -3,18 +3,28 @@ from tkinter import filedialog, ttk, messagebox
 import os
 import ffmpeg
 
-def rip_audio(source_path, output_audio_path, audio_codec='aac', bitrate='192k'):
+def rip_audio(source_path, output_audio_path, audio_codec='copy', bitrate=None):
     try:
+        # Don't force channel layout; copy original if possible
+        audio_kwargs = {
+            'map': 'a',
+            'acodec': audio_codec or 'copy'
+        }
+
+        if bitrate and audio_codec != 'copy':
+            audio_kwargs['b:a'] = bitrate
+
         (
             ffmpeg
             .input(source_path)
-            .output(output_audio_path, **{'q:a': 0, 'map': 'a', 'acodec': audio_codec, 'b:a': bitrate})
+            .output(output_audio_path, **audio_kwargs)
             .run(overwrite_output=True)
         )
         messagebox.showinfo("Success", f"Audio ripped to:\n{output_audio_path}")
     except ffmpeg.Error as e:
         error_output = e.stderr.decode(errors='ignore') if e.stderr else str(e)
         messagebox.showerror("Error", error_output)
+
 
 def attach_audio(video_path, audio_path, output_path):
     try:
@@ -25,7 +35,7 @@ def attach_audio(video_path, audio_path, output_path):
             ffmpeg
             .output(input_video, input_audio, output_path, **{
                 'c:v': 'copy',
-                'c:a': 'aac',
+                'c:a': 'copy',     # Don't re-encode audio, keep full 7.1 or source format
                 'map': '0:v:0',
                 'map': '1:a:0'
             })
@@ -65,7 +75,7 @@ def launch_audio_gui():
     tk.Button(root, text="Save As", command=browse_save_audio).pack()
 
     tk.Label(root, text="🎚 Codec:").pack()
-    ttk.Combobox(root, textvariable=codec, values=["aac", "mp3", "wav"]).pack()
+    ttk.Combobox(root, textvariable=codec, values=["copy", "aac", "ac3", "eac3", "mp3", "flac", "wav"]).pack()
 
     tk.Label(root, text="🎛 Bitrate:").pack()
     ttk.Combobox(root, textvariable=bitrate, values=["128k", "192k", "256k", "320k"]).pack()
