@@ -180,16 +180,53 @@ Congrats you have successfully downloaded VisionDepth3D!
 This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
 
 ---
-## Guide Sheet: **Updating**
+## 🛠️ Guide Sheet: **Updating VisionDepth3D**
 
-When a new update drops move the weights folder out of the VisionDepth-main folder,
-Delete Old VisionDepth3D folder and redownload updated folder, 
-place weights folder inside updated main folder like you did before,
-started and used the program before just update the path in starter scrip
-you might need to activate the conda environment to run the conda script
-open conda like before and cd to updated folder path and run the conda starter script, 
-you will have to adjust the paths inside the starter script
-type in your systems startup file press enter and VisionDepth3D will open 
+When a new version of **VisionDepth3D** is released, follow these steps to ensure a smooth transition:
+
+---
+
+### **Update Instructions**
+
+1. **Backup Your Weights**  
+   Move your `weights` folder out of the old `VisionDepth3D-main` directory.
+
+2. **Download the Latest Version**  
+   Delete the old folder and extract or clone the updated version of `VisionDepth3D-main`.
+
+3. **Restore Weights Folder**  
+   Place your `weights` folder back inside the newly downloaded main directory:  
+   `VisionDepth3D-main/weights`
+
+4. **Update the Path in Startup Scripts**  
+   Open the startup script matching your platform:
+
+   - `Start_VD3D_Windows.bat`
+   - `Start_VD3D_Conda.bat`
+   - `Start_VD3D_Linux.sh`
+
+   Edit the script and replace any **old folder path** with the **new path** to your updated `VisionDepth3D-main`.
+
+5. **Activate Conda Environment (if needed)**  
+   If you are using the Conda starter script:
+   - Open a terminal or Anaconda Prompt.
+   - Run:
+     ```bash
+     cd path/to/updated/VisionDepth3D-main
+     Start_VD3D_Conda.bat
+     ```
+
+6. **Launch the App**  
+   Once everything is in place, run the appropriate script or shortcut to launch VisionDepth3D with your latest settings.
+
+---
+
+> **Note:** If you customized any configuration, backup those files before replacing folders. and if you run into import errors
+> ```
+> pip install -r requirements.txt
+> ```
+> inside opened terminal and that will fix any dependancie errors
+
 
 ---
 ## Guide Sheet: GUI Inputs
