@@ -152,9 +152,6 @@ def process_image_folder(batch_size_widget, output_dir_var, status_label, progre
         daemon=True,
     ).start()
 
-
-
-
 def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, status_label, progress_bar, root, cancel_requested):
     try:
         user_value = batch_size_widget.get().strip()
@@ -373,7 +370,8 @@ def process_videos_in_folder(
     status_label,
     progress_bar,
     cancel_requested,
-    save_frames=False  # Optional
+    invert_var,
+    save_frames=False,    # Optional
 ):
 
     """Processes all video files in the selected folder in the correct numerical order."""
@@ -410,7 +408,7 @@ def process_videos_in_folder(
     # ✅ Process each video with updated pipeline
     for video_file in video_files:
         video_path = os.path.join(folder_path, video_file)
-        frames_processed_all += process_video2(
+        processed = process_video2(
             video_path,
             total_frames_all,
             frames_processed_all,
@@ -418,12 +416,21 @@ def process_videos_in_folder(
             output_dir_var,
             status_label,
             progress_bar,
-            cancel_requested  # ✅ Add this missing argument
+            cancel_requested,
+            invert_var
         )
+
+        # If cancelled mid-batch, exit early
+        if cancel_requested.is_set():
+            status_label.config(text="🛑 Processing cancelled by user.")
+            progress_bar.config(value=0)
+            return
+
+        frames_processed_all += processed
 
     status_label.config(text="✅ All videos processed successfully!")
     progress_bar.config(value=100)
-
+    
 def process_video2(
     file_path,
     total_frames_all,
@@ -433,7 +440,8 @@ def process_video2(
     status_label,
     progress_bar,
     cancel_requested,
-    save_frames=False  # ✅ Optional parameter
+    invert_var,
+    save_frames=False
 ):
     """Processes a single video file and updates the progress bar correctly."""
 
@@ -474,6 +482,10 @@ def process_video2(
     frames_batch = []
 
     while True:
+        if cancel_requested.is_set():
+            print("🛑 Cancel requested before frame read.")
+            break
+
         ret, frame = cap.read()
         if not ret:
             break
@@ -484,17 +496,29 @@ def process_video2(
         frames_batch.append(pil_image)
 
         if len(frames_batch) == batch_size or frame_count == total_frames:
+            if cancel_requested.is_set():
+                print("🛑 Cancel requested before inference.")
+                break
+
             predictions = pipe(frames_batch)
 
             for i, prediction in enumerate(predictions):
                 if cancel_requested.is_set():
+                    print("🛑 Cancelled during batch write.")
                     status_label.config(text="🛑 Cancelled during batch.")
-                    break
+                    cap.release()
+                    out.release()
+                    return frame_count
 
                 raw_depth = prediction["predicted_depth"]
-                depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze().mul(255).byte()
-                depth_np = depth_tensor.cpu().numpy().astype("uint8")
+                depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze()
 
+                if invert_var.get():
+                    print("🔁 Invert depth selected.")
+                    depth_tensor = 1.0 - depth_tensor
+
+                depth_tensor = depth_tensor.mul(255).byte()
+                depth_np = depth_tensor.cpu().numpy().astype("uint8")
                 depth_frame = cv2.cvtColor(depth_np, cv2.COLOR_GRAY2BGR)
                 depth_frame = cv2.resize(depth_frame, (original_width, original_height))
                 out.write(depth_frame)
@@ -525,13 +549,15 @@ def process_video2(
 
     if cancel_requested.is_set():
         print("🛑 Cancelled: Video not fully processed.")
-        return frame_count
+    else:
+        print(f"✅ Video saved: {output_path}")
 
-    print(f"✅ Video saved: {output_path}")
     return frame_count
 
 
-def open_video(status_label, progress_bar, batch_size_widget, output_dir_var):
+
+
+def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, invert_var):
     file_path = filedialog.askopenfilename(
         filetypes=[
             ("All Supported Video Files", "*.mp4;*.avi;*.mov;*.mkv;*.flv;*.wmv;*.webm;*.mpeg;*.mpg"),
@@ -567,7 +593,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var):
 
         threading.Thread(
             target=process_video2,
-            args=(file_path, total_frames_all, 0, batch_size, output_dir_var, status_label, progress_bar, cancel_requested),
+            args=(file_path, total_frames_all, 0, batch_size, output_dir_var, status_label, progress_bar, cancel_requested, invert_var),
             daemon=True
         ).start()
 
