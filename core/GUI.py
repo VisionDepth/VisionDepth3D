@@ -13,6 +13,8 @@ from audio import launch_audio_gui
 from PIL import Image, ImageTk
 import torch.nn.functional as F
 import numpy as np
+import re
+import webbrowser
 
 # ── VisionDepth3D Custom Modules ────────────────
 # 3D Rendering
@@ -29,7 +31,6 @@ from render_3d import (
     select_depth_map,
     select_output_video,
     process_video,
-    preview_interlaced_frame,
 )
 
 # Depth Estimation
@@ -58,10 +59,7 @@ from render_framestitch import (
 from VDPlayer import (
     load_video,
     seek_video,
-    play,
-    pause_video,
-    stop_video,
-    open_fullscreen,
+    clear_video,
 )
 
 from render_upscale import ( 
@@ -150,6 +148,97 @@ def resume_processing():
     suspend_flag.clear()
     print("▶ Processing Resumed!")
 
+def grab_frame_from_video(video_path, frame_idx=0):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"❌ Failed to open video: {video_path}")
+        return None
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    return frame if ret else None
+
+def preview_passive_3d_frame():
+    input_path = input_video_path.get()
+    depth_path = selected_depth_map.get()
+
+    if not os.path.exists(input_path) or not os.path.exists(depth_path):
+        messagebox.showerror("Missing Input", "Please load both input video and depth map.")
+        return
+
+    # Grab first frame from each video
+    frame_to_preview = 1065 # 👈 choose your frame index here
+
+    input_frame = grab_frame_from_video(input_path, frame_idx=frame_to_preview)
+    depth_frame = grab_frame_from_video(depth_path, frame_idx=frame_to_preview)
+
+
+    if input_frame is None or depth_frame is None:
+        messagebox.showerror("Frame Error", "Unable to extract frames from videos.")
+        return
+
+    # Convert frames to tensors
+    frame_tensor = frame_to_tensor(input_frame)
+    depth_tensor = depth_to_tensor(depth_frame)
+    h, w = input_frame.shape[:2]
+
+    # Resize to target size (same as in render function)
+    frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
+    depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
+
+    # Run pixel shift with return_shift_map enabled
+    left, right, shift_map = pixel_shift_cuda(
+        frame_tensor, depth_tensor, w, h,
+        fg_shift.get(), mg_shift.get(), bg_shift.get(),
+        blur_ksize=blur_ksize.get(),
+        feather_strength=feather_strength.get(),
+        return_shift_map=True,
+        use_subject_tracking=use_subject_tracking.get(),
+        enable_floating_window=use_floating_window.get()
+    )
+
+    preview_type = preview_mode.get()
+    preview_img = None
+
+    if preview_type == "Passive Interlaced":
+        interlaced = np.zeros_like(left)
+        interlaced[::2] = left[::2]
+        interlaced[1::2] = right[1::2]
+        preview_img = interlaced
+
+    elif preview_type == "HSBS":
+        half_w = w // 2
+        left_resized = cv2.resize(left, (half_w, h))
+        right_resized = cv2.resize(right, (half_w, h))
+        preview_img = np.hstack((left_resized, right_resized))
+
+    elif preview_type == "Shift Heatmap":
+        shift_np = shift_map.cpu().numpy()
+        shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
+        shift_colored = cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
+        preview_img = shift_colored
+
+    elif preview_type == "Feather Mask":
+        # Optional: if you return feather mask in pixel_shift_cuda
+        # feather_mask = ...
+        # mask_np = (feather_mask.squeeze().cpu().numpy() * 255).astype(np.uint8)
+        # preview_img = cv2.applyColorMap(mask_np, cv2.COLORMAP_BONE)
+        messagebox.showinfo("Info", "Feather mask preview is not yet implemented.")
+        return
+
+    elif preview_type == "Feather Blend":
+        preview_img = left
+
+    else:
+        messagebox.showwarning("Unknown Mode", f"Unsupported preview type: {preview_type}")
+        return
+
+    if preview_img is not None:
+        preview_path = f"preview_{preview_type.replace(' ', '_').lower()}.png"
+        cv2.imwrite(preview_path, preview_img)
+        os.startfile(preview_path)
+        print(f"✅ {preview_type} preview saved to: {preview_path}")
+
 
 # ---GUI Setup---
 
@@ -160,15 +249,7 @@ def resume_processing():
 # --- Window Setup ---
 root = tk.Tk()
 root.title("VisionDepth3D Video Generator")
-root.geometry("1080x960")
-
-background_image = Image.open(resource_path(os.path.join("assets", "Background.png")))
-background_image = background_image.resize((1080, 960), Image.LANCZOS)
-bg_image = ImageTk.PhotoImage(background_image)
-
-root.bg_image = bg_image  # keep a persistent reference
-background_label = tk.Label(root, image=bg_image)
-background_label.place(x=0, y=0, relwidth=1, relheight=1)
+root.geometry("835x855")
 
 # --- Notebook for Tabs ---
 tab_control = ttk.Notebook(root)
@@ -318,7 +399,7 @@ status_bar = tk.Label(
 status_bar.pack(fill="x", padx=15, pady=(0, 5))
 
 # --- Real-ESRGAN Upscale Tab ---
-RealESRGAN = tk.Frame(tab_control, bg="#1c1c1c")  # Styled frame
+RealESRGAN = tk.Frame(tab_control, bg="#1c1c1c")
 tab_control.add(RealESRGAN, text="Real-ESRGAN")
 
 REAL_ESRGAN_MODELS = {
@@ -329,7 +410,6 @@ REAL_ESRGAN_MODELS = {
     "BSRGANx4_fp16": "weights/BSRGANx4_fp16.onnx"
 }
 
-# Available codecs (Fastest first)
 CODECS = {
     "XVID (Good Compatibility)": "XVID",
     "MJPG (Motion JPEG)": "MJPG",
@@ -337,15 +417,20 @@ CODECS = {
     "DIVX (Older Compatibility)": "DIVX",
 }
 
-# Upscale variables
 upscale_frames_folder = tk.StringVar()
 upscale_output_file = tk.StringVar()
 upscale_width = tk.IntVar(value=1920)
 upscale_height = tk.IntVar(value=804)
-upscale_fps = tk.DoubleVar(value=24.0)
+upscale_fps = tk.DoubleVar(value=47.952)
 upscale_codec = tk.StringVar(value="XVID")
-upscale_batch_size = tk.IntVar(value=1)  # Default to 2 for most GPUs
+upscale_batch_size = tk.IntVar(value=1)
+upscale_blend_mode = tk.StringVar(value="OFF")
+upscale_input_res_pct = tk.IntVar(value=100)
 
+# 🆕 New toggles for saving outputs
+save_frames_only = tk.BooleanVar(value=False)
+generate_video = tk.BooleanVar(value=True)
+save_frames_folder = tk.StringVar(value="upscaled_frames")
 
 def start_upscale():
     folder = upscale_frames_folder.get()
@@ -355,7 +440,7 @@ def start_upscale():
         messagebox.showerror("Error", "Please select a valid frames folder!")
         return
 
-    if not output:
+    if not output and generate_video.get():
         messagebox.showerror("Error", "Please specify an output file!")
         return
 
@@ -366,22 +451,26 @@ def start_upscale():
         args=(
             folder,
             output,
-            int(width.get()),
-            int(height.get()),
-            float(fps.get()),
+            int(upscale_width.get()),
+            int(upscale_height.get()),
+            float(upscale_fps.get()),
             codec_str,
             esrgan_session,
             upscale_progress,
             upscale_status_label,
-            int(upscale_batch_size.get())  # ✅ Batch size passed
+            int(upscale_batch_size.get()),
         ),
+        kwargs={
+            "input_res_pct": int(upscale_input_res_pct.get()),
+            "blend_mode": upscale_blend_mode.get(),
+            "save_frames_only": save_frames_only.get(),
+            "generate_video": generate_video.get(),
+            "save_frames_folder": save_frames_folder.get()
+        },
         daemon=True
     ).start()
 
-
-
-
-# Label
+# GUI Controls...
 tk.Label(RealESRGAN, text="📂 Select Frames Folder:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
 tk.Entry(RealESRGAN, textvariable=upscale_frames_folder, width=50, bg="#2b2b2b", fg="white", insertbackground="white").pack(padx=10)
 tk.Button(RealESRGAN, text="Browse", command=lambda: select_frames_folder(upscale_frames_folder), bg="#4a4a4a", fg="white").pack(pady=5)
@@ -389,6 +478,15 @@ tk.Button(RealESRGAN, text="Browse", command=lambda: select_frames_folder(upscal
 tk.Label(RealESRGAN, text="💾 Output Video File:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
 tk.Entry(RealESRGAN, textvariable=upscale_output_file, width=50, bg="#2b2b2b", fg="white", insertbackground="white").pack(padx=10)
 tk.Button(RealESRGAN, text="Save As", command=lambda: select_output_file(upscale_output_file), bg="#4a4a4a", fg="white").pack(pady=5)
+
+# 🆕 Save options
+options_frame = tk.Frame(RealESRGAN, bg="#1c1c1c")
+options_frame.pack(pady=5)
+tk.Checkbutton(options_frame, text="🖼️ Save Frames Only", variable=save_frames_only, bg="#1c1c1c", fg="white", selectcolor="#2b2b2b").pack(side="left", padx=10)
+tk.Checkbutton(options_frame, text="🎞 Generate Video", variable=generate_video, bg="#1c1c1c", fg="white", selectcolor="#2b2b2b").pack(side="left", padx=10)
+
+tk.Label(RealESRGAN, text="📁 Frames Output Folder:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
+tk.Entry(RealESRGAN, textvariable=save_frames_folder, width=40, bg="#2b2b2b", fg="white", insertbackground="white").pack(padx=10)
 
 tk.Label(RealESRGAN, text="🖼️ Output Resolution (Width x Height):", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
 res_frame = tk.Frame(RealESRGAN, bg="#1c1c1c")
@@ -398,52 +496,31 @@ tk.Label(res_frame, text="x", bg="#1c1c1c", fg="white").pack(side="left")
 tk.Entry(res_frame, textvariable=upscale_height, width=10, bg="#2b2b2b", fg="white", insertbackground="white").pack(side="left", padx=5)
 
 tk.Label(RealESRGAN, text="🎞 FPS:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
-ttk.Combobox(RealESRGAN, textvariable=upscale_fps, values=[23.976, 24, 30, 48, 60], state="readonly").pack(padx=10)
+ttk.Combobox(RealESRGAN, textvariable=upscale_fps, values=[23.976, 24, 30, 47.952432, 48, 60], state="readonly").pack(padx=10)
 
 tk.Label(RealESRGAN, text="🎞 Codec:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
 ttk.Combobox(RealESRGAN, textvariable=upscale_codec, values=list(CODECS.keys()), state="readonly").pack(padx=10)
 
 tk.Label(RealESRGAN, text="🧮 Batch Size:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=(5, 0))
-tk.Entry(
-    RealESRGAN,
-    textvariable=upscale_batch_size,
-    width=10,
-    bg="#2b2b2b",
-    fg="white",
-    insertbackground="white",
-    relief="flat"
-).pack(padx=10, pady=(0, 10))
+tk.Entry(RealESRGAN, textvariable=upscale_batch_size, width=10, bg="#2b2b2b", fg="white", insertbackground="white", relief="flat").pack(padx=10, pady=(0, 10))
 
+tk.Label(RealESRGAN, text="🎨 AI Blending:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=(5, 0))
+ttk.Combobox(RealESRGAN, textvariable=upscale_blend_mode, values=["OFF", "LOW", "MEDIUM", "HIGH"], state="readonly").pack(padx=10)
 
-# Model Selection
+tk.Label(RealESRGAN, text="📐 Input Resolution %:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=(5, 0))
+ttk.Combobox(RealESRGAN, textvariable=upscale_input_res_pct, values=[25, 50, 75, 100], state="readonly").pack(padx=10)
+
 selected_upscale_model = tk.StringVar(value="RealESRGAN x4plus")
 tk.Label(RealESRGAN, text="🧠 Select ESRGAN Model:", bg="#1c1c1c", fg="white").pack(anchor="w", padx=10, pady=5)
-ttk.Combobox(
-    RealESRGAN,
-    textvariable=selected_upscale_model,
-    values=list(REAL_ESRGAN_MODELS.keys()),
-    state="readonly"
-).pack(padx=10)
+ttk.Combobox(RealESRGAN, textvariable=selected_upscale_model, values=list(REAL_ESRGAN_MODELS.keys()), state="readonly").pack(padx=10)
 
+tk.Button(RealESRGAN, text="▶ Start Upscale", bg="green", fg="white", relief="flat", command=start_upscale).pack(pady=10)
 
-# Start Button
-tk.Button(
-    RealESRGAN,
-    text="▶ Start Upscale",
-    bg="green",
-    fg="white",
-    relief="flat",
-    command=start_upscale  # ✅ just reference, no lambda needed
-).pack(pady=10)
-
-
-# Progress Bar
 upscale_progress = ttk.Progressbar(RealESRGAN, orient="horizontal", length=300, mode="determinate")
 upscale_progress.pack(pady=10)
 
 upscale_status_label = tk.Label(RealESRGAN, text="Waiting to start...", bg="#1c1c1c", fg="white")
 upscale_status_label.pack()
-
 
 
 # --- Depth Content ---
@@ -857,6 +934,7 @@ use_ffmpeg = tk.BooleanVar(value=False)  # Toggle switch for using FFmpeg writer
 use_subject_tracking = tk.BooleanVar(value=True)
 use_floating_window = tk.BooleanVar(value=True)  # Enable floating window DFW
 preview_mode = tk.StringVar(value="Passive Interlaced")
+frame_to_preview_var = tk.IntVar(value=6478)  # Default preview frame
 
 
 # Load saved settings if available
@@ -955,7 +1033,7 @@ aspect_ratio_menu.grid(row=0, column=3, sticky="ew")
 
 # Row 1
 tk.Label(options_frame, text="Convergence Shift").grid(row=1, column=0, sticky="w")
-tk.Scale(options_frame, from_=0, to=20, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift)\
+tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift)\
     .grid(row=1, column=1, sticky="ew")
 
 tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
@@ -964,20 +1042,20 @@ tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, va
 
 # Row 2
 tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
-tk.Scale(options_frame, from_=-5, to=10, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift)\
+tk.Scale(options_frame, from_=-5, to=5, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift)\
     .grid(row=2, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Blend Factor").grid(row=2, column=2, sticky="w")
-tk.Scale(options_frame, from_=0.1, to=1.0, resolution=0.1, orient=tk.HORIZONTAL, variable=blend_factor)\
+tk.Label(options_frame, text="Feather Blur Size").grid(row=2, column=2, sticky="w")
+tk.Scale(options_frame, from_=0, to=15, resolution=1, orient=tk.HORIZONTAL, variable=blur_ksize)\
     .grid(row=2, column=3, sticky="ew")
 
 # Row 3
 tk.Label(options_frame, text="Divergence Shift").grid(row=3, column=0, sticky="w")
-tk.Scale(options_frame, from_=-20, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift)\
+tk.Scale(options_frame, from_=-15, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift)\
     .grid(row=3, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Delay Time (seconds)").grid(row=3, column=2, sticky="w")
-tk.Scale(options_frame, from_=1/50, to=1/20, resolution=0.001, orient=tk.HORIZONTAL, variable=delay_time)\
+tk.Label(options_frame, text="CRF Quality (0=best, 51=worst)").grid(row=3, column=2, sticky="w")
+tk.Scale(options_frame, from_=0, to=51, resolution=1, orient=tk.HORIZONTAL, variable=crf_value)\
     .grid(row=3, column=3, sticky="ew")
 
 # Row 4
@@ -985,9 +1063,14 @@ tk.Label(options_frame, text="Feather Strength").grid(row=4, column=0, sticky="w
 tk.Scale(options_frame, from_=0, to=20, resolution=0.5, orient=tk.HORIZONTAL, variable=feather_strength)\
     .grid(row=4, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Feather Blur Size").grid(row=4, column=2, sticky="w")
-tk.Scale(options_frame, from_=1, to=15, resolution=1, orient=tk.HORIZONTAL, variable=blur_ksize)\
-    .grid(row=4, column=3, sticky="ew")
+tk.Label(options_frame, text="NVENC CQ Quality (0=best, 51=worst)").grid(row=4, column=2, sticky="w")
+nvenc_cq_value = tk.IntVar(value=23)  # Default value
+tk.Scale(
+    options_frame, from_=0, to=51, resolution=1,
+    orient=tk.HORIZONTAL, variable=nvenc_cq_value
+).grid(row=4, column=3, sticky="ew")
+
+
 
 # Row 5
 tk.Label(options_frame, text="FFmpeg Codec").grid(row=5, column=0, sticky="w")
@@ -996,9 +1079,6 @@ selected_ffmpeg_codec.set(codec_options[0])
 tk.OptionMenu(options_frame, selected_ffmpeg_codec, *codec_options)\
     .grid(row=5, column=1, sticky="ew")
 
-tk.Label(options_frame, text="CRF Quality (0=best, 51=worst)").grid(row=5, column=2, sticky="w")
-tk.Scale(options_frame, from_=0, to=51, resolution=1, orient=tk.HORIZONTAL, variable=crf_value)\
-    .grid(row=5, column=3, sticky="ew")
 
 # Row 6 - Checkboxes
 tk.Checkbutton(options_frame, text="Use FFmpeg Renderer", variable=use_ffmpeg)\
@@ -1010,10 +1090,6 @@ tk.Checkbutton(options_frame, text="Lock Subject to Screen", variable=use_subjec
 tk.Checkbutton(options_frame, text="Enable Floating Window (DFW)", variable=use_floating_window)\
     .grid(row=6, column=3, columnspan=2, sticky="e", padx=5)
 
-# Row 7 - Reset button centered
-tk.Button(options_frame, text="Reset to Defaults", command=reset_settings,
-          bg="#8B0000", fg="white")\
-    .grid(row=7, column=0, columnspan=4, pady=10)
 
 
 # File Selection
@@ -1047,9 +1123,36 @@ tk.Entry(visiondepth_content_frame, textvariable=output_sbs_video_path, width=50
     row=5, column=1, pady=5, padx=5
 )
 
+tk.OptionMenu(
+    visiondepth_content_frame,
+    preview_mode,
+    "Passive Interlaced",
+    "HSBS",
+    "Shift Heatmap",
+    "Shift Heatmap (Abs)",
+    "Shift Heatmap (Clipped ±5px)",
+    "Left-Right Diff",
+    "Feather Mask",
+    "Feather Blend",
+    "Red-Blue Anaglyph",    # <-- New mode added here
+    "Overlay Arrows"
+).grid(row=6, column=0, pady=5, sticky="ew")
+
+
+# Slider for selecting frame (min=0, max=10000 as an example)
+frame_slider = tk.Scale(
+    visiondepth_content_frame,
+    from_=0, to=5000,  # You can dynamically set `to` based on video length
+    orient="horizontal",
+    variable=frame_to_preview_var,
+    resolution=1,
+    length=200
+)
+frame_slider.grid(row=6, column=1, pady=5, sticky="s")
+
 # Frame to Hold Buttons and Format Selection in a Single Row
 button_frame = tk.Frame(visiondepth_content_frame)
-button_frame.grid(row=6, column=0, columnspan=5, pady=10, sticky="w")
+button_frame.grid(row=7, column=0, columnspan=5, pady=10, sticky="w")
 
 # 3D Format Label and Dropdown (Inside button_frame)
 tk.Label(button_frame, text="3D Format").pack(side="left", padx=5)
@@ -1081,8 +1184,6 @@ start_button = tk.Button(
         mg_shift,
         bg_shift,
         sharpness_factor,
-        blend_factor,
-        delay_time,
         output_format,
         selected_aspect_ratio,
         aspect_ratios,
@@ -1104,6 +1205,15 @@ start_button = tk.Button(
 start_button.pack(side="left", padx=5)
 
 
+preview_3d_frame = tk.Button(
+    button_frame,
+    text="Preview 3D Frame",
+    command=preview_passive_3d_frame,  # ✅ This stays the same
+    bg="#333", fg="white"
+)
+preview_3d_frame.pack(side="left", padx=5)
+
+
 suspend_button = tk.Button(
     button_frame, text="Suspend", command=suspend_processing, bg="orange", fg="black"
 )
@@ -1119,115 +1229,11 @@ cancel_button = tk.Button(
 )
 cancel_button.pack(side="left", padx=5)
 
-def grab_frame_from_video(video_path, frame_idx=0):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"❌ Failed to open video: {video_path}")
-        return None
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-    return frame if ret else None
-
-def preview_passive_3d_frame():
-    input_path = input_video_path.get()
-    depth_path = selected_depth_map.get()
-
-    if not os.path.exists(input_path) or not os.path.exists(depth_path):
-        messagebox.showerror("Missing Input", "Please load both input video and depth map.")
-        return
-
-    # Grab first frame from each video
-    frame_to_preview = 1065 # 👈 choose your frame index here
-
-    input_frame = grab_frame_from_video(input_path, frame_idx=frame_to_preview)
-    depth_frame = grab_frame_from_video(depth_path, frame_idx=frame_to_preview)
-
-
-    if input_frame is None or depth_frame is None:
-        messagebox.showerror("Frame Error", "Unable to extract frames from videos.")
-        return
-
-    # Convert frames to tensors
-    frame_tensor = frame_to_tensor(input_frame)
-    depth_tensor = depth_to_tensor(depth_frame)
-    h, w = input_frame.shape[:2]
-
-    # Resize to target size (same as in render function)
-    frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
-    depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
-
-    # Run pixel shift with return_shift_map enabled
-    left, right, shift_map = pixel_shift_cuda(
-        frame_tensor, depth_tensor, w, h,
-        fg_shift.get(), mg_shift.get(), bg_shift.get(),
-        blur_ksize=blur_ksize.get(),
-        feather_strength=feather_strength.get(),
-        return_shift_map=True,
-        use_subject_tracking=use_subject_tracking.get(),
-        enable_floating_window=use_floating_window.get()
-    )
-
-    preview_type = preview_mode.get()
-    preview_img = None
-
-    if preview_type == "Passive Interlaced":
-        interlaced = np.zeros_like(left)
-        interlaced[::2] = left[::2]
-        interlaced[1::2] = right[1::2]
-        preview_img = interlaced
-
-    elif preview_type == "HSBS":
-        half_w = w // 2
-        left_resized = cv2.resize(left, (half_w, h))
-        right_resized = cv2.resize(right, (half_w, h))
-        preview_img = np.hstack((left_resized, right_resized))
-
-    elif preview_type == "Shift Heatmap":
-        shift_np = shift_map.cpu().numpy()
-        shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
-        shift_colored = cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
-        preview_img = shift_colored
-
-    elif preview_type == "Feather Mask":
-        # Optional: if you return feather mask in pixel_shift_cuda
-        # feather_mask = ...
-        # mask_np = (feather_mask.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        # preview_img = cv2.applyColorMap(mask_np, cv2.COLORMAP_BONE)
-        messagebox.showinfo("Info", "Feather mask preview is not yet implemented.")
-        return
-
-    elif preview_type == "Feather Blend":
-        preview_img = left
-
-    else:
-        messagebox.showwarning("Unknown Mode", f"Unsupported preview type: {preview_type}")
-        return
-
-    if preview_img is not None:
-        preview_path = f"preview_{preview_type.replace(' ', '_').lower()}.png"
-        cv2.imwrite(preview_path, preview_img)
-        os.startfile(preview_path)
-        print(f"✅ {preview_type} preview saved to: {preview_path}")
-
-tk.Button(
-    button_frame,
-    text="Preview 3D Frame",
-    command=preview_passive_3d_frame,  # ✅ This stays the same
-    bg="#333", fg="white"
-).pack(side="left", padx=5)
-
-
-tk.Label(button_frame, text="Preview Mode").pack(side="left", padx=5)
-tk.OptionMenu(
-    button_frame,
-    preview_mode,
-    "Passive Interlaced",
-    "HSBS",
-    "Shift Heatmap",
-    "Feather Mask",
-    "Feather Blend"
-).pack(side="left", padx=5)
+# Row 7 - Reset button centered
+reset_button = tk.Button(
+    button_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white"
+)
+reset_button.pack(side="left", padx=5)
 
 def open_github():
     """Opens the GitHub repository in a web browser."""
@@ -1257,12 +1263,12 @@ github_button = tk.Button(
     cursor="hand2",
 )
 github_button.image = github_icon_tk  # Keep a reference to prevent garbage collection
-github_button.grid(row=7, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
+github_button.grid(row=8, column=0, pady=10, padx=5, sticky="w")  # Adjust positioning
 
 tk.Button(
     visiondepth_content_frame,
     text="🎵 Audio Tool",
-    command=launch_audio_gui).grid(row=7, column=1, pady=10, padx=5, sticky="w")
+    command=launch_audio_gui).grid(row=8, column=1, pady=10, padx=5, sticky="w")
 
 
 # Ensure settings are saved when the program closes
