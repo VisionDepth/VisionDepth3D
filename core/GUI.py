@@ -59,7 +59,6 @@ from render_framestitch import (
 from VDPlayer import (
     load_video,
     seek_video,
-    clear_video,
 )
 
 from render_upscale import ( 
