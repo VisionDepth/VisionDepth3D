@@ -25,7 +25,6 @@
 - [Key Features](#key-features--visiondepth3d-all-in-one-3d-suite)
 - [Guide Sheet: Install](#guide-sheet-install)
 - [Guide Sheet: GUI Inputs](#guide-sheet-gui-inputs)
-- [Pulfrich Effect Quick Guide](#pulfrich-effect-quick-guide)
 - [Troubleshooting](#troubleshooting)
 - [Dev Notes](#dev-notes)
 - [Acknowledgments & Credits](#acknowledgments--credits)
@@ -265,38 +264,26 @@ Use the GUI to fine-tune your 3D conversion settings.
 - **Range**: `-1.0` (softer) to `1.0` (sharper)
 - **Effect**: Brings clarity to 3D edges; avoid over-sharpening to reduce halos.
 ---
-### 6. Blend Factor (Pulfrich)
-- **Description**: Blends delayed and current frames for Pulfrich-style motion depth.
-- **Default**: `0.5`
-- **Range**: `0.3` (subtle) to `0.7` (stronger)
-- **Effect**: Controls temporal depth perception. Higher = more blur in motion.
----
-### 7. Delay Time (Pulfrich)
-- **Description**: How many seconds to delay the Pulfrich ghost frame.
-- **Default**: `1/30`
-- **Range**: `1/50` to `1/20`
-- **Effect**: Smaller values = subtle motion depth, larger = stronger Pulfrich 3D.
----
-### 8. Feather Strength *(Edge Anti-Aliasing)*
+### 6. Feather Strength *(Edge Anti-Aliasing)*
 - **Description**: Softens hard 3D edges using depth gradients.
 - **Default**: `10.0`
 - **Range**: `0` to `20`
 - **Effect**: Reduces ghosting artifacts and hard cutouts around subjects.
 ---
-### 9. Feather Blur Size
+### 7. Feather Blur Size
 - **Description**: How wide the smoothing kernel should be.
 - **Default**: `9`
 - **Range**: `1` to `15`
 - **Effect**: Larger = more smoothing, helps reduce halo noise on edges.
 ---
-### 10. FFmpeg Codec & CRF Quality
+### 8. FFmpeg Codec & CRF Quality
 - **Codec**: Choose GPU-accelerated encoders (`h264_nvenc`, `hevc_nvenc`) for faster renders.
 - **CRF (Constant Rate Factor)**:
   - **Default**: `23`
   - **Range**: `0` (lossless) to `51` (worst)
   - Lower values = better visual quality.
 ---
-### 11. Dynamic Subject Locking *(New!)*
+### 9. Dynamic Subject Locking *(New!)*
 - **Checkbox**: **Lock Subject to Screen**
 - **Effect**: Enables **Dynamic Zero Parallax Tracking** — the depth plane will automatically follow the subject’s depth to minimize excessive 3D warping.
 - **Great for**: Human characters or central objects in motion.
@@ -305,7 +292,7 @@ Use the GUI to fine-tune your 3D conversion settings.
 - Match **resolution** and **FPS** between your input video and depth map.
 - Use the **Inverse Depth** checkbox if bright = far instead of close.
 - Recommended depth models:
-  - `ZoeDepth`, `Depth Anything V2`, `MiDaS`, `DPT-Large`, etc.
+  - `Distill Any Depth`, `Depth Anything V2`, `MiDaS`, `DPT-Large`, etc.
   - Choose *Large* models for better fidelity.
 ---
 ## Rendering Time Estimates
@@ -315,21 +302,62 @@ Use the GUI to fine-tune your 3D conversion settings.
 | 5 minutes   | 10–25 mins                |
 | Full Movie  | 6–24+ hours               |
 ---
+
+
 ## Example Workflow
-1. Load video and matching depth map.
-2. Choose output format (Half-SBS, Full-SBS, Anaglyph, etc.).
-3. Enable "Lock Subject to Screen" for tracked parallax.
-4. Set feather smoothing to around `10` and blur `9` for cleanest edges.
-5. Set encoder: use NVENC for speed (`h264_nvenc`), or `libx264` for max compatibility.
-6. Hit **"Generate 3D Video"** and let it roll!
+
+1. Select your **depth model** from the dropdown.
+2. Choose an **output directory** for saving results.
+3. Enable your **preferred settings** (invert, colormap, etc.).
+4. Set **batch size** depending on GPU/VRAM capacity.  
+   *(Tip: Resize your video or switch to a lighter model if memory is limited.)*
+5. Select your **image / video / folder** and start processing.
+6. Once the **depth map video is generated**, head over to the **3D tab**.
+7. Input your original video and the newly created depth map.
+8. Adjust 3D settings for the preferred stereo effect.
+9. Hit **"Generate 3D Video"** and let it roll!
+
 ---
-## Pulfrich Effect Quick Guide
-- Works by blending **delayed + current frames** for moving objects.
-- Best for **lateral motion** scenes (walking, panning, cars, etc.).
-- Tune:
-  - `blend_factor` = 0.4–0.6
-  - `delay_time` = ~1/30
-- Scene changes are automatically smoothed!
+
+## Post-Processing: RIFE + Real-ESRGAN (FPS + Upscale)
+
+Use these models to clean up and enhance 3D videos:
+
+1. In the **Upscale tab**, load your 3D video and enable **“Save Frames Only”**.
+2. Input the **width × height** of the 3D video.  
+   *(No need to set FPS or codec when saving frames.)*
+3. Set batch size to `1` — batch processing is unsupported by some AI models.
+4. Select **AI Blend Mode** and **Input Resolution**:
+
+### AI Blend Mode
+
+| Mode    | Blend Ratio (AI : Original) | Description                                                                 |
+|---------|-----------------------------|-----------------------------------------------------------------------------|
+| OFF     | 100% : 0%                   | Full AI effect (only the ESRGAN result is used).                           |
+| LOW     | 85% : 15%                   | Strong AI enhancement with mild natural tone retention.                    |
+| MEDIUM  | 50% : 50%                   | Balanced mix for natural image quality.                                    |
+| HIGH    | 25% : 75%                   | Subtle upscale; mostly original with a hint of enhancement.                |
+
+### Input Resolution Setting
+
+| Input Resolution | Processing Behavior                              | Performance & Quality Impact                                               |
+|------------------|--------------------------------------------------|-----------------------------------------------------------------------------|
+| **100%**         | Uses full-resolution frames for AI upscaling.   | ✅ Best quality. ❌ Highest GPU usage.                                       |
+| **75%**          | Slightly downsamples before feeding into AI.    | ⚖️ Good balance. Minimal quality loss.                                      |
+| **50%**          | Halves frame size before AI.                    | ⚡ 2× faster. Some detail loss possible.                                    |
+| **25%**          | Very low-resolution input.                      | 🚀 Fastest speed. Noticeable softness — best for previews/tests.           |
+
+5. Select your **Upscale Model** and start the process.
+6. Once done, open the **VDStitch tab**:
+    - Input the upscaled frame folder.
+    - Set the **video output directory and filename**.
+    - Enter the same **resolution and FPS** as your original 3D video.
+    - Enable **RIFE FPS Interpolation**.
+7. Set the **RIFE multiplier to ×2** for smooth results.  
+   *(⚠️ Higher multipliers like ×4 may cause artifacts on scene cuts.)*
+8. Start processing — you now have an enhanced 3D video with upscaled clarity and smoother motion!
+
+
 ---
 ## Troubleshooting
 - **Black/Empty Output**: Wrong depth map resolution or mismatch with input FPS.
