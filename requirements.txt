@@ -1,7 +1,7 @@
 accelerate
 onnxruntime-gpu
 numpy
-opencv-python
+opencv-contrib-python
 Pillow
 tqdm
 matplotlib
