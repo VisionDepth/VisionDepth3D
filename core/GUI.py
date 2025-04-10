@@ -45,6 +45,7 @@ from render_depth import (
     process_images_in_folder,
     process_videos_in_folder,
     update_progress,
+    cancel_requested,
 )
 
 # RIFE Frame Interpolation
@@ -59,7 +60,12 @@ from render_framestitch import (
 from VDPlayer import (
     load_video,
     seek_video,
+    play,
+    pause_video,
+    stop_video,
+    open_fullscreen,
 )
+
 
 from render_upscale import ( 
     upscale_frames,
@@ -132,10 +138,12 @@ def reset_settings():
     messagebox.showinfo("Settings Reset", "All values have been restored to defaults!")
 
 def cancel_processing():
-    global cancel_flag, suspend_flag  # 🛠 This line fixes the scope error
+    global cancel_flag, suspend_flag, cancel_requested  # Include all used flags
     cancel_flag.set()
+    cancel_requested.set()  # For depth processing cancellation
     suspend_flag.clear()
-    print("❌ Processing canceled.")
+    print("❌ Processing canceled (all systems).")
+
 
 def suspend_processing():
     global suspend_flag
@@ -248,11 +256,11 @@ def preview_passive_3d_frame():
 # --- Window Setup ---
 root = tk.Tk()
 root.title("VisionDepth3D Video Generator")
-root.geometry("835x855")
+root.geometry("848x865")
 
 # --- Notebook for Tabs ---
 tab_control = ttk.Notebook(root)
-tab_control.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.9, relheight=0.9)
+tab_control.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
 
 # --- Depth Estimation GUI ---
 depth_estimation_frame = tk.Frame(tab_control)
@@ -281,6 +289,11 @@ visiondepth_content_frame.pack(fill="both", expand=True)
 # --- VDStitch Interpolation Tab ---
 VDStitch = tk.Frame(tab_control)  # Create a new frame stitch tab
 tab_control.add(VDStitch, text="VDStitch+RIFE")  # Add to notebook
+
+# --- Real-ESRGAN Upscale Tab ---
+RealESRGAN = tk.Frame(tab_control, bg="#1c1c1c")
+tab_control.add(RealESRGAN, text="Real-ESRGAN")
+
 
 # --- VisionDepth3D Player Tab Setup ---
 preview_Video = tk.Frame(tab_control)
@@ -397,9 +410,6 @@ status_bar = tk.Label(
 )
 status_bar.pack(fill="x", padx=15, pady=(0, 5))
 
-# --- Real-ESRGAN Upscale Tab ---
-RealESRGAN = tk.Frame(tab_control, bg="#1c1c1c")
-tab_control.add(RealESRGAN, text="Real-ESRGAN")
 
 REAL_ESRGAN_MODELS = {
     "RealESR_Gx4_fp16": "weights/RealESR_Gx4_fp16.onnx",
@@ -625,12 +635,12 @@ batch_size_entry.bind("<Return>", update_batch_size)  # Update on "Enter" key pr
 batch_size_entry.bind("<FocusOut>", update_batch_size)  # Update when user clicks away
 
 
-tk.Label(sidebar, text="Video Resolution (w,h):", bg="#1c1c1c", fg="white").pack(
-    pady=5
-)
-resolution_entry = tk.Entry(sidebar, width=22)
-resolution_entry.insert(0, "")
-resolution_entry.pack(pady=5)
+#tk.Label(sidebar, text="Video Resolution (w,h):", bg="#1c1c1c", fg="white").pack(
+#    pady=5
+#)
+#resolution_entry = tk.Entry(sidebar, width=22)
+#resolution_entry.insert(0, "")
+#resolution_entry.pack(pady=5)
 
 progress_bar = ttk.Progressbar(sidebar, mode="determinate", length=180)
 progress_bar.pack(pady=10)
@@ -638,20 +648,6 @@ status_label = tk.Label(
     sidebar, text="Ready", bg="#1c1c1c", fg="white", width=30, wraplength=200
 )
 status_label.pack(pady=5)
-
-depth_map_label_depth = tk.Label(
-    sidebar, text="Previous Depth Map: None", justify="left", wraplength=200
-)
-depth_map_label_depth.pack(pady=5)
-
-cancel_btn = tk.Button(
-    sidebar,
-    text="Cancel Processing",
-    command=lambda: cancel_requested.set,
-    bg="red",
-    fg="white"
-)
-cancel_btn.pack(pady=5)
 
 
 # --- Depth Content: Image previews ---
@@ -702,11 +698,12 @@ tk.Button(
 tk.Button(
     button_frame,
     text="Process Video",
-    command=lambda: open_video(status_label, progress_bar, batch_size_entry, output_dir),
+    command=lambda: open_video(status_label, progress_bar, batch_size_entry, output_dir, invert_var),
     width=25,
     bg="#4a4a4a",
     fg="white",
 ).pack(pady=2)
+
 tk.Button(
     button_frame,
     text="Select Video Folder",
