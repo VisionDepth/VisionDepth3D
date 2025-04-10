@@ -180,7 +180,18 @@ Congrats you have successfully downloaded VisionDepth3D!
 This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
 
 ---
+## Guide Sheet: **Updating**
 
+When a new update drops move the weights folder out of the VisionDepth-main folder,
+Delete Old VisionDepth3D folder and redownload updated folder, 
+place weights folder inside updated main folder like you did before,
+started and used the program before just update the path in starter scrip
+you might need to activate the conda environment to run the conda script
+open conda like before and cd to updated folder path and run the conda starter script, 
+you will have to adjust the paths inside the starter script
+type in your systems startup file press enter and VisionDepth3D will open 
+
+---
 ## Guide Sheet: GUI Inputs
 Use the GUI to fine-tune your 3D conversion settings.
 
