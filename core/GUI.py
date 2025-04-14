@@ -72,6 +72,8 @@ from render_upscale import (
     esrgan_session,
 )
 
+from preview_gui import open_3d_preview_window
+
 
 # At the top of GUI.py
 cancel_requested = threading.Event()
@@ -1241,32 +1243,6 @@ tk.Entry(visiondepth_content_frame, textvariable=output_sbs_video_path, width=50
     row=5, column=1, pady=5, padx=5
 )
 
-tk.OptionMenu(
-    visiondepth_content_frame,
-    preview_mode,
-    "Passive Interlaced",
-    "HSBS",
-    "Shift Heatmap",
-    "Shift Heatmap (Abs)",
-    "Shift Heatmap (Clipped ±5px)",
-    "Left-Right Diff",
-    "Feather Mask",
-    "Feather Blend",
-    "Red-Blue Anaglyph",
-    "Overlay Arrows"
-).grid(row=6, column=0, pady=5, sticky="ew")
-
-
-# Slider for selecting frame (min=0, max=10000 as an example)
-frame_slider = tk.Scale(
-    visiondepth_content_frame,
-    from_=0, to=5000,  # You can dynamically set `to` based on video length
-    orient="horizontal",
-    variable=frame_to_preview_var,
-    resolution=1,
-    length=200
-)
-frame_slider.grid(row=6, column=1, pady=5, sticky="s")
 
 # Frame to Hold Buttons and Format Selection in a Single Row
 button_frame = tk.Frame(visiondepth_content_frame)
@@ -1325,13 +1301,22 @@ start_button = tk.Button(
 start_button.pack(side="left", padx=5)
 
 
-preview_3d_frame = tk.Button(
+preview_button = tk.Button(
     button_frame,
-    text="Preview 3D Frame",
-    command=preview_passive_3d_frame,  # ✅ This stays the same
-    bg="#333", fg="white"
+    text="Open Preview",
+    command=lambda: open_3d_preview_window(
+        input_video_path,
+        selected_depth_map,
+        fg_shift,
+        mg_shift,
+        bg_shift,
+        blur_ksize,
+        feather_strength,
+        use_subject_tracking,
+        use_floating_window
+    )
 )
-preview_3d_frame.pack(side="left", padx=5)
+preview_button.pack(side="left", padx=5)
 
 
 suspend_button = tk.Button(
