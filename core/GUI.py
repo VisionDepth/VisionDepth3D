@@ -81,6 +81,7 @@ cancel_flag = Event()
 SETTINGS_FILE = "settings.json"
 
 
+
 # ✅ Get absolute path to resource (for PyInstaller compatibility)
 def resource_path(relative_path):
     try:
@@ -93,7 +94,14 @@ def resource_path(relative_path):
 def save_settings():
     """Saves all current settings to a JSON file"""
     settings = {
-        "selected_codec": selected_codec.get(),
+        "input_video_path": input_video_path.get(),
+        "selected_depth_map": selected_depth_map.get(),
+        "output_sbs_video_path": output_sbs_video_path.get(),
+        "ffmpeg_codec": selected_ffmpeg_codec.get(),
+        "crf_value": crf_value.get(),
+        "output_format": output_format.get(),
+
+        # Depth 3D settings
         "fg_shift": fg_shift.get(),
         "mg_shift": mg_shift.get(),
         "bg_shift": bg_shift.get(),
@@ -101,17 +109,25 @@ def save_settings():
         "blend_factor": blend_factor.get(),
         "delay_time": delay_time.get(),
         "feather_strength": feather_strength.get(),
-        "blur_ksize": blur_ksize.get(),
-
+        "blur_ksize": blur_ksize.get()
     }
+
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
+        json.dump(settings, f, indent=4)
 
 def load_settings():
     """Loads settings from the JSON file, if available"""
-    if os.path.exists(SETTINGS_FILE):  # Now SETTINGS_FILE is properly defined
+    if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, "r") as f:
             settings = json.load(f)
+
+            input_video_path.set(settings.get("input_video_path", ""))
+            selected_depth_map.set(settings.get("selected_depth_map", ""))
+            output_sbs_video_path.set(settings.get("output_sbs_video_path", ""))
+            selected_ffmpeg_codec.set(settings.get("ffmpeg_codec", "libx264"))
+            crf_value.set(settings.get("crf_value", 23))
+            output_format.set(settings.get("output_format", "Full-SBS"))
+
             fg_shift.set(settings.get("fg_shift", 6.0))
             mg_shift.set(settings.get("mg_shift", 3.0))
             bg_shift.set(settings.get("bg_shift", -4.0))
@@ -120,22 +136,37 @@ def load_settings():
             delay_time.set(settings.get("delay_time", 1 / 30))
             feather_strength.set(settings.get("feather_strength", 9.0))
             blur_ksize.set(settings.get("blur_ksize", 6))
-            
 
 
 def reset_settings():
-    """Resets all sliders and settings to default values"""
-    fg_shift.set(6.0)  # Default divergence shift
-    mg_shift.set(3.0)  # Default depth transition
-    bg_shift.set(-4.0)  # Default convergence shift
+    """Resets all GUI values to their default states."""
+
+    # Paths and codecs
+    input_video_path.set("")
+    selected_depth_map.set("")
+    output_sbs_video_path.set("")
+    selected_codec.set("mp4v")         # Or your default codec
+    output_format.set("Full-SBS")      # Reset output format dropdown
+
+    # 3D Render Shift Settings
+    fg_shift.set(6.0)                  # Foreground (pop-out)
+    mg_shift.set(3.0)                  # Midground transition
+    bg_shift.set(-4.0)                 # Background (pull-in)
+
+    # Visual Enhancements
     sharpness_factor.set(0.2)
     blend_factor.set(0.6)
     delay_time.set(1 / 30)
-    output_format = tk.StringVar(value="Full-SBS")
+
+    # Edge Masking
     feather_strength.set(9.0)
     blur_ksize.set(6)
 
-    messagebox.showinfo("Settings Reset", "All values have been restored to defaults!")
+    # Optional: Reset any checkbox/toggles
+    enable_subject_tracking.set(False)
+    invert_depthmap.set(False)
+
+    messagebox.showinfo("Settings Reset", "✅ All settings restored to default!")
 
 def cancel_processing():
     global cancel_flag, suspend_flag, cancel_requested  # Include all used flags
@@ -165,6 +196,73 @@ def grab_frame_from_video(video_path, frame_idx=0):
     cap.release()
     return frame if ret else None
 
+def generate_preview_image(preview_type, left, right, shift_map, w, h):
+    if preview_type == "Passive Interlaced":
+        interlaced = np.zeros_like(left)
+        interlaced[::2] = left[::2]
+        interlaced[1::2] = right[1::2]
+        return interlaced
+
+    elif preview_type == "HSBS":
+        half_w = w // 2
+        left_resized = cv2.resize(left, (half_w, h))
+        right_resized = cv2.resize(right, (half_w, h))
+        return np.hstack((left_resized, right_resized))
+
+    elif preview_type == "Shift Heatmap":
+        shift_np = shift_map.cpu().numpy()
+        shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
+        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
+
+    elif preview_type == "Shift Heatmap (Abs)":
+        shift_abs = np.abs(shift_map.cpu().numpy())
+        shift_norm = cv2.normalize(shift_abs, None, 0, 255, cv2.NORM_MINMAX)
+        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
+
+    elif preview_type == "Shift Heatmap (Clipped ±5px)":
+        shift_np = shift_map.cpu().numpy()
+        max_disp = 5.0
+        shift_clipped = np.clip(shift_np, -max_disp, max_disp)
+        shift_norm = ((shift_clipped + max_disp) / (2 * max_disp)) * 255
+        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
+
+    elif preview_type == "Left-Right Diff":
+        diff = cv2.absdiff(left, right)
+        return diff
+
+    elif preview_type == "Feather Blend":
+        return left
+
+    elif preview_type == "Feather Mask":
+        shift_np = shift_map.cpu().numpy()
+        feather_mask = np.clip(np.abs(shift_np) * 50, 0, 255).astype(np.uint8)
+        return cv2.applyColorMap(feather_mask, cv2.COLORMAP_BONE)
+
+    elif preview_type == "Red-Blue Anaglyph":
+        left = left.astype(np.uint8)
+        right = right.astype(np.uint8)
+        red_channel = left[:, :, 2]
+        green_channel = right[:, :, 1]
+        blue_channel = right[:, :, 0]
+        anaglyph = cv2.merge((blue_channel, green_channel, red_channel))
+        return anaglyph
+
+    elif preview_type == "Overlay Arrows":
+        # Simplified useful visual using arrows to debug horizontal displacement
+        debug = left.copy()
+        shift_np = shift_map.cpu().numpy()
+        step = 20
+        for y in range(0, h, step):
+            for x in range(0, w, step):
+                dx = int(shift_np[y, x] * 10)
+                if abs(dx) > 1:
+                    cv2.arrowedLine(debug, (x, y), (x + dx, y), (0, 255, 0), 1, tipLength=0.3)
+        return debug
+
+    return None
+
+
+
 def preview_passive_3d_frame():
     input_path = input_video_path.get()
     depth_path = selected_depth_map.get()
@@ -173,27 +271,26 @@ def preview_passive_3d_frame():
         messagebox.showerror("Missing Input", "Please load both input video and depth map.")
         return
 
-    # Grab first frame from each video
-    frame_to_preview = 1065 # 👈 choose your frame index here
+    frame_idx = frame_to_preview_var.get()
 
-    input_frame = grab_frame_from_video(input_path, frame_idx=frame_to_preview)
-    depth_frame = grab_frame_from_video(depth_path, frame_idx=frame_to_preview)
-
+    input_frame = grab_frame_from_video(input_path, frame_idx)
+    depth_frame = grab_frame_from_video(depth_path, frame_idx)
 
     if input_frame is None or depth_frame is None:
         messagebox.showerror("Frame Error", "Unable to extract frames from videos.")
         return
 
-    # Convert frames to tensors
-    frame_tensor = frame_to_tensor(input_frame)
-    depth_tensor = depth_to_tensor(depth_frame)
     h, w = input_frame.shape[:2]
+    frame_tensor = F.interpolate(
+        frame_to_tensor(input_frame).unsqueeze(0),
+        size=(h, w), mode='bilinear', align_corners=False
+    ).squeeze(0)
 
-    # Resize to target size (same as in render function)
-    frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
-    depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
+    depth_tensor = F.interpolate(
+        depth_to_tensor(depth_frame).unsqueeze(0),
+        size=(h, w), mode='bilinear', align_corners=False
+    ).squeeze(0)
 
-    # Run pixel shift with return_shift_map enabled
     left, right, shift_map = pixel_shift_cuda(
         frame_tensor, depth_tensor, w, h,
         fg_shift.get(), mg_shift.get(), bg_shift.get(),
@@ -205,46 +302,45 @@ def preview_passive_3d_frame():
     )
 
     preview_type = preview_mode.get()
-    preview_img = None
+    preview_img = generate_preview_image(preview_type, left, right, shift_map, w, h)
 
-    if preview_type == "Passive Interlaced":
-        interlaced = np.zeros_like(left)
-        interlaced[::2] = left[::2]
-        interlaced[1::2] = right[1::2]
-        preview_img = interlaced
 
-    elif preview_type == "HSBS":
-        half_w = w // 2
-        left_resized = cv2.resize(left, (half_w, h))
-        right_resized = cv2.resize(right, (half_w, h))
-        preview_img = np.hstack((left_resized, right_resized))
-
-    elif preview_type == "Shift Heatmap":
-        shift_np = shift_map.cpu().numpy()
-        shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
-        shift_colored = cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
-        preview_img = shift_colored
-
-    elif preview_type == "Feather Mask":
-        # Optional: if you return feather mask in pixel_shift_cuda
-        # feather_mask = ...
-        # mask_np = (feather_mask.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        # preview_img = cv2.applyColorMap(mask_np, cv2.COLORMAP_BONE)
-        messagebox.showinfo("Info", "Feather mask preview is not yet implemented.")
-        return
-
-    elif preview_type == "Feather Blend":
-        preview_img = left
-
-    else:
-        messagebox.showwarning("Unknown Mode", f"Unsupported preview type: {preview_type}")
-        return
-
+    # Save and open preview image
     if preview_img is not None:
-        preview_path = f"preview_{preview_type.replace(' ', '_').lower()}.png"
+        safe_preview_name = re.sub(r'[^a-zA-Z0-9_]', '', preview_type.replace(' ', '_').lower())
+        preview_path = f"preview_{safe_preview_name}.png"
         cv2.imwrite(preview_path, preview_img)
         os.startfile(preview_path)
         print(f"✅ {preview_type} preview saved to: {preview_path}")
+    else:
+        messagebox.showwarning("Preview Error", f"Could not generate preview for: {preview_type}")
+
+def update_aspect_preview(*args):
+    try:
+        ratio = aspect_ratios[selected_aspect_ratio.get()]
+        format_selected = output_format.get()
+
+        # 👇 Use .get() to access live values
+        width = original_video_width.get()
+        height = original_video_height.get()
+
+        if format_selected == "Full-SBS":
+            base_width = width * 2
+        elif format_selected == "Half-SBS":
+            base_width = width
+        elif format_selected == "VR":
+            base_width = 4096
+            height = int(base_width / ratio)
+        else:
+            base_width = width
+            height = int(base_width / ratio)
+
+        aspect_preview_label.config(
+            text=f"🧮 {base_width}x{height} ({ratio:.2f}:1)"
+        )
+    except Exception as e:
+        aspect_preview_label.config(text="❌ Invalid Aspect Ratio")
+        print(f"[Aspect Preview Error] {e}")
 
 
 # ---GUI Setup---
@@ -931,22 +1027,32 @@ use_subject_tracking = tk.BooleanVar(value=True)
 use_floating_window = tk.BooleanVar(value=True)  # Enable floating window DFW
 preview_mode = tk.StringVar(value="Passive Interlaced")
 frame_to_preview_var = tk.IntVar(value=6478)  # Default preview frame
+original_video_width = tk.IntVar(value=1920)
+original_video_height = tk.IntVar(value=1080)
+preserve_content = tk.BooleanVar(value=True)
 
 
 # Load saved settings if available
 load_settings()
 
 
-# Dictionary of Common Aspect Ratios
 aspect_ratios = {
     "Default (16:9)": 16 / 9,
+    "Classic (4:3)": 4 / 3,
+    "Square (1:1)": 1.0,
+    "Vertical 9:16": 9 / 16,
+    "Instagram 4:5": 4 / 5,
     "CinemaScope (2.39:1)": 2.39,
+    "Anamorphic (2.35:1)": 2.35,
+    "Modern Cinema (2.40:1)": 2.40,
+    "Ultra Panavision (2.76:1)": 2.76,
+    "Academy Flat (1.85:1)": 1.85,
+    "European Flat (1.66:1)": 1.66,
     "21:9 UltraWide": 21 / 9,
-    "4:3 (Classic Films)": 4 / 3,
-    "1:1 (Square)": 1 / 1,
-    "2.35:1 (Classic Cinematic)": 2.35,
-    "2.76:1 (Ultra-Panavision)": 2.76,
+    "32:9 SuperWide": 32 / 9,
+    "2:1 (Modern Hybrid)": 2.0,
 }
+
 
 # Tkinter Variable to Store Selected Aspect Ratio
 selected_aspect_ratio = tk.StringVar(value="Default (16:9)")
@@ -1023,52 +1129,59 @@ tk.Label(options_frame, text="Codec").grid(row=0, column=0, sticky="w")
 codec_menu = tk.OptionMenu(options_frame, selected_codec, *codec_options)
 codec_menu.grid(row=0, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Aspect Ratio").grid(row=0, column=2, sticky="w")
+aspect_preview_label = tk.Label(options_frame, text="", font=("Segoe UI", 8, "italic"))
+aspect_preview_label.grid(row=0, column=3, sticky="w", padx=5)
+
+# 🔁 Bind aspect ratio dropdown to preview label
+selected_aspect_ratio.trace_add("write", update_aspect_preview)
+update_aspect_preview()
+
+tk.Label(options_frame, text="Aspect Ratio").grid(row=1, column=2, sticky="w")
 aspect_ratio_menu = tk.OptionMenu(options_frame, selected_aspect_ratio, *aspect_ratios.keys())
-aspect_ratio_menu.grid(row=0, column=3, sticky="ew")
+aspect_ratio_menu.grid(row=1, column=3, sticky="ew")
+
 
 # Row 1
 tk.Label(options_frame, text="Convergence Shift").grid(row=1, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift)\
     .grid(row=1, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Sharpness Factor").grid(row=1, column=2, sticky="w")
-tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor)\
-    .grid(row=1, column=3, sticky="ew")
 
 # Row 2
 tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
 tk.Scale(options_frame, from_=-5, to=5, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift)\
     .grid(row=2, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Feather Blur Size").grid(row=2, column=2, sticky="w")
-tk.Scale(options_frame, from_=0, to=15, resolution=1, orient=tk.HORIZONTAL, variable=blur_ksize)\
+tk.Label(options_frame, text="Sharpness Factor").grid(row=2, column=2, sticky="w")
+tk.Scale(options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, variable=sharpness_factor)\
     .grid(row=2, column=3, sticky="ew")
 
 # Row 3
+tk.Label(options_frame, text="Feather Blur Size").grid(row=3, column=2, sticky="w")
+tk.Scale(options_frame, from_=0, to=15, resolution=1, orient=tk.HORIZONTAL, variable=blur_ksize)\
+    .grid(row=3, column=3, sticky="ew")
+
 tk.Label(options_frame, text="Divergence Shift").grid(row=3, column=0, sticky="w")
 tk.Scale(options_frame, from_=-15, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift)\
     .grid(row=3, column=1, sticky="ew")
 
-tk.Label(options_frame, text="CRF Quality (0=best, 51=worst)").grid(row=3, column=2, sticky="w")
-tk.Scale(options_frame, from_=0, to=51, resolution=1, orient=tk.HORIZONTAL, variable=crf_value)\
-    .grid(row=3, column=3, sticky="ew")
-
 # Row 4
+tk.Label(options_frame, text="CRF Quality (0=best, 51=worst)").grid(row=4, column=2, sticky="w")
+tk.Scale(options_frame, from_=0, to=51, resolution=1, orient=tk.HORIZONTAL, variable=crf_value)\
+    .grid(row=4, column=3, sticky="ew")
+
 tk.Label(options_frame, text="Feather Strength").grid(row=4, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=20, resolution=0.5, orient=tk.HORIZONTAL, variable=feather_strength)\
     .grid(row=4, column=1, sticky="ew")
 
-tk.Label(options_frame, text="NVENC CQ Quality (0=best, 51=worst)").grid(row=4, column=2, sticky="w")
+# Row 5
+tk.Label(options_frame, text="NVENC CQ Quality (0=best, 51=worst)").grid(row=5, column=2, sticky="w")
 nvenc_cq_value = tk.IntVar(value=23)  # Default value
 tk.Scale(
     options_frame, from_=0, to=51, resolution=1,
     orient=tk.HORIZONTAL, variable=nvenc_cq_value
-).grid(row=4, column=3, sticky="ew")
+).grid(row=5, column=3, sticky="ew")
 
-
-
-# Row 5
 tk.Label(options_frame, text="FFmpeg Codec").grid(row=5, column=0, sticky="w")
 codec_options = list(FFMPEG_CODEC_MAP.keys())
 selected_ffmpeg_codec.set(codec_options[0])
@@ -1092,7 +1205,16 @@ tk.Checkbutton(options_frame, text="Enable Floating Window (DFW)", variable=use_
 tk.Button(
     visiondepth_content_frame,
     text="Select Input Video",
-    command=lambda: select_input_video(input_video_path, video_thumbnail_label, video_specs_label)
+    command=lambda: select_input_video(
+        input_video_path,
+        video_thumbnail_label,
+        video_specs_label,
+        update_aspect_preview,
+        original_video_width,
+        original_video_height
+    )
+
+
 ).grid(row=3, column=0, pady=5, sticky="ew")
 
 tk.Entry(visiondepth_content_frame, textvariable=input_video_path, width=50).grid(
@@ -1130,7 +1252,7 @@ tk.OptionMenu(
     "Left-Right Diff",
     "Feather Mask",
     "Feather Blend",
-    "Red-Blue Anaglyph",    # <-- New mode added here
+    "Red-Blue Anaglyph",
     "Overlay Arrows"
 ).grid(row=6, column=0, pady=5, sticky="ew")
 
@@ -1171,33 +1293,35 @@ start_button = tk.Button(
     text="Generate 3D Video",
     bg="green",
     fg="white",
-    command=lambda: process_video(
-        input_video_path,
-        selected_depth_map,
-        output_sbs_video_path,
-        selected_codec,
-        fg_shift,
-        mg_shift,
-        bg_shift,
-        sharpness_factor,
-        output_format,
-        selected_aspect_ratio,
-        aspect_ratios,
-        feather_strength,    
-        blur_ksize,           
-        progress,
-        progress_label,
-        suspend_flag,
-        cancel_flag,
-        use_ffmpeg,
-        selected_ffmpeg_codec,
-        crf_value,
-        use_subject_tracking,
-        use_floating_window
+    command=lambda: (
+        save_settings(),  # ✅ Save settings before render
+        process_video(
+            input_video_path,
+            selected_depth_map,
+            output_sbs_video_path,
+            selected_codec,
+            fg_shift,
+            mg_shift,
+            bg_shift,
+            sharpness_factor,
+            output_format,
+            selected_aspect_ratio,
+            aspect_ratios,
+            feather_strength,    
+            blur_ksize,           
+            progress,
+            progress_label,
+            suspend_flag,
+            cancel_flag,
+            use_ffmpeg,
+            selected_ffmpeg_codec,
+            crf_value,
+            use_subject_tracking,
+            use_floating_window
+        )
     )
-
-
 )
+
 start_button.pack(side="left", padx=5)
 
 
