@@ -60,10 +60,42 @@ FFMPEG_CODEC_MAP = {
     # "AV1 (NVIDIA)": "av1_nvenc",  # if supported by GPU
 }
 
+def pad_to_aspect_ratio(image, target_width, target_height, bg_color=(0, 0, 0)):
+    """
+    Pads the input image to the target resolution without stretching,
+    preserving aspect ratio.
+    """
+    import cv2
+    import numpy as np
+
+    h, w = image.shape[:2]
+    target_aspect = target_width / target_height
+    current_aspect = w / h
+
+    # Step 1: Resize to fit within target while preserving aspect
+    if current_aspect > target_aspect:
+        # Image is wider than target → match width
+        new_w = target_width
+        new_h = int(target_width / current_aspect)
+    else:
+        # Image is taller → match height
+        new_h = target_height
+        new_w = int(current_aspect * target_height)
+
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Step 2: Create padded canvas
+    padded = np.full((target_height, target_width, 3), bg_color, dtype=np.uint8)
+
+    # Step 3: Center it
+    x_offset = (target_width - new_w) // 2
+    y_offset = (target_height - new_h) // 2
+    padded[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+
+    return padded
 
 
 # Converters
-
 def frame_to_tensor(frame):
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_tensor = torch.from_numpy(frame_rgb).float().permute(2, 0, 1) / 255.0
@@ -125,19 +157,19 @@ def suppress_artifacts_with_edge_mask(depth_tensor, total_shift, feather_strengt
     Suppress pixel shift artifacts near sharp depth edges (hair, limbs).
     Returns a softly masked version of total_shift using adaptive edge gradient detection.
     """
-    # ✅ Compute depth gradient (H, W)
+    # Compute depth gradient (H, W)
     dx = torch.abs(F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0)))
     dy = torch.abs(F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0)))
     grad_mag = torch.sqrt(dx ** 2 + dy ** 2)
 
-    # ✅ Use a sigmoid function for smooth masking
+    # Use a sigmoid function for smooth masking
     edge_mask = torch.sigmoid((grad_mag - edge_threshold) * feather_strength * 5)  # [0, 1]
 
-    # ✅ Invert mask and smooth
+    # Invert mask and smooth
     smooth_mask = 1.0 - edge_mask
     smooth_mask = F.avg_pool2d(smooth_mask.unsqueeze(0), kernel_size=5, stride=1, padding=2).squeeze(0)
 
-    # ✅ Apply mask to suppress shift near edges
+    # Apply mask to suppress shift near edges
     return total_shift * smooth_mask
 
 
@@ -171,7 +203,7 @@ def feather_shift_edges(
     assert shifted_tensor.shape == original_tensor.shape, "Shape mismatch"
     assert depth_tensor.dim() == 3, "Depth tensor must be [1, H, W]"
 
-    # ✅ Compute depth gradient magnitude
+    # Compute depth gradient magnitude
     grad_x = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0))
     grad_y = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0))
     grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2)
@@ -179,7 +211,7 @@ def feather_shift_edges(
     # ✅ Normalize & exaggerate gradients into mask
     edge_mask = torch.clamp(grad_mag * feather_strength, 0.0, 1.0)
 
-    # ✅ Apply blur for smooth feathering
+    # Apply blur for smooth feathering
     blurred_mask = F.avg_pool2d(
         edge_mask.unsqueeze(0),  # [1, H, W] -> [1, 1, H, W]
         kernel_size=blur_ksize,
@@ -187,10 +219,10 @@ def feather_shift_edges(
         padding=blur_ksize // 2
     ).squeeze(0)  # -> [H, W]
 
-    # ✅ Expand to match 3 channels (C=3, H, W)
+    # Expand to match 3 channels (C=3, H, W)
     blend_mask = blurred_mask.repeat(3, 1, 1)
 
-    # ✅ Blend shifted with original using inverted edge mask
+    # Blend shifted with original using inverted edge mask
     # Ensure shapes match (sometimes off by 1 due to pooling)
     min_h = min(shifted_tensor.shape[1], blend_mask.shape[1])
     min_w = min(shifted_tensor.shape[2], blend_mask.shape[2])
@@ -297,7 +329,7 @@ def pixel_shift_cuda(
     max_shift_norm = max_shift_px / (width / 2)
     total_shift = torch.clamp(total_shift, -max_shift_norm, max_shift_norm)
 
- # ✅ Hard edge suppression (ghost fix)
+ # Hard edge suppression (ghost fix)
     with torch.no_grad():
         dx = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (0, 1))
         dy = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 0, 1))
@@ -308,11 +340,11 @@ def pixel_shift_cuda(
         eroded = F.max_pool2d(depth_edge.unsqueeze(0), kernel_size=3, stride=1, padding=1).squeeze(0)
         total_shift = total_shift * (1.0 - eroded * 0.3)  # Dampen shift by 30%
 
-    # ✅ Fix: Define H, W BEFORE using them
+    # Fix: Define H, W BEFORE using them
     H, W = depth_tensor.shape[1], depth_tensor.shape[2]
     shift_vals = total_shift.squeeze(0)
 
-    # ✅ Rectified Grid Remap
+    # Rectified Grid Remap
     x_base = torch.linspace(-1, 1, W, device=frame_tensor.device).view(1, -1).expand(H, W)
     y_base = torch.linspace(-1, 1, H, device=frame_tensor.device).view(-1, 1).expand(H, W)
     grid = torch.stack((x_base, y_base), dim=2)  # Shape: (H, W, 2)
@@ -322,15 +354,15 @@ def pixel_shift_cuda(
     grid_left[..., 0] += shift_vals
     grid_right[..., 0] -= shift_vals
 
-    # 🌀 Warp
+    # Warp
     left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='reflection', align_corners=True).squeeze(0)
     right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='reflection', align_corners=True).squeeze(0)
 
-    # 🪶 Feather
+    # Feather
     left_blended = feather_shift_edges(left, frame_tensor, depth_tensor, blur_ksize, feather_strength)
     right_blended = feather_shift_edges(right, frame_tensor, depth_tensor, blur_ksize, feather_strength)
 
-    # 🛠️ Final cleanup near edges (gentler inpaint)
+    # Final cleanup near edges (gentler inpaint)
     with torch.no_grad():
         dx = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (0, 1))
         dy = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 0, 1))
@@ -402,91 +434,6 @@ def apply_sharpening(frame, factor=1.0):
     # Apply and clip result to valid range
     sharpened = cv2.filter2D(frame, -1, kernel)
     return np.clip(sharpened, 0, 255).astype(np.uint8)
-    
-
-def detect_black_bars_torch(frame_tensor, threshold=10.0 / 255.0, min_black_rows=10):
-    """
-    Detects black bars using PyTorch (CUDA-accelerated).
-    - frame_tensor: shape [3, H, W], values in [0,1], on CUDA
-    Returns: (top_black, bottom_black)
-    """
-    if frame_tensor.dim() != 3 or frame_tensor.shape[0] != 3:
-        raise ValueError("Expected tensor shape [3, H, W]")
-
-    # Convert to grayscale using standard RGB weights
-    r, g, b = frame_tensor[0], frame_tensor[1], frame_tensor[2]
-    gray = 0.2989 * r + 0.5870 * g + 0.1140 * b  # [H, W]
-
-    H = gray.shape[0]
-    top_black = 0
-    for row in range(H):
-        if gray[row].mean() < threshold:
-            top_black += 1
-        else:
-            break
-
-    bottom_black = 0
-    for row in range(H - 1, -1, -1):
-        if gray[row].mean() < threshold:
-            bottom_black += 1
-        else:
-            break
-
-    if top_black < min_black_rows:
-        top_black = 0
-    if bottom_black < min_black_rows:
-        bottom_black = 0
-
-    return top_black, bottom_black
-
-
-def crop_black_bars_torch(frame_tensor, top, bottom):
-    """
-    Crops black bars vertically using PyTorch tensors.
-    - frame_tensor: shape [3, H, W]
-    Returns: cropped tensor
-    """
-    if top + bottom >= frame_tensor.shape[1]:
-        return frame_tensor  # prevent invalid crop
-    return frame_tensor[:, top:frame_tensor.shape[1] - bottom, :]
-
-#def correct_convergence_shift_torch(left_tensor, right_tensor, depth_tensor, session, input_name, output_name, bg_threshold=0.3):
-#    depth_np = depth_tensor.squeeze().cpu().numpy()
-#    depth_norm = cv2.normalize(depth_np, None, 0.1, 1.0, cv2.NORM_MINMAX)
-#    background_mask = (depth_norm >= bg_threshold).astype(np.float32)
-
-#    warp_input = np.array([[np.mean(depth_norm)]], dtype=np.float32)
-#    warp_matrix = session.run([output_name], {input_name: warp_input})[0].reshape(3, 3)
-#    warp_matrix = torch.from_numpy(warp_matrix).float().to(left_tensor.device)
-
-#    b, h, w = 1, left_tensor.shape[1], left_tensor.shape[2]
-#    yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
-#    ones = torch.ones_like(xx)
-#    base_grid = torch.stack([xx, yy, ones], dim=0).reshape(3, -1).to(left_tensor.device).float()
-
-#    warped_grid = torch.matmul(warp_matrix, base_grid.clone())
-#    warped_grid = warped_grid.clone()  # Fix memory overlap issue
-#   warped_grid = warped_grid / warped_grid[2:3, :].clone()
-
-#    x_warp = (warped_grid[0] / (w - 1)) * 2 - 1
-#    y_warp = (warped_grid[1] / (h - 1)) * 2 - 1
-#    grid = torch.stack((x_warp, y_warp), dim=1).reshape(h, w, 2)
-
-#    warped_left = F.grid_sample(left_tensor.unsqueeze(0), grid.unsqueeze(0), mode='bilinear', padding_mode='zeros', align_corners=True).squeeze()
-#    warped_right = F.grid_sample(right_tensor.unsqueeze(0), grid.unsqueeze(0), mode='bilinear', padding_mode='zeros', align_corners=True).squeeze()
-
-#   warped_left_img = tensor_to_frame(warped_left)
-#   warped_right_img = tensor_to_frame(warped_right)
-
-#    mask_left = cv2.inRange(warped_left_img, (0, 0, 0), (10, 10, 10))
-#    mask_right = cv2.inRange(warped_right_img, (0, 0, 0), (10, 10, 10))
-
-#    inpainted_left = cv2.inpaint(warped_left_img, mask_left, 10, cv2.INPAINT_NS)
-#    inpainted_right = cv2.inpaint(warped_right_img, mask_right, 10, cv2.INPAINT_NS)
-
-#    return inpainted_left, inpainted_right
-
-
 
 # 3D Format
 
@@ -545,6 +492,7 @@ def apply_side_mask(image, side="left", width=40):
         mask[:, w - width:] = 0
     return cv2.bitwise_and(image, mask)
 
+
 # Render
 def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
                   sharpness_factor, output_format, selected_aspect_ratio, aspect_ratios,feather_strength=10.0, blur_ksize=9,
@@ -561,52 +509,60 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     ret1, frame = cap.read()
     ret2, depth = dcap.read()
     if not ret1 or not ret2: return
+    
+    first_frame_tensor = frame_to_tensor(frame)
 
-    frame_tensor = frame_to_tensor(frame)
-    depth_tensor = depth_to_tensor(depth)
-
-    # Detect and crop black bars
-    black_top, black_bottom = detect_black_bars_torch(frame_tensor)
-    frame_tensor = crop_black_bars_torch(frame_tensor, black_top, black_bottom)
-    depth_tensor = crop_black_bars_torch(depth_tensor, black_top, black_bottom)
-
-    # Apply aspect ratio correction BEFORE interpolation
-    _, h, w = frame_tensor.shape
+    # Set aspect ratio target
     target_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
-    current_ratio = w / h
 
+    # 🔁 Aspect ratio correction (just for sizing)
+    _, h, w = first_frame_tensor.shape
+    current_ratio = w / h
     if abs(current_ratio - target_ratio) > 0.01:
         if current_ratio > target_ratio:
             new_w = int(h * target_ratio)
-            start = (w - new_w) // 2
-            frame_tensor = frame_tensor[:, :, start:start + new_w]
-            depth_tensor = depth_tensor[:, :, start:start + new_w]
+            w = new_w
         else:
             new_h = int(w / target_ratio)
-            start = (h - new_h) // 2
-            frame_tensor = frame_tensor[:, start:start + new_h, :]
-            depth_tensor = depth_tensor[:, start:start + new_h, :]
+            h = new_h
 
-    # Resize frame
+    # Resize dimensions
     resized_height = height
     resized_width = int(resized_height * target_ratio)
-    if resized_width % 2 != 0: resized_width += 1
+    if resized_width % 2 != 0:
+        resized_width += 1
 
-    # Determine output width based on format
-    if output_format == "Half-SBS":
+
+    # 🎯 Explicitly define per-eye and output dimensions
+    if output_format == "Full-SBS":
+        per_eye_w, per_eye_h = 1920, 1080
+        out_width = per_eye_w * 2
+        out_height = per_eye_h
+
+    elif output_format == "Half-SBS":
+        per_eye_w = resized_width // 2
+        per_eye_h = resized_height
         out_width = resized_width
-    elif output_format == "Full-SBS":
-        out_width = resized_width * 2
+        out_height = resized_height
+
     elif output_format == "VR":
-        resized_height = 1600
-        resized_width = 1440
-        out_width = resized_width * 2
-    elif output_format == "Red-Cyan Anaglyph":
+        per_eye_w = 1440
+        per_eye_h = 1600
+        out_width = per_eye_w * 2
+        out_height = per_eye_h
+
+    elif output_format in ["Red-Cyan Anaglyph", "Passive 3D"]:
+        per_eye_w = resized_width
+        per_eye_h = resized_height
         out_width = resized_width
-    elif output_format == "Passive 3D":
-        out_width = resized_width
+        out_height = resized_height
+
     else:
+        per_eye_w = resized_width
+        per_eye_h = resized_height
         out_width = resized_width * 2
+        out_height = resized_height
+
 
     if use_ffmpeg:
         ffmpeg_cmd = [
@@ -614,7 +570,7 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-pix_fmt", "bgr24",
-            "-s", f"{out_width}x{height}",
+            "-s", f"{out_width}x{out_height}",
             "-r", str(fps),
             "-i", "-",
             "-an",
@@ -632,7 +588,7 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
 
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
     else:
-        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*codec), fps, (out_width, height))
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*codec), fps, (out_width, out_height))
 
 
     start_time = time.time()
@@ -646,28 +602,52 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for idx in range(total_frames):
-        if cancel_flag and cancel_flag.is_set(): break
-        while suspend_flag and suspend_flag.is_set(): time.sleep(0.5)
+        if cancel_flag and cancel_flag.is_set():
+            break
+        while suspend_flag and suspend_flag.is_set():
+            time.sleep(0.5)
 
-        ret1, frame = cap.read()
+        ret1, frame, = cap.read()
         ret2, depth = dcap.read()
-        if not ret1 or not ret2: break
+        if not ret1 or not ret2:
+            break
 
+        # Fresh tensors each frame
         frame_tensor = frame_to_tensor(frame)
         depth_tensor = depth_to_tensor(depth)
 
-        frame_tensor = crop_black_bars_torch(frame_tensor, black_top, black_bottom)
-        depth_tensor = crop_black_bars_torch(depth_tensor, black_top, black_bottom)
+        # Maintain aspect ratio crop per-frame
+        _, h, w = frame_tensor.shape
+        current_ratio = w / h
+        if abs(current_ratio - target_ratio) > 0.01:
+            if current_ratio > target_ratio:
+                new_w = int(h * target_ratio)
+                start = (w - new_w) // 2
+                frame_tensor = frame_tensor[:, :, start:start + new_w]
+                depth_tensor = depth_tensor[:, :, start:start + new_w]
+            else:
+                new_h = int(w / target_ratio)
+                start = (h - new_h) // 2
+                frame_tensor = frame_tensor[:, start:start + new_h, :]
+                depth_tensor = depth_tensor[:, start:start + new_h, :]
 
-        frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(resized_height, resized_width), mode='bilinear', align_corners=False).squeeze(0)
-        depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(resized_height, resized_width), mode='bilinear', align_corners=False).squeeze(0)
+        # Resize
+        cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
+        target_eye_w = per_eye_w  # 1920
+        target_eye_h = int(per_eye_w / cinema_aspect_ratio)  # ~816
 
-        fg, mg, bg = fg_shift, mg_shift, bg_shift
-        fg, mg, bg = smoother.smooth(fg, mg, bg)
+        # Force even height
+        if target_eye_h % 2 != 0:
+            target_eye_h += 1
+
+        # Resize to fit 2.35:1 content before padding to 1920x1080
+        frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+        depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+
+        fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
         if output_format in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
-            shift_boost = 2.0
-            bg *= shift_boost
+            bg *= 2.0  # Boost background for depth
 
         left_frame, right_frame = pixel_shift_cuda(
             frame_tensor, depth_tensor, resized_width, resized_height,
@@ -699,12 +679,18 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
                 left_frame = apply_side_mask(left_frame, side="left", width=bar_width)
                 right_frame = apply_side_mask(right_frame, side="left", width=bar_width)
 
-        blended_left = left_frame
-
-        left_sharp = apply_sharpening(blended_left, sharpness_factor)
+        # Sharpen & pad
+        left_sharp = apply_sharpening(left_frame, sharpness_factor)
         right_sharp = apply_sharpening(right_frame, sharpness_factor)
 
-        final = format_3d_output(left_sharp, right_sharp, output_format)
+        # Aspect-ratio padding for all formats consistently
+        target_w = per_eye_w
+        target_h = per_eye_h
+        left_padded = pad_to_aspect_ratio(left_sharp, target_w, target_h)
+        right_padded = pad_to_aspect_ratio(right_sharp, target_w, target_h)
+
+        final = format_3d_output(left_padded, right_padded, output_format)
+
         if use_ffmpeg:
             try:
                 ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
@@ -720,15 +706,19 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
         delta = curr_time - prev_time
         if delta > 0:
             fps_values.append(1.0 / delta)
-            if len(fps_values) > 10: fps_values.pop(0)
+            if len(fps_values) > 10:
+                fps_values.pop(0)
         avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0
 
-        if progress: progress["value"] = percent; progress.update()
+        if progress:
+            progress["value"] = percent
+            progress.update()
         if progress_label:
             progress_label.config(
                 text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed))}"
             )
         prev_time = curr_time
+
 
     cap.release()
     dcap.release()
@@ -741,7 +731,6 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
 
     torch.cuda.empty_cache()
 
-
 def start_processing_thread():
     global process_thread
     cancel_flag.clear()  # Reset cancel state
@@ -750,17 +739,23 @@ def start_processing_thread():
     process_thread.start()
 
 
-def select_input_video(input_video_path, video_thumbnail_label, video_specs_label):
-    video_path = filedialog.askopenfilename(
-        filetypes=[("Video files", "*.mp4 *.avi *.mkv")]
-    )
 
+def select_input_video(
+    input_video_path,
+    video_thumbnail_label,
+    video_specs_label,
+    update_aspect_preview,
+    original_video_width,
+    original_video_height
+):
+
+
+    video_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
     if not video_path:
         return
 
     input_video_path.set(video_path)
-    
-    # Extract video specs
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         messagebox.showerror("Error", "Unable to open video file.")
@@ -770,29 +765,31 @@ def select_input_video(input_video_path, video_thumbnail_label, video_specs_labe
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
 
-    # Read the first frame to generate a thumbnail
+    # ✅ Now this works without needing to import GUI.py
+    original_video_width.set(width)
+    original_video_height.set(height)
+    
+    current_video_width = width
+    current_video_height = height
+    
     ret, frame = cap.read()
     cap.release()
 
     if ret:
-        # Convert the frame to an image compatible with Tkinter
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame_rgb)
-        img.thumbnail((300, 200))  # Resize thumbnail
+        img.thumbnail((300, 200))
         img_tk = ImageTk.PhotoImage(img)
 
-        # Update the GUI
         video_thumbnail_label.config(image=img_tk)
-        video_thumbnail_label.image = (
-            img_tk  # Save a reference to prevent garbage collection
-        )
+        video_thumbnail_label.image = img_tk
 
-        video_specs_label.config(
-            text=f"Video Info:\nResolution: {width}x{height}\nFPS: {fps:.2f}"
-        )
+        video_specs_label.config(text=f"Video Info:\nResolution: {width}x{height}\nFPS: {fps:.2f}")
     else:
         video_specs_label.config(text="Video Info:\nUnable to extract details")
 
+    # ✅ Call the UI update function
+    update_aspect_preview()
 
 def update_thumbnail(thumbnail_path):
     thumbnail_image = Image.open(thumbnail_path)
@@ -829,8 +826,6 @@ def select_depth_map(selected_depth_map, depth_map_label):
         text=f"Selected Depth Map:\n{os.path.basename(depth_map_path)}"
     )
 
-
-
 def process_video(
     input_video_path,
     selected_depth_map,
@@ -854,14 +849,12 @@ def process_video(
     crf_value,
     use_subject_tracking,
     use_floating_window,
-
 ):
-
+    global original_video_width, original_video_height
 
     input_path = input_video_path.get()
     depth_path = selected_depth_map.get()
     output_path = output_sbs_video_path.get()
-
 
     if not input_path or not output_path or not depth_path:
         messagebox.showerror(
@@ -879,36 +872,56 @@ def process_video(
         messagebox.showerror("Error", "Unable to retrieve FPS from the input video.")
         return
 
+    # 🧠 Save original dimensions globally
+    original_video_width = width
+    original_video_height = height
+    
+    # 🔄 Determine aspect ratio
+    aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
+    format_selected = output_format.get()
+
+    # 🧩 Calculate output dimensions based on selected format
+    if format_selected == "Full-SBS":
+        output_width = width * 2
+        output_height = height
+    elif format_selected == "Half-SBS":
+        output_width = width
+        output_height = height
+    elif format_selected == "VR":
+        output_width = 4096
+        output_height = int(output_width / aspect_ratio)
+    else:
+        output_width = width
+        output_height = int(output_width / aspect_ratio)
+
+    # 🟢 Start progress
     progress_bar["value"] = 0
     progress_label.config(text="0%")
     progress_bar.update()
 
-    output_format = output_format.get()
-    aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
-
-    # Run rendering
-    if output_format in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph", "Passive Interlaced"]:
+    # 🔥 Start render process
+    if format_selected in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph", "Passive Interlaced"]:
         render_sbs_3d(
             input_path,
             depth_path,
             output_path,
             selected_codec.get(),
             fps,
-            width,
-            height,
+            output_width,
+            output_height,
             fg_shift.get(),
             mg_shift.get(),
             bg_shift.get(),
             sharpness_factor.get(),
-            output_format,
+            format_selected,
             selected_aspect_ratio,
             aspect_ratios,
-            feather_strength=feather_strength.get(),  # ✅ fix here
-            blur_ksize=blur_ksize.get(),               # ✅ fix here
+            feather_strength=feather_strength.get(),
+            blur_ksize=blur_ksize.get(),
             use_ffmpeg=use_ffmpeg.get(),
             selected_ffmpeg_codec=FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
             crf_value=crf_value.get(),
-            use_subject_tracking=use_subject_tracking.get(),  # or pass a GUI toggle if available
+            use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
             progress=progress_bar,
             progress_label=progress_label,
@@ -921,7 +934,6 @@ def process_video(
         progress_label.config(text="100%")
         progress_bar.update()
         print("✅ Processing complete.")
-
 
 # Define SETTINGS_FILE at the top of the script
 SETTINGS_FILE = "settings.json"
@@ -981,5 +993,4 @@ def render_with_ffmpeg(
             print("✅ FFmpeg render complete.")
     except Exception as e:
         print(f"❌ FFmpeg render failed: {e}")
-
 
