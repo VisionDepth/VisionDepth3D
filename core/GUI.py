@@ -1144,13 +1144,13 @@ aspect_ratio_menu.grid(row=1, column=3, sticky="ew")
 
 
 # Row 1
-tk.Label(options_frame, text="Convergence Shift").grid(row=1, column=0, sticky="w")
+tk.Label(options_frame, text="Foreground Shift").grid(row=1, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift)\
     .grid(row=1, column=1, sticky="ew")
 
 
 # Row 2
-tk.Label(options_frame, text="Depth Transition").grid(row=2, column=0, sticky="w")
+tk.Label(options_frame, text="Midground Shift").grid(row=2, column=0, sticky="w")
 tk.Scale(options_frame, from_=-5, to=5, resolution=0.5, orient=tk.HORIZONTAL, variable=mg_shift)\
     .grid(row=2, column=1, sticky="ew")
 
@@ -1163,7 +1163,7 @@ tk.Label(options_frame, text="Feather Blur Size").grid(row=3, column=2, sticky="
 tk.Scale(options_frame, from_=0, to=15, resolution=1, orient=tk.HORIZONTAL, variable=blur_ksize)\
     .grid(row=3, column=3, sticky="ew")
 
-tk.Label(options_frame, text="Divergence Shift").grid(row=3, column=0, sticky="w")
+tk.Label(options_frame, text="Background Shift").grid(row=3, column=0, sticky="w")
 tk.Scale(options_frame, from_=-15, to=0, resolution=0.5, orient=tk.HORIZONTAL, variable=bg_shift)\
     .grid(row=3, column=1, sticky="ew")
 
