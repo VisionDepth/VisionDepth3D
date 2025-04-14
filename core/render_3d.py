@@ -435,30 +435,31 @@ def apply_sharpening(frame, factor=1.0):
     sharpened = cv2.filter2D(frame, -1, kernel)
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
-# 3D Format
-
+# 3D Formats
 def format_3d_output(left, right, fmt):
     h, w = left.shape[:2]
+    
     if fmt == "Half-SBS":
-        lw = cv2.resize(left, (w // 2, h))
-        rw = cv2.resize(right, (w // 2, h))
-        return np.hstack((lw, rw))
+        return np.hstack((left, right))
+
     elif fmt == "Full-SBS":
         return np.hstack((left, right))
+    
     elif fmt == "VR":
         lw = cv2.resize(left, (1440, 1600))
         rw = cv2.resize(right, (1440, 1600))
         return np.hstack((lw, rw))
+    
     elif fmt == "Red-Cyan Anaglyph":
         return generate_anaglyph_3d(left, right)
+    
     elif fmt == "Passive Interlaced":
-        # ⬇️ This does the line-interleave
         interlaced = np.zeros_like(left)
         interlaced[::2] = left[::2]      # even rows
         interlaced[1::2] = right[1::2]   # odd rows
         return interlaced
-    return np.hstack((left, right))  # fallback
 
+    return np.hstack((left, right))  # fallback
 
 def generate_anaglyph_3d(left_frame, right_frame):
     """
@@ -512,7 +513,7 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     
     first_frame_tensor = frame_to_tensor(frame)
 
-    # Set aspect ratio target
+    # ✅ Set aspect ratio target
     target_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
 
     # 🔁 Aspect ratio correction (just for sizing)
@@ -612,11 +613,11 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
         if not ret1 or not ret2:
             break
 
-        # Fresh tensors each frame
+        # ✅ Fresh tensors each frame
         frame_tensor = frame_to_tensor(frame)
         depth_tensor = depth_to_tensor(depth)
 
-        # Maintain aspect ratio crop per-frame
+        # ✅ Maintain aspect ratio crop per-frame
         _, h, w = frame_tensor.shape
         current_ratio = w / h
         if abs(current_ratio - target_ratio) > 0.01:
@@ -679,17 +680,25 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
                 left_frame = apply_side_mask(left_frame, side="left", width=bar_width)
                 right_frame = apply_side_mask(right_frame, side="left", width=bar_width)
 
-        # Sharpen & pad
+        # Sharpen
         left_sharp = apply_sharpening(left_frame, sharpness_factor)
         right_sharp = apply_sharpening(right_frame, sharpness_factor)
 
-        # Aspect-ratio padding for all formats consistently
-        target_w = per_eye_w
-        target_h = per_eye_h
-        left_padded = pad_to_aspect_ratio(left_sharp, target_w, target_h)
-        right_padded = pad_to_aspect_ratio(right_sharp, target_w, target_h)
+        # Conditional padding based on output format
+        if output_format == "Full-SBS":
+            left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+            right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+        elif output_format == "Half-SBS":
+            # ⛔️ Do NOT pad before Half-SBS resize — resize directly to half width
+            left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+            right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+        else:
+            # Other formats (VR, Anaglyph, Interlaced) can follow same padding rules
+            left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+            right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
 
-        final = format_3d_output(left_padded, right_padded, output_format)
+        # Combine final output
+        final = format_3d_output(left_out, right_out, output_format)
 
         if use_ffmpeg:
             try:
