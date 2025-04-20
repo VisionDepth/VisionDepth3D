@@ -13,12 +13,6 @@
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
 </h3>
 
-
----
-
-## **GUI Layout**
-![GUITabsSBS](https://github.com/user-attachments/assets/337a6bd3-43ad-4f25-ab63-4563387305d6)
-
 ---
 
 ## Table of Contents
@@ -117,7 +111,6 @@
 - ✔️ This program runs on python 3.12
 - ✔️ This program has been tested on cuda 12.8
 - ✔️ Conda (Optional, Recommended for Simplicity)
-- ❌ Linux/macOS is not officially supported until a more stable solution is found
 
 ### 📌 Step 1: Download the VisionDepth3D Program
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
@@ -240,19 +233,19 @@ Use the GUI to fine-tune your 3D conversion settings.
   - `h264_nvenc`, `hevc_nvenc` – GPU-accelerated (NVIDIA)
 
 ---
-### 2. Convergence Shift *(Foreground / Popping out)*
+### 2. Foreground Shift
 - **Description**: Pops foreground objects out of the screen.
 - **Default**: `6.5`
 - **Range**: `3.0` to `8.0`
 - **Effect**: Strong values create noticeable 3D "pop" in close objects.
 ---
-### 3. Depth Transition *(Midground)*
+### 3. Midground Shift
 - **Description**: Depth for mid-layer transition between foreground and background.
 - **Default**: `1.5`
 - **Range**: `-3.0` to `5.0`
 - **Effect**: Smooths the 3D transition — higher values exaggerate depth between layers.
 ---
-### 4. Divergence Shift *(Screen Plane / Background)*
+### 4. Background Shift
 - **Description**: Shift depth for background layers (far away).
 - **Default**: `-12.0`
 - **Range**: `-10.0` to `0.0`
@@ -264,29 +257,54 @@ Use the GUI to fine-tune your 3D conversion settings.
 - **Range**: `-1.0` (softer) to `1.0` (sharper)
 - **Effect**: Brings clarity to 3D edges; avoid over-sharpening to reduce halos.
 ---
-### 6. Feather Strength *(Edge Anti-Aliasing)*
-- **Description**: Softens hard 3D edges using depth gradients.
-- **Default**: `10.0`
-- **Range**: `0` to `20`
-- **Effect**: Reduces ghosting artifacts and hard cutouts around subjects.
+
+### 6. Convergence Offset
+- **Description**: Shifts the entire stereo image inward or outward to adjust the **overall convergence point** (zero-parallax plane).
+- **Default**: `0.000`
+- **Range**: `-0.050` to `+0.050`
+- **Effect**:  
+  - Positive values push the image **deeper into the screen** (stronger positive parallax).  
+  - Negative values **pull the scene forward** (increased pop-out effect).
+- **Tip**: Use small increments like `±0.010` for subtle depth balancing.
+
 ---
-### 7. Feather Blur Size
-- **Description**: How wide the smoothing kernel should be.
-- **Default**: `9`
-- **Range**: `1` to `15`
-- **Effect**: Larger = more smoothing, helps reduce halo noise on edges.
+
+### 7. Max Pixel Shift (%)
+- **Description**: Limits the **maximum pixel displacement** caused by stereo shifting, expressed as a percentage of video width.
+- **Default**: `0.020` (2%)
+- **Range**: `0.005` to `0.100`
+- **Effect**:  
+  - Low values reduce eye strain but can flatten the 3D effect.  
+  - High values create more dramatic depth but may introduce ghosting or artifacts.
+- **Best Use**: Keep between `0.015`–`0.030` for clean results.
+
 ---
-### 8. FFmpeg Codec & CRF Quality
+
+### 8. Parallax Balance
+- **Description**: Adjusts how **strongly the 3D effect favors the subject's depth** versus full-scene stereo balance.
+- **Default**: `0.80`
+- **Range**: `0.00` to `1.00`
+- **Effect**:  
+  - `1.0` = Full parallax (strong 3D depth everywhere).  
+  - `0.0` = Subject stays fixed, depth minimized elsewhere.
+- **Use For**: Tuning stereo focus around people or central motion while avoiding exaggerated background distortion.
+
+---
+### 9. FFmpeg Codec & CRF Quality
 - **Codec**: Choose GPU-accelerated encoders (`h264_nvenc`, `hevc_nvenc`) for faster renders.
 - **CRF (Constant Rate Factor)**:
   - **Default**: `23`
   - **Range**: `0` (lossless) to `51` (worst)
   - Lower values = better visual quality.
 ---
-### 9. Dynamic Subject Locking *(New!)*
-- **Checkbox**: **Lock Subject to Screen**
-- **Effect**: Enables **Dynamic Zero Parallax Tracking** — the depth plane will automatically follow the subject’s depth to minimize excessive 3D warping.
-- **Great for**: Human characters or central objects in motion.
+### 10. Stabilize Zero-Parallax (center-depth)
+- **Checkbox**: **Stabilize Zero-Parallax (center-depth)**
+- **Effect**: Enables **Dynamic Zero Parallax Tracking** — the depth plane will automatically follow the subject’s depth to minimize excessive 3D warping.  
+- **Function**: Dynamically adjusts the zero-parallax plane to follow the estimated subject depth (typically the central object or character). This keeps key elements at screen depth, reducing eye strain and excessive parallax.
+- **Effect**: Helps stabilize the 3D effect by anchoring the subject at screen level, especially useful for scenes with depth jumps or fast movement.
+- **Recommended for**: Dialogue scenes, human-centric content, or anything where central focus should feel "on screen" rather than floating in depth.
+
+
 ---
 ## Depth Map Tips
 - Match **resolution** and **FPS** between your input video and depth map.
