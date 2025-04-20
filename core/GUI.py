@@ -1153,6 +1153,7 @@ option_menu.config(width=10)  # Adjust width to keep consistent look
 option_menu.pack(side="left", padx=5)
 
 # Buttons Inside button_frame to Keep Everything on One Line
+# Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(
     button_frame,
     text="Generate 3D Video",
@@ -1187,6 +1188,7 @@ start_button = tk.Button(
             auto_crop_black_bars,
             parallax_balance,
             preserve_original_aspect,
+            convergence_offset,
         )
     )
 )
