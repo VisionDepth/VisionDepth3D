@@ -1208,7 +1208,8 @@ preview_button = tk.Button(
         blur_ksize,
         feather_strength,
         use_subject_tracking,
-        use_floating_window
+        use_floating_window,
+        convergence_offset  # ✅ ADD THIS
     )
 )
 preview_button.pack(side="left", padx=5)
