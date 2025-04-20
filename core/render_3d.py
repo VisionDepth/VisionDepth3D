@@ -45,29 +45,28 @@ aspect_ratios = {
 
 FFMPEG_CODEC_MAP = {
     # 🔹 Software (CPU) Codecs
-    "H.264 (libx264)": "libx264",          # High quality, CPU-based
-    "H.265 (libx265)": "libx265",          # Better compression, slower
-    "MPEG-4 (mp4v)": "mp4v",               # Legacy MPEG-4 Part 2
-    "XviD (AVI - CPU)": "XVID",            # Good for AVI containers
-    "DivX (AVI - CPU)": "DIVX",            # Older compatibility
+    "H.264 / AVC (libx264)": "libx264",          # Standard CPU-based H.264
+    "H.265 / HEVC (libx265)": "libx265",         # Better compression, slower
+    "MPEG-4 (mp4v)": "mp4v",                     # Legacy MPEG-4 Part 2
+    "XviD (AVI - CPU)": "XVID",                  # Good for AVI containers
+    "DivX (AVI - CPU)": "DIVX",                  # Older compatibility
 
     # 🔹 NVIDIA NVENC (GPU) Codecs
-    "H.264 (NVENC GPU)": "h264_nvenc",     # Fast GPU H.264
-    "H.265 (NVENC GPU)": "hevc_nvenc",     # Fast GPU HEVC
+    "AVC (NVENC GPU)": "h264_nvenc",             # Hardware-accelerated H.264
+    "HEVC / H.265 (NVENC GPU)": "hevc_nvenc",    # Hardware-accelerated H.265
 
-    # (Optional future expansions)
-    # "AV1 (CPU)": "libaom-av1",
-    # "AV1 (NVIDIA)": "av1_nvenc",  # if supported by GPU
+    # 🔹 Optional / Experimental
+    "AV1 (CPU)": "libaom-av1",
+    "AV1 (NVIDIA)": "av1_nvenc",  # Supported on newer RTX GPUs
 }
+
 
 def pad_to_aspect_ratio(image, target_width, target_height, bg_color=(0, 0, 0)):
     """
     Pads the input image to the target resolution without stretching,
     preserving aspect ratio.
     """
-    import cv2
-    import numpy as np
-
+    
     h, w = image.shape[:2]
     target_aspect = target_width / target_height
     current_aspect = w / h
@@ -189,6 +188,41 @@ def tensor_to_frame(tensor):
     frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     return cv2.cvtColor(frame_cpu, cv2.COLOR_RGB2BGR)
 
+def detect_black_bars(frame_tensor, threshold=10):
+    """
+    Automatically detects black bars on top and bottom of a frame tensor.
+    Returns: (top_crop, bottom_crop) in pixels
+    """
+    frame_np = (frame_tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+    gray = cv2.cvtColor(frame_np, cv2.COLOR_RGB2GRAY)
+
+    h = gray.shape[0]
+    top_crop, bottom_crop = 0, 0
+
+    # Scan from top
+    for i in range(h):
+        if np.mean(gray[i]) > threshold:
+            top_crop = i
+            break
+
+    # Scan from bottom
+    for i in range(h - 1, -1, -1):
+        if np.mean(gray[i]) > threshold:
+            bottom_crop = h - i - 1
+            break
+
+    return top_crop, bottom_crop
+
+def crop_black_bars_torch(frame_tensor, top, bottom):
+    """
+    Crops black bars vertically using PyTorch tensors.
+    - frame_tensor: shape [3, H, W]
+    Returns: cropped tensor
+    """
+    if top + bottom >= frame_tensor.shape[1]:
+        return frame_tensor  # prevent invalid crop
+    return frame_tensor[:, top:frame_tensor.shape[1] - bottom, :]
+
 def feather_shift_edges(
     shifted_tensor: torch.Tensor,
     original_tensor: torch.Tensor,
@@ -258,15 +292,18 @@ class FloatingWindowTracker:
         self.prev_offset = 0.0
         self.alpha = alpha
 
-    def smooth_offset(self, current_offset):
+    def smooth_offset(self, current_offset, threshold=0.002):
+        delta = abs(current_offset - self.prev_offset)
+        if delta < threshold:
+            return self.prev_offset  # ignore tiny jitter
         self.prev_offset = self.alpha * self.prev_offset + (1 - self.alpha) * current_offset
         return self.prev_offset
 
 
-floating_window_tracker = FloatingWindowTracker()
+floating_window_tracker = FloatingWindowTracker(alpha=0.97)
 
 class FloatingBarEaser:
-    def __init__(self, alpha=0.92):
+    def __init__(self, alpha=0.95):
         self.prev_bar_width = 0
         self.alpha = alpha
 
@@ -274,7 +311,7 @@ class FloatingBarEaser:
         self.prev_bar_width = int(self.alpha * self.prev_bar_width + (1 - self.alpha) * current_width)
         return self.prev_bar_width
 
-bar_easer = FloatingBarEaser(alpha=0.7)
+bar_easer = FloatingBarEaser(alpha=0.85)
 
 def pixel_shift_cuda(
     frame_tensor,
@@ -286,6 +323,9 @@ def pixel_shift_cuda(
     bg_shift,
     blur_ksize=9,
     feather_strength=10.0,
+    max_pixel_shift_percent=0.02,
+    parallax_balance=0.8,
+    convergence_offset=0.0,
     use_subject_tracking=True,
     enable_floating_window=True,
     return_shift_map=True
@@ -301,13 +341,17 @@ def pixel_shift_cuda(
     bg_shift_tensor = (depth_tensor * bg_shift) / (width / 2)
     total_shift = fg_shift_tensor + mg_shift_tensor + bg_shift_tensor
 
+    total_shift = total_shift - convergence_offset
+
     if use_subject_tracking:
         subject_depth = estimate_subject_depth(depth_tensor)
 
+        adjusted_depth = subject_depth * parallax_balance
+
         zero_parallax_offset = (
-            (-subject_depth * fg_shift) +
-            (-subject_depth * mg_shift) +
-            (subject_depth * bg_shift)
+            (-adjusted_depth * fg_shift) +
+            (-adjusted_depth * mg_shift) +
+            (adjusted_depth * bg_shift)
         ) / (width / 2)
 
         if enable_floating_window:
@@ -319,13 +363,13 @@ def pixel_shift_cuda(
             zero_parallax_offset *= subject_weight
 
             zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.3, 0.3)
-            zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset.item())
+            zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset.item(), threshold=0.002)
 
-        total_shift = total_shift - zero_parallax_offset
+        total_shift = (total_shift - zero_parallax_offset) * parallax_balance
 
     total_shift = suppress_artifacts_with_edge_mask(depth_tensor, total_shift, feather_strength=feather_strength)
 
-    max_shift_px = width * 0.020
+    max_shift_px = width * max_pixel_shift_percent
     max_shift_norm = max_shift_px / (width / 2)
     total_shift = torch.clamp(total_shift, -max_shift_norm, max_shift_norm)
 
@@ -493,30 +537,33 @@ def apply_side_mask(image, side="left", width=40):
         mask[:, w - width:] = 0
     return cv2.bitwise_and(image, mask)
 
-
 # Render
 def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                  sharpness_factor, output_format, selected_aspect_ratio, aspect_ratios,feather_strength=10.0, blur_ksize=9,
-                  use_ffmpeg=False, selected_ffmpeg_codec="libx264", crf_value=23,  use_subject_tracking=True,
-                  use_floating_window=True, progress=None, progress_label=None,
-                  suspend_flag=None, cancel_flag=None):
+                  sharpness_factor, output_format, selected_aspect_ratio, aspect_ratios, feather_strength=10.0, blur_ksize=9,
+                  use_ffmpeg=False, selected_ffmpeg_codec="libx264", crf_value=23, max_pixel_shift_percent=0.02,
+                  parallax_balance=0.8, convergence_offset=0.01, use_subject_tracking=True, use_floating_window=True, auto_crop_black_bars=False,
+                  preserve_original_aspect=False, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
     if not cap.isOpened() or not dcap.isOpened(): return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Grab first frame to determine proper aspect ratio
     ret1, frame = cap.read()
     ret2, depth = dcap.read()
     if not ret1 or not ret2: return
-    
+
     first_frame_tensor = frame_to_tensor(frame)
 
-    # ✅ Set aspect ratio target
+    if auto_crop_black_bars:
+        top_crop, bottom_crop = detect_black_bars(first_frame_tensor)
+        print(f"Auto-crop: Top {top_crop}px | Bottom {bottom_crop}px")
+        first_frame_tensor = crop_black_bars_torch(first_frame_tensor, top_crop, bottom_crop)
+    else:
+        top_crop, bottom_crop = 0, 0
+
     target_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
 
-    # 🔁 Aspect ratio correction (just for sizing)
     _, h, w = first_frame_tensor.shape
     current_ratio = w / h
     if abs(current_ratio - target_ratio) > 0.01:
@@ -526,43 +573,56 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
         else:
             new_h = int(w / target_ratio)
             h = new_h
+        
+    if preserve_original_aspect:
+        resized_width = original_video_width
+        resized_height = original_video_height
 
-    # Resize dimensions
-    resized_height = height
-    resized_width = int(resized_height * target_ratio)
-    if resized_width % 2 != 0:
-        resized_width += 1
-
-
-    # 🎯 Explicitly define per-eye and output dimensions
-    if output_format == "Full-SBS":
-        per_eye_w, per_eye_h = 1920, 1080
-        out_width = per_eye_w * 2
-        out_height = per_eye_h
-
-    elif output_format == "Half-SBS":
-        per_eye_w = resized_width // 2
-        per_eye_h = resized_height
-        out_width = resized_width
-        out_height = resized_height
-
-    elif output_format == "VR":
-        per_eye_w = 1440
-        per_eye_h = 1600
-        out_width = per_eye_w * 2
-        out_height = per_eye_h
-
-    elif output_format in ["Red-Cyan Anaglyph", "Passive 3D"]:
-        per_eye_w = resized_width
-        per_eye_h = resized_height
-        out_width = resized_width
-        out_height = resized_height
-
+        if output_format == "Full-SBS":
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = per_eye_w * 2
+            out_height = per_eye_h
+        elif output_format == "Half-SBS":
+            per_eye_w = resized_width // 2
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
+        elif output_format == "VR":
+            per_eye_w = 1440
+            per_eye_h = 1600
+            out_width = per_eye_w * 2
+            out_height = per_eye_h
+        else:
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width * 2
+            out_height = resized_height
     else:
-        per_eye_w = resized_width
-        per_eye_h = resized_height
-        out_width = resized_width * 2
-        out_height = resized_height
+        resized_height = height
+        resized_width = int(resized_height * target_ratio)
+        if resized_width % 2 != 0:
+            resized_width += 1
+
+        if output_format == "Full-SBS":
+            per_eye_w, per_eye_h = 1920, 1080
+            out_width = per_eye_w * 2
+            out_height = per_eye_h
+        elif output_format == "Half-SBS":
+            per_eye_w = resized_width // 2
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
+        elif output_format == "VR":
+            per_eye_w = 1440
+            per_eye_h = 1600
+            out_width = per_eye_w * 2
+            out_height = per_eye_h
+        else:
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width * 2
+            out_height = resized_height
 
 
     if use_ffmpeg:
@@ -586,11 +646,9 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
             ffmpeg_cmd += ["-cq", str(crf_value), "-b:v", "0"]
 
         ffmpeg_cmd.append(output_path)
-
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
     else:
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*codec), fps, (out_width, out_height))
-
 
     start_time = time.time()
     prev_time = time.time()
@@ -603,21 +661,22 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for idx in range(total_frames):
-        if cancel_flag and cancel_flag.is_set():
-            break
-        while suspend_flag and suspend_flag.is_set():
-            time.sleep(0.5)
+        if cancel_flag and cancel_flag.is_set(): break
+        while suspend_flag and suspend_flag.is_set(): time.sleep(0.5)
 
-        ret1, frame, = cap.read()
+        ret1, frame = cap.read()
         ret2, depth = dcap.read()
-        if not ret1 or not ret2:
-            break
+        if not ret1 or not ret2: break
 
-        # ✅ Fresh tensors each frame
         frame_tensor = frame_to_tensor(frame)
         depth_tensor = depth_to_tensor(depth)
 
-        # ✅ Maintain aspect ratio crop per-frame
+        if auto_crop_black_bars:
+            top_crop, bottom_crop = detect_black_bars(frame_tensor)
+            print(f"🔪 Cropping top: {top_crop}px, bottom: {bottom_crop}px")
+            frame_tensor = crop_black_bars_torch(frame_tensor, top_crop, bottom_crop)
+            depth_tensor = crop_black_bars_torch(depth_tensor, top_crop, bottom_crop)
+
         _, h, w = frame_tensor.shape
         current_ratio = w / h
         if abs(current_ratio - target_ratio) > 0.01:
@@ -632,23 +691,25 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
                 frame_tensor = frame_tensor[:, start:start + new_h, :]
                 depth_tensor = depth_tensor[:, start:start + new_h, :]
 
-        # Resize
-        cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
-        target_eye_w = per_eye_w  # 1920
-        target_eye_h = int(per_eye_w / cinema_aspect_ratio)  # ~816
+        # Only recalculate target_eye_h if we're NOT preserving the original aspect
+        if not preserve_original_aspect:
+            cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
+            target_eye_w = per_eye_w
+            target_eye_h = int(per_eye_w / cinema_aspect_ratio)
+            if target_eye_h % 2 != 0:
+                target_eye_h += 1
+        else:
+            # ✅ Use exact dimensions without recalculation
+            target_eye_w = per_eye_w
+            target_eye_h = per_eye_h
 
-        # Force even height
-        if target_eye_h % 2 != 0:
-            target_eye_h += 1
 
-        # Resize to fit 2.35:1 content before padding to 1920x1080
         frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
         depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
 
         fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
-
         if output_format in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
-            bg *= 2.0  # Boost background for depth
+            bg *= 2.0
 
         left_frame, right_frame = pixel_shift_cuda(
             frame_tensor, depth_tensor, resized_width, resized_height,
@@ -657,22 +718,19 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
             feather_strength=feather_strength,
             use_subject_tracking=use_subject_tracking,
             enable_floating_window=use_floating_window,
-            return_shift_map=False
+            return_shift_map=False,
+            max_pixel_shift_percent=max_pixel_shift_percent,
+            convergence_offset=convergence_offset
         )
 
         subject_depth = estimate_subject_depth(depth_tensor)
-        zero_parallax_offset = (
-            (-subject_depth * fg) +
-            (-subject_depth * mg) +
-            (subject_depth * bg)
-        ) / (resized_width / 2)
+        zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
 
         if use_floating_window and use_subject_tracking:
             shift_thresh = 0.005
             raw_bar_width = int(abs(zero_parallax_offset) * resized_width * 0.75)
             smoothed_bar_width = bar_easer.ease(raw_bar_width)
             bar_width = max(min(smoothed_bar_width, 80), 0)
-
             if zero_parallax_offset > shift_thresh:
                 left_frame = apply_side_mask(left_frame, side="right", width=bar_width)
                 right_frame = apply_side_mask(right_frame, side="right", width=bar_width)
@@ -680,24 +738,19 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
                 left_frame = apply_side_mask(left_frame, side="left", width=bar_width)
                 right_frame = apply_side_mask(right_frame, side="left", width=bar_width)
 
-        # Sharpen
         left_sharp = apply_sharpening(left_frame, sharpness_factor)
         right_sharp = apply_sharpening(right_frame, sharpness_factor)
 
-        # Conditional padding based on output format
         if output_format == "Full-SBS":
             left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
             right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
         elif output_format == "Half-SBS":
-            # ⛔️ Do NOT pad before Half-SBS resize — resize directly to half width
             left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
             right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
         else:
-            # Other formats (VR, Anaglyph, Interlaced) can follow same padding rules
             left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
             right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
 
-        # Combine final output
         final = format_3d_output(left_out, right_out, output_format)
 
         if use_ffmpeg:
@@ -723,26 +776,33 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
             progress["value"] = percent
             progress.update()
         if progress_label:
-            progress_label.config(
-                text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%M:%S', time.gmtime(elapsed))}"
-            )
+            progress_label.config(text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%H:%M:%S', time.gmtime(elapsed))}")
         prev_time = curr_time
-
 
     cap.release()
     dcap.release()
-
     if use_ffmpeg:
-        ffmpeg_proc.stdin.close()
-        ffmpeg_proc.wait()
+        try:
+            if not cancel_flag.is_set():
+                ffmpeg_proc.stdin.close()
+                ffmpeg_proc.wait()
+            else:
+                ffmpeg_proc.stdin.close()
+                ffmpeg_proc.terminate()
+                ffmpeg_proc.wait()
+                print("⚠️ FFmpeg terminated early due to cancel.")
+        except Exception as e:
+            print(f"❌ FFmpeg shutdown error: {e}")
+
     else:
         out.release()
 
     torch.cuda.empty_cache()
 
+
 def start_processing_thread():
     global process_thread
-    cancel_flag.clear()  # Reset cancel state
+    cancel_flag.clear()  # ✅ Reset cancel state
     suspend_flag.clear()  # Ensure it's not paused
     process_thread = threading.Thread(target=process_video, daemon=True)
     process_thread.start()
@@ -847,8 +907,8 @@ def process_video(
     output_format,
     selected_aspect_ratio,
     aspect_ratios,
-    feather_strength,      
-    blur_ksize,               
+    feather_strength,
+    blur_ksize,
     progress_bar,
     progress_label,
     suspend_flag,
@@ -858,7 +918,13 @@ def process_video(
     crf_value,
     use_subject_tracking,
     use_floating_window,
+    max_pixel_shift,
+    auto_crop_black_bars,
+    parallax_balance,
+    preserve_original_aspect,
+    convergence_offset,
 ):
+
     global original_video_width, original_video_height
 
     input_path = input_video_path.get()
@@ -890,18 +956,23 @@ def process_video(
     format_selected = output_format.get()
 
     # 🧩 Calculate output dimensions based on selected format
-    if format_selected == "Full-SBS":
-        output_width = width * 2
-        output_height = height
-    elif format_selected == "Half-SBS":
+    if preserve_original_aspect.get():
         output_width = width
         output_height = height
-    elif format_selected == "VR":
-        output_width = 4096
-        output_height = int(output_width / aspect_ratio)
     else:
-        output_width = width
-        output_height = int(output_width / aspect_ratio)
+        if format_selected == "Full-SBS":
+            output_width = width * 2
+            output_height = height
+        elif format_selected == "Half-SBS":
+            output_width = width
+            output_height = height
+        elif format_selected == "VR":
+            output_width = 4096
+            output_height = int(output_width / aspect_ratio)
+        else:
+            output_width = width
+            output_height = int(output_width / aspect_ratio)
+
 
     # 🟢 Start progress
     progress_bar["value"] = 0
@@ -932,11 +1003,17 @@ def process_video(
             crf_value=crf_value.get(),
             use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
+            max_pixel_shift_percent=max_pixel_shift.get(),
             progress=progress_bar,
             progress_label=progress_label,
             suspend_flag=suspend_flag,
             cancel_flag=cancel_flag,
+            auto_crop_black_bars=auto_crop_black_bars.get(),
+            parallax_balance=parallax_balance.get(),
+            preserve_original_aspect=preserve_original_aspect.get(),
+            convergence_offset=convergence_offset.get(),
         )
+
 
     if not cancel_flag.is_set():
         progress_bar["value"] = 100
