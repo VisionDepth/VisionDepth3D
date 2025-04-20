@@ -28,6 +28,10 @@ def parse_args():
 
     parser.add_argument("--feather", type=float, default=10.0)
     parser.add_argument("--blur", type=int, default=9)
+    parser.add_argument("--convergence_offset", type=float, default=0.0, help="Stereo convergence adjustment (-0.05 to 0.05)")
+    parser.add_argument("--max_pixel_shift", type=float, default=0.02, help="Maximum stereo shift (as a % of width)")
+    parser.add_argument("--parallax_balance", type=float, default=0.8, help="Adjusts parallax scale (0.0 = neutral, 1.0 = deep)")
+
 
     parser.add_argument("--width", type=int, help="Override output width")
     parser.add_argument("--height", type=int, help="Override output height")
@@ -106,12 +110,16 @@ def main():
         crf_value=args.crf,
         use_subject_tracking=not args.no_track,
         use_floating_window=not args.no_floating,
-        preserve_content=args.preserve_content,
+        preserve_original_aspect=args.preserve_content,
+        convergence_offset=args.convergence_offset,
+        max_pixel_shift_percent=args.max_pixel_shift,
+        parallax_balance=args.parallax_balance,
         progress=None,
         progress_label=None,
         suspend_flag=None,
         cancel_flag=None,
     )
+
     print(f"✅ Render finished in {time.time() - start:.1f}s")
 
 
