@@ -424,12 +424,11 @@ main_content.pack(side="right", fill="both", expand=True)
 visiondepth_frame = tk.Frame(tab_control)
 tab_control.add(visiondepth_frame, text="3D Video Generator")
 
-# ✅ Same styled content_frame for VisionDepth3D tab
 visiondepth_content_frame = tk.Frame(visiondepth_frame, highlightthickness=0, bd=0, bg="#1c1c1c")
 visiondepth_content_frame.pack(fill="both", expand=True)
 
 FrameTools3D = tk.Frame(tab_control, bg="#1c1c1c")
-tab_control.add(FrameTools3D, text="📽 FrameTools 3D")
+tab_control.add(FrameTools3D, text="FrameTools")
 
 # --- VisionDepth3D Player Tab Setup ---
 preview_Video = tk.Frame(tab_control)
