@@ -13,20 +13,32 @@ Distribute, sublicense, or share the Software with any third party.
 Reverse engineer, decompile, or disassemble the Software.
 Use the Software for any commercial purposes without express written permission from Licensor.
 Sell, rent, lease, or otherwise commercially exploit the Software.
+
 3. Ownership
 Licensor retains all ownership, rights, title, and interest in and to the Software, including all copyrights and intellectual property rights. This Agreement does not transfer any ownership rights to the User.
 
-4. No Warranty
+4. Third-Party Components and Attributions  
+The Software may include third-party libraries, models, or components that are governed by their own respective open-source licenses. In particular, the Software utilizes depth estimation models licensed under the Apache License, Version 2.0.  
+By using this Software, you acknowledge and agree to comply with the requirements of those licenses.  
+For Apache 2.0 licensed models, the following notice is hereby provided:
+
+> This product includes software developed by third parties under the Apache License, Version 2.0 (the "Apache License").  
+> You may obtain a copy of the Apache License at http://www.apache.org/licenses/LICENSE-2.0
+
+No modifications were made to these models beyond integration for inference purposes.
+
+
+5. No Warranty
 The Software is provided "as is" and "as available", without warranties of any kind, whether express or implied. Licensor makes no guarantees regarding performance, reliability, security, accuracy, or fitness for any particular purpose. User assumes all risks associated with using the Software.
 
-5. Limitation of Liability
+6. Limitation of Liability
 To the fullest extent permitted by law, Licensor shall not be liable for any damages, including but not limited to direct, indirect, incidental, consequential, special, or punitive damages arising from or related to the use or inability to use the Software, even if Licensor has been advised of the possibility of such damages.
 
-6. Termination
+7. Termination
 This Agreement is effective until terminated. The license granted herein automatically terminates if User violates any terms of this Agreement. Licensor reserves the right to revoke access to the Software at any time, for any reason, without notice.
 
-7. Governing Law
+8. Governing Law
 This Agreement shall be governed by and interpreted in accordance with the laws of the Province of Ontario and the applicable federal laws of Canada, without regard to conflict of law principles.
 
-8. Contact
+9. Contact
 For inquiries regarding this Agreement, contact: redsky90@gmail.com
