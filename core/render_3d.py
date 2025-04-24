@@ -341,7 +341,7 @@ def pixel_shift_cuda(
     bg_shift_tensor = (depth_tensor * bg_shift) / (width / 2)
     total_shift = fg_shift_tensor + mg_shift_tensor + bg_shift_tensor
 
-    total_shift = total_shift - convergence_offset
+    total_shift = total_shift + convergence_offset
 
     if use_subject_tracking:
         subject_depth = estimate_subject_depth(depth_tensor)
