@@ -109,7 +109,14 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
         resolution=0.001, length=200
     )
     convergence_slider.pack(side="left", padx=10)
-     
+    
+    parallax_balance_slider = tk.Scale(
+        feather_sliders_frame, from_=0.0, to=2.0,
+        orient="horizontal", label="Parallax Balance",
+        resolution=0.05, length=200
+    )
+    parallax_balance_slider.pack(side="left", padx=10)
+
 
     frame_slider_frame = tk.Frame(inner_frame)
     frame_slider_frame.pack(side="top")
@@ -146,8 +153,10 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             use_subject_tracking=use_subject_tracking.get(),
             enable_floating_window=use_floating_window.get(),
             max_pixel_shift_percent=max_shift_slider.get(),
-            convergence_offset=convergence_slider.get()
+            convergence_offset=convergence_slider.get(),
+            parallax_balance=parallax_balance_slider.get()  # ✅ New line
         )
+
 
 
         preview_img = generate_preview_image(preview_type_var.get(), left, right, shift_map, w, h)
@@ -188,6 +197,7 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             'sharpening': sharpening_slider.get(),
             'max_pixel_shift': max_shift_slider.get(),
             'convergence_offset': convergence_slider.get(),
+            'parallax_balance': parallax_balance_slider.get(),
         }
         save_settings(settings)
         preview_win.destroy()
@@ -202,6 +212,7 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
     sharpening_slider.set(settings.get('sharpening', 0.2))
     max_shift_slider.set(settings.get('max_pixel_shift', 0.02))
     convergence_slider.set(settings.get('convergence_offset', convergence_offset.get()))
+    parallax_balance_slider.set(settings.get('parallax_balance', parallax_balance.get()))
     frame_slider.set(0)
 
     fg_slider.config(command=update_preview)
@@ -214,5 +225,7 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
     frame_slider.config(command=update_preview)
     preview_type_var.trace_add("write", lambda *_: update_preview())
     convergence_slider.config(command=update_preview)
+    parallax_balance_slider.config(command=update_preview)
+
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
