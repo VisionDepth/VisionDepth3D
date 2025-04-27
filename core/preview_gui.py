@@ -29,7 +29,7 @@ def load_settings():
 def open_3d_preview_window(input_video_path, selected_depth_map,
                            fg_shift, mg_shift, bg_shift,
                            blur_ksize, feather_strength,
-                           use_subject_tracking, use_floating_window, convergence_offset):
+                           use_subject_tracking, use_floating_window, convergence_offset, parallax_balance):
     settings = load_settings()
 
     preview_win = tk.Toplevel()
@@ -156,8 +156,6 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             convergence_offset=convergence_slider.get(),
             parallax_balance=parallax_balance_slider.get()  # ✅ New line
         )
-
-
 
         preview_img = generate_preview_image(preview_type_var.get(), left, right, shift_map, w, h)
         if preview_img is not None:
