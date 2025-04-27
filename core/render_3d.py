@@ -273,20 +273,38 @@ def feather_shift_edges(
 
 def shift_mask(mask_tensor, shift_vals, width):
     H, W = mask_tensor.shape[-2:]
-    x_base = torch.linspace(-1, 1, W, device=mask_tensor.device).view(1, -1).expand(H, W)
-    y_base = torch.linspace(-1, 1, H, device=mask_tensor.device).view(-1, 1).expand(H, W)
-    grid = torch.stack((x_base, y_base), dim=2)
-    grid[..., 0] -= shift_vals  # reverse shift to follow image
+
+    if mask_tensor.dim() == 2:
+        mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # [H, W] -> [1, 1, H, W]
+    elif mask_tensor.dim() == 3:
+        mask_tensor = mask_tensor.unsqueeze(0)  # [C, H, W] -> [1, C, H, W]
+
+    N, C, H, W = mask_tensor.shape
+
+    # Create grid
+    x = torch.linspace(-1, 1, W, device=mask_tensor.device)
+    y = torch.linspace(-1, 1, H, device=mask_tensor.device)
+    y_grid, x_grid = torch.meshgrid(y, x, indexing='ij')
+    grid = torch.stack((x_grid, y_grid), dim=-1)  # [H, W, 2]
+    grid = grid.unsqueeze(0).expand(N, H, W, 2)  # [N, H, W, 2]
+
+    if shift_vals.dim() == 2:
+        shift_vals = shift_vals.unsqueeze(0)  # [1, H, W]
+
+    # Make sure shift_vals match batch size
+    shift_vals = shift_vals.expand(N, H, W)
+
+    # ✅ Scale shift_vals to grid units
+    shift_vals_grid = (shift_vals / (W / 2)).clamp(-1.0, 1.0)  # IMPORTANT ⚡
+
+    grid[..., 0] -= shift_vals_grid  # apply scaled shift
 
     warped = F.grid_sample(
-        mask_tensor.unsqueeze(0).unsqueeze(0),  # [1,1,H,W]
-        grid.unsqueeze(0),  # [1,H,W,2]
-        mode='bilinear',
-        padding_mode='border',
-        align_corners=True
-    ).squeeze()
-    return warped
+        mask_tensor, grid,
+        mode='bilinear', padding_mode='border', align_corners=True
+    )
 
+    return warped.squeeze(0)  # Remove batch dimension
 
 # Shift Smoother
 class ShiftSmoother:
@@ -330,7 +348,6 @@ class FloatingBarEaser:
         return self.prev_bar_width
 
 bar_easer = FloatingBarEaser(alpha=0.85)
-
 def pixel_shift_cuda(
     frame_tensor,
     depth_tensor,
@@ -348,24 +365,29 @@ def pixel_shift_cuda(
     enable_floating_window=True,
     return_shift_map=True
 ):
+    device = frame_tensor.device
+
     frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
     depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
 
     if 'enhance_curvature' in globals():
         depth_tensor = enhance_curvature(depth_tensor, strength=0.08)
 
-    depth = depth_tensor.clamp(0.0, 1.0)
+    depth_tensor = depth_tensor.clamp(0.0, 1.0)
 
-    # Per-region parallax weights
-    fg_weight = (1.0 - depth).clamp(0, 1)
-    mg_weight = (1.0 - (depth - 0.4).abs() * 2.5).clamp(0, 1)
-    bg_weight = depth.clamp(0, 1)
+    fg_weight = (1.0 - depth_tensor)
+    mg_weight = (1.0 - (depth_tensor - 0.4).abs() * 2.5)
+    bg_weight = depth_tensor
 
-    fg_shift_tensor = (-depth * fg_weight * fg_shift) / (width / 2)
-    mg_shift_tensor = (-depth * mg_weight * mg_shift) / (width / 2)
-    bg_shift_tensor = (depth * bg_weight * bg_shift) / (width / 2)
+    half_width = width / 2.0
 
-    total_shift = fg_shift_tensor + mg_shift_tensor + bg_shift_tensor
+    # Calculate raw parallax shift
+    raw_shift = (-depth_tensor * fg_weight * fg_shift +
+                 -depth_tensor * mg_weight * mg_shift +
+                 depth_tensor * bg_weight * bg_shift)
+
+    # Scale raw shift by parallax_balance
+    total_shift = (raw_shift * parallax_balance) / half_width
 
     if use_subject_tracking:
         subject_depth = estimate_subject_depth(depth_tensor)
@@ -374,7 +396,7 @@ def pixel_shift_cuda(
             (-adjusted_depth * fg_shift) +
             (-adjusted_depth * mg_shift) +
             (adjusted_depth * bg_shift)
-        ) / (width / 2)
+        ) / half_width
 
         if enable_floating_window:
             subject_weight = torch.clamp(1.0 - subject_depth * 2.5, 0.25, 1.0)
@@ -384,27 +406,23 @@ def pixel_shift_cuda(
 
         total_shift -= zero_parallax_offset
 
-    # ✅ Move convergence here so edge masks follow it
     total_shift += convergence_offset
 
-    # === NEW: Warp depth to match convergence for correct edge masking ===
     if convergence_offset != 0.0:
         warped_depth = shift_mask(
-            depth_tensor.squeeze(0), 
-            -torch.full_like(depth_tensor.squeeze(0), convergence_offset), 
+            depth_tensor,
+            -torch.full_like(depth_tensor, convergence_offset).squeeze(0),
             width
-        ).unsqueeze(0)
+        )
     else:
-        warped_depth = depth_tensor  # no need to shift
+        warped_depth = depth_tensor
 
-    # ✅ Clamp after convergence
     max_shift_px = width * max_pixel_shift_percent
-    max_shift_norm = max_shift_px / (width / 2)
+    max_shift_norm = max_shift_px / half_width
     total_shift = torch.clamp(total_shift, -max_shift_norm, max_shift_norm)
 
-    # ✅ Use warped depth for edge mask now
     mask_strength = np.clip(feather_strength / 10.0, 0.05, 0.3)
-    edge_suppressed = suppress_artifacts_with_edge_mask(warped_depth, total_shift, feather_strength=feather_strength)
+    edge_suppressed = suppress_artifacts_with_edge_mask(warped_depth, total_shift, feather_strength)
 
     final_shift = (1.0 - mask_strength) * total_shift + mask_strength * edge_suppressed
     shift_vals = final_shift.squeeze(0)
@@ -412,97 +430,50 @@ def pixel_shift_cuda(
     with torch.no_grad():
         dx_shift = F.pad(shift_vals[:, 1:] - shift_vals[:, :-1], (1, 0))
         dy_shift = F.pad(shift_vals[1:, :] - shift_vals[:-1, :], (0, 0, 1, 0))
-        shift_grad_mag = torch.sqrt(dx_shift.pow(2) + dy_shift.pow(2))
-        hard_edge_mask = (shift_grad_mag > 0.015).float()
-        softened = F.avg_pool2d(hard_edge_mask.unsqueeze(0).unsqueeze(0), kernel_size=5, stride=1, padding=2).squeeze()
+        shift_grad_mag = torch.sqrt(dx_shift ** 2 + dy_shift ** 2)
+        hard_edges = (shift_grad_mag > 0.015).float()
+        softened = F.avg_pool2d(hard_edges.unsqueeze(0).unsqueeze(0), 5, stride=1, padding=2).squeeze()
         final_shift *= (1.0 - softened * 0.5)
 
-    with torch.no_grad():
-        dx = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (0, 1))
-        dy = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 0, 1))
-        edge_mag = torch.sqrt(dx.pow(2) + dy.pow(2))
-        depth_edge = (edge_mag > 0.05).float()
-        eroded = F.max_pool2d(depth_edge.unsqueeze(0), kernel_size=3, stride=1, padding=1).squeeze(0)
+        dx = F.pad(warped_depth[:, :, 1:] - warped_depth[:, :, :-1], (0, 1))
+        dy = F.pad(warped_depth[:, 1:, :] - warped_depth[:, :-1, :], (0, 0, 0, 1))
+        depth_grad = torch.sqrt(dx ** 2 + dy ** 2)
+        depth_edges = (depth_grad > 0.05).float()
+        eroded = F.max_pool2d(depth_edges.unsqueeze(0), 3, stride=1, padding=1).squeeze(0)
         final_shift *= (1.0 - eroded * 0.3)
 
-    H, W = depth_tensor.shape[1], depth_tensor.shape[2]
-    x_base = torch.linspace(-1, 1, W, device=frame_tensor.device).view(1, -1).expand(H, W)
-    y_base = torch.linspace(-1, 1, H, device=frame_tensor.device).view(-1, 1).expand(H, W)
-    grid = torch.stack((x_base, y_base), dim=2)
+    H, W = depth_tensor.shape[1:]
+    xx, yy = torch.meshgrid(
+        torch.linspace(-1, 1, W, device=device),
+        torch.linspace(-1, 1, H, device=device),
+        indexing="xy"
+    )
+    grid = torch.stack((xx, yy), dim=-1)
 
     grid_left = grid.clone()
     grid_right = grid.clone()
     grid_left[..., 0] += shift_vals
     grid_right[..., 0] -= shift_vals
 
-    # ✅ Avoid black lines by switching padding_mode to 'border'
     left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
     right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
 
     with torch.no_grad():
-        overflow_thresh = max_shift_norm * 0.95
-        overflow_mask = (shift_vals.abs() > overflow_thresh).float()
-        overflow_mask_blurred = tv_gaussian_blur(overflow_mask.unsqueeze(0), kernel_size=[9, 9], sigma=[2.0, 2.0]).squeeze()
-        overflow_mask_rgb = overflow_mask_blurred.repeat(3, 1, 1)
+        overflow_mask = (shift_vals.abs() > (0.95 * max_shift_norm)).float()
+        overflow_blur = tv_gaussian_blur(overflow_mask.unsqueeze(0), kernel_size=[9, 9], sigma=[2.0, 2.0]).squeeze()
+        heal_mask = overflow_blur.repeat(3, 1, 1)
         heal_strength = 0.4
-        left = (1 - heal_strength * overflow_mask_rgb) * left + heal_strength * overflow_mask_rgb * frame_tensor
-        right = (1 - heal_strength * overflow_mask_rgb) * right + heal_strength * overflow_mask_rgb * frame_tensor
+        left = (1.0 - heal_strength * heal_mask) * left + heal_strength * heal_mask * frame_tensor
+        right = (1.0 - heal_strength * heal_mask) * right + heal_strength * heal_mask * frame_tensor
 
-    left_blended = feather_shift_edges(left, frame_tensor, depth_tensor, blur_ksize, feather_strength)
-    right_blended = feather_shift_edges(right, frame_tensor, depth_tensor, blur_ksize, feather_strength)
+    left_blended = feather_shift_edges(left, frame_tensor, warped_depth, blur_ksize, feather_strength)
+    right_blended = feather_shift_edges(right, frame_tensor, warped_depth, blur_ksize, feather_strength)
 
-    with torch.no_grad():
-        dx = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (0, 1))
-        dy = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 0, 1))
-        edge_mag = torch.sqrt(dx.pow(2) + dy.pow(2))
+    if return_shift_map:
+        return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
+    else:
+        return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
 
-        gray = 0.2989 * frame_tensor[0] + 0.5870 * frame_tensor[1] + 0.1140 * frame_tensor[2]
-        gx = F.pad(gray[:, 1:] - gray[:, :-1], (1, 0))
-        gy = F.pad(gray[1:, :] - gray[:-1, :], (0, 0, 1, 0))
-        lum_edge = torch.sqrt(gx**2 + gy**2)
-
-        edge_mask = (edge_mag > 0.03) & (lum_edge < 0.15)
-        edge_mask_np = (edge_mask.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        edge_mask_np_f = edge_mask_np.astype(np.float32) / 255.0
-        soft_mask = gaussian_filter(edge_mask_np_f, sigma=1.2)
-
-        left_np = tensor_to_frame(left_blended)
-        right_np = tensor_to_frame(right_blended)
-
-        joint = cv2.cvtColor(left_np, cv2.COLOR_BGR2GRAY)
-        try:
-            blurred_left = cv2.ximgproc.jointBilateralFilter(joint, left_np, d=9, sigmaColor=60, sigmaSpace=15)
-            blurred_right = cv2.ximgproc.jointBilateralFilter(joint, right_np, d=9, sigmaColor=60, sigmaSpace=15)
-        except AttributeError:
-            print("⚠️ jointBilateralFilter not available, fallback to edgePreservingFilter")
-            blurred_left = cv2.edgePreservingFilter(left_np, flags=1, sigma_s=60, sigma_r=0.4)
-            blurred_right = cv2.edgePreservingFilter(right_np, flags=1, sigma_s=60, sigma_r=0.4)
-
-        left_clean = (1 - soft_mask[..., None]) * left_np + soft_mask[..., None] * blurred_left
-        right_clean = (1 - soft_mask[..., None]) * right_np + soft_mask[..., None] * blurred_right
-
-        left_clean = np.clip(left_clean, 0, 255).astype(np.uint8)
-        right_clean = np.clip(right_clean, 0, 255).astype(np.uint8)
-
-        del edge_mask_np, edge_mask_np_f, soft_mask
-        del joint, blurred_left, blurred_right
-        del left_np, right_np, edge_mask, edge_mag, lum_edge, gray, gx, gy
-
-    try:
-        if return_shift_map:
-            shift_map = final_shift.squeeze().detach().cpu()
-            del total_shift
-            import gc
-            gc.collect()
-            return left_clean, right_clean, shift_map
-        else:
-            del total_shift
-            import gc
-            gc.collect()
-            return left_clean, right_clean
-    except Exception as e:
-        print(f"❌ pixel_shift_cuda failed on return: {e}")
-        return None
         
 # Sharpening
 
