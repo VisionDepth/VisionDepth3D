@@ -1096,7 +1096,10 @@ tk.Scale(options_frame, from_=0.005, to=0.10, resolution=0.005, orient=tk.HORIZO
 # File Selection
 tk.Button(
     visiondepth_content_frame,
-    text="Select Input Video", bg="#1c1c1c", fg="white",
+    text="Select Input Video",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_input_video(
         input_video_path,
         video_thumbnail_label,
@@ -1105,33 +1108,53 @@ tk.Button(
         original_video_width,
         original_video_height
     )
-
-
 ).grid(row=3, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=input_video_path, width=50, bg="#1c1c1c", fg="white").grid(
-    row=3, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=input_video_path,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=3, column=1, pady=5, padx=5)
 
 tk.Button(
     visiondepth_content_frame,
-    text="Select Depth Map", bg="#1c1c1c", fg="white",
+    text="Select Depth Map",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_depth_map(selected_depth_map, depth_map_label)
 ).grid(row=4, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=selected_depth_map, width=50, bg="#1c1c1c", fg="white").grid(
-    row=4, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=selected_depth_map,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=4, column=1, pady=5, padx=5)
 
 tk.Button(
     visiondepth_content_frame,
-    text="Select Output Video", bg="#1c1c1c", fg="white",
+    text="Select Output Video",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_output_video(output_sbs_video_path)
 ).grid(row=5, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=output_sbs_video_path, width=50,  bg="#1c1c1c", fg="white").grid(
-    row=5, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=output_sbs_video_path,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=5, column=1, pady=5, padx=5)
+
 
 # Frame to Hold Buttons and Format Selection in a Single Row
 button_frame = tk.Frame(visiondepth_content_frame, bg="#1c1c1c")
