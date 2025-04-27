@@ -1232,7 +1232,8 @@ preview_button = tk.Button(
         feather_strength,
         use_subject_tracking,
         use_floating_window,
-        convergence_offset  # ✅ ADD THIS
+        convergence_offset,
+        parallax_balance
     )
 )
 preview_button.pack(side="left", padx=5)
