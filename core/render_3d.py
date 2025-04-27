@@ -306,6 +306,38 @@ def shift_mask(mask_tensor, shift_vals, width):
 
     return warped.squeeze(0)  # Remove batch dimension
 
+def compute_dynamic_parallax_scale(depth_tensor, min_scale=0.6, max_scale=1.0):
+    """
+    Dynamically adjusts parallax strength based on scene depth.
+    - Closer shots get full parallax.
+    - Wider, flatter shots get reduced parallax to avoid warping.
+    """
+    center_crop = depth_tensor[:, depth_tensor.shape[1]//4:3*depth_tensor.shape[1]//4,
+                                  depth_tensor.shape[2]//4:3*depth_tensor.shape[2]//4]
+    depth_variance = torch.var(center_crop)
+
+    # Heuristic: less variance = flatter scene = reduce parallax
+    if depth_variance < 0.001:
+        scale = min_scale
+    elif depth_variance > 0.01:
+        scale = max_scale
+    else:
+        scale = min_scale + (depth_variance - 0.001) / (0.01 - 0.001) * (max_scale - min_scale)
+        scale = torch.clamp(scale, min_scale, max_scale)
+    return scale.item()
+
+# --- Enhanced Healing of Warped Areas ---
+def heal_missing_pixels(warped_frame, shift_vals, max_shift_norm):
+    overflow_mask = (shift_vals.abs() > (0.95 * max_shift_norm)).float()
+    overflow_blur = F.avg_pool2d(overflow_mask.unsqueeze(0).unsqueeze(0), 5, stride=1, padding=2).squeeze()
+    heal_mask = overflow_blur.repeat(3, 1, 1)
+    heal_strength = 0.6  # Slightly stronger heal
+
+    # Simple localized healing: mix original where warped is unstable
+    healed = (1.0 - heal_strength * heal_mask) * warped_frame + heal_strength * heal_mask * warped_frame.mean(dim=[1,2], keepdim=True)
+    return healed
+
+
 # Shift Smoother
 class ShiftSmoother:
     def __init__(self, alpha=0.2):
@@ -348,6 +380,7 @@ class FloatingBarEaser:
         return self.prev_bar_width
 
 bar_easer = FloatingBarEaser(alpha=0.85)
+
 def pixel_shift_cuda(
     frame_tensor,
     depth_tensor,
@@ -392,6 +425,15 @@ def pixel_shift_cuda(
     if use_subject_tracking:
         subject_depth = estimate_subject_depth(depth_tensor)
         adjusted_depth = subject_depth * parallax_balance
+
+        # 📏 New patch: Adaptive parallax scaling
+        depth_flat = depth_tensor.view(-1)
+        depth_std = torch.std(depth_flat)  # Standard deviation = how much depth "varies"
+        scaling_factor = torch.clamp(depth_std * 5.0, 0.5, 1.5).item()
+        fg_shift *= scaling_factor
+        mg_shift *= scaling_factor
+        bg_shift *= scaling_factor
+
         zero_parallax_offset = (
             (-adjusted_depth * fg_shift) +
             (-adjusted_depth * mg_shift) +
@@ -405,6 +447,7 @@ def pixel_shift_cuda(
             zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset.item(), threshold=0.002)
 
         total_shift -= zero_parallax_offset
+
 
     total_shift += convergence_offset
 
