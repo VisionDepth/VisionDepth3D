@@ -912,6 +912,8 @@ parallax_balance = tk.DoubleVar(value=0.8)
 preserve_original_aspect = tk.BooleanVar(value=False)
 nvenc_cq_value = tk.IntVar(value=23)
 convergence_offset = tk.DoubleVar(value=0.01)
+enable_edge_masking = tk.BooleanVar(value=True)
+enable_feathering = tk.BooleanVar(value=True)
 
 
 load_settings()
@@ -1054,6 +1056,24 @@ tk.Checkbutton(
     justify="left"
 ).grid(row=1, column=0, sticky="w", padx=5)
 
+tk.Checkbutton(
+    options_frame,
+    text="Enable Edge Masking", bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+    variable=enable_edge_masking,
+    anchor="w",
+    justify="left"
+).grid(row=1, column=1, sticky="w", padx=5)
+
+tk.Checkbutton(
+    options_frame,
+    text="Enable Feathering", bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+    variable=enable_feathering,
+    anchor="w",
+    justify="left"
+).grid(row=1, column=2, sticky="w", padx=5)
+
+
+
 # Row 2
 tk.Label(options_frame, text="Foreground Shift", bg="#1c1c1c", fg="white").grid(row=2, column=0, sticky="w")
 tk.Scale(options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL, variable=fg_shift, bg="#1c1c1c", fg="white")\
@@ -1096,7 +1116,10 @@ tk.Scale(options_frame, from_=0.005, to=0.10, resolution=0.005, orient=tk.HORIZO
 # File Selection
 tk.Button(
     visiondepth_content_frame,
-    text="Select Input Video", bg="#1c1c1c", fg="white",
+    text="Select Input Video",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_input_video(
         input_video_path,
         video_thumbnail_label,
@@ -1105,33 +1128,53 @@ tk.Button(
         original_video_width,
         original_video_height
     )
-
-
 ).grid(row=3, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=input_video_path, width=50, bg="#1c1c1c", fg="white").grid(
-    row=3, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=input_video_path,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=3, column=1, pady=5, padx=5)
 
 tk.Button(
     visiondepth_content_frame,
-    text="Select Depth Map", bg="#1c1c1c", fg="white",
+    text="Select Depth Map",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_depth_map(selected_depth_map, depth_map_label)
 ).grid(row=4, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=selected_depth_map, width=50, bg="#1c1c1c", fg="white").grid(
-    row=4, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=selected_depth_map,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=4, column=1, pady=5, padx=5)
 
 tk.Button(
     visiondepth_content_frame,
-    text="Select Output Video", bg="#1c1c1c", fg="white",
+    text="Select Output Video",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
     command=lambda: select_output_video(output_sbs_video_path)
 ).grid(row=5, column=0, pady=5, sticky="ew")
 
-tk.Entry(visiondepth_content_frame, textvariable=output_sbs_video_path, width=50,  bg="#1c1c1c", fg="white").grid(
-    row=5, column=1, pady=5, padx=5
-)
+tk.Entry(
+    visiondepth_content_frame,
+    textvariable=output_sbs_video_path,
+    width=50,
+    bg="#2c2c2c", fg="white",
+    insertbackground="white",
+    relief="groove", bd=2
+).grid(row=5, column=1, pady=5, padx=5)
+
 
 # Frame to Hold Buttons and Format Selection in a Single Row
 button_frame = tk.Frame(visiondepth_content_frame, bg="#1c1c1c")
@@ -1189,6 +1232,8 @@ start_button = tk.Button(
             parallax_balance,
             preserve_original_aspect,
             convergence_offset,
+            enable_edge_masking,
+            enable_feathering,
         )
     )
 )
@@ -1209,7 +1254,10 @@ preview_button = tk.Button(
         feather_strength,
         use_subject_tracking,
         use_floating_window,
-        convergence_offset  # ✅ ADD THIS
+        convergence_offset,
+        parallax_balance,
+        enable_edge_masking,
+        enable_feathering,
     )
 )
 preview_button.pack(side="left", padx=5)
