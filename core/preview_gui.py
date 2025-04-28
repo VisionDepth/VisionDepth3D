@@ -29,11 +29,12 @@ def load_settings():
 def open_3d_preview_window(input_video_path, selected_depth_map,
                            fg_shift, mg_shift, bg_shift,
                            blur_ksize, feather_strength,
-                           use_subject_tracking, use_floating_window, convergence_offset):
+                           use_subject_tracking, use_floating_window,
+                           convergence_offset, parallax_balance, enable_edge_masking, enable_feathering):
     settings = load_settings()
 
     preview_win = tk.Toplevel()
-    preview_win.title("🌀 Live 3D Preview")
+    preview_win.title("Live 3D Preview")
     preview_win.geometry("1010x800")
 
     cap = cv2.VideoCapture(input_video_path.get())
@@ -75,10 +76,30 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
         "Red-Blue Anaglyph", "HSBS", "Shift Heatmap", "Overlay Arrows", "Feather Mask", "Left-Right Diff"
     ])
     preview_dropdown.pack(side="left")
+    
+    edge_masking_checkbox = tk.Checkbutton(
+        top_controls_frame,
+        text="enable_edge_masking",
+        variable=enable_edge_masking,
+        bg="white",
+        anchor="w",
+        justify="left"
+    )
+    edge_masking_checkbox.pack(side="left", padx=10)
 
+    feathering_checkbox = tk.Checkbutton(
+        top_controls_frame,
+        text="enable_feathering",
+        variable=enable_feathering,
+        bg="white",
+        anchor="w",
+        justify="left"
+    )
+    feathering_checkbox.pack(side="left", padx=10)
+    
     right_dummy_top = tk.Label(top_controls_frame)
     right_dummy_top.pack(side='left', fill='x', expand=True)
-
+    
     preview_frame = tk.Frame(inner_frame)
     preview_frame.pack(side="top", fill="x")
     preview_canvas = tk.Label(preview_frame)
@@ -154,10 +175,11 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             enable_floating_window=use_floating_window.get(),
             max_pixel_shift_percent=max_shift_slider.get(),
             convergence_offset=convergence_slider.get(),
-            parallax_balance=parallax_balance_slider.get()  # ✅ New line
+            parallax_balance=parallax_balance_slider.get(),
+            enable_edge_masking=enable_edge_masking.get(),
+            enable_feathering=enable_feathering.get(),
+            
         )
-
-
 
         preview_img = generate_preview_image(preview_type_var.get(), left, right, shift_map, w, h)
         if preview_img is not None:
@@ -198,6 +220,8 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             'max_pixel_shift': max_shift_slider.get(),
             'convergence_offset': convergence_slider.get(),
             'parallax_balance': parallax_balance_slider.get(),
+            'enable_edge_masking': enable_edge_masking.get(),
+            'enable_feathering': enable_feathering.get(),
         }
         save_settings(settings)
         preview_win.destroy()
@@ -213,6 +237,8 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
     max_shift_slider.set(settings.get('max_pixel_shift', 0.02))
     convergence_slider.set(settings.get('convergence_offset', convergence_offset.get()))
     parallax_balance_slider.set(settings.get('parallax_balance', parallax_balance.get()))
+    enable_edge_masking.set(settings.get('enable_edge_masking', enable_edge_masking.get()))
+    enable_feathering.set(settings.get('enable_feathering', enable_feathering.get()))
     frame_slider.set(0)
 
     fg_slider.config(command=update_preview)
@@ -226,6 +252,9 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
     preview_type_var.trace_add("write", lambda *_: update_preview())
     convergence_slider.config(command=update_preview)
     parallax_balance_slider.config(command=update_preview)
+    enable_edge_masking.trace_add("write", lambda *_: update_preview())
+    enable_feathering.trace_add("write", lambda *_: update_preview())
+
 
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
