@@ -17,8 +17,12 @@ def grab_frame_from_video(video_path, frame_idx=0):
     cap.release()
     return frame if ret else None
 
-
 def generate_preview_image(preview_type, left, right, shift_map, w, h):
+    # 🛡️ Always squeeze shift_map to [H, W] safely
+    shift_np = shift_map.detach().cpu().numpy()
+    if shift_np.ndim == 3 and shift_np.shape[0] == 1:
+        shift_np = shift_np[0]
+
     if preview_type == "Passive Interlaced":
         interlaced = np.zeros_like(left)
         interlaced[::2] = left[::2]
@@ -32,17 +36,15 @@ def generate_preview_image(preview_type, left, right, shift_map, w, h):
         return np.hstack((left_resized, right_resized))
 
     elif preview_type == "Shift Heatmap":
-        shift_np = shift_map.cpu().numpy()
         shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
         return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
 
     elif preview_type == "Shift Heatmap (Abs)":
-        shift_abs = np.abs(shift_map.cpu().numpy())
+        shift_abs = np.abs(shift_np)
         shift_norm = cv2.normalize(shift_abs, None, 0, 255, cv2.NORM_MINMAX)
         return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
 
     elif preview_type == "Shift Heatmap (Clipped ±5px)":
-        shift_np = shift_map.cpu().numpy()
         max_disp = 5.0
         shift_clipped = np.clip(shift_np, -max_disp, max_disp)
         shift_norm = ((shift_clipped + max_disp) / (2 * max_disp)) * 255
@@ -56,7 +58,6 @@ def generate_preview_image(preview_type, left, right, shift_map, w, h):
         return left
 
     elif preview_type == "Feather Mask":
-        shift_np = shift_map.cpu().numpy()
         feather_mask = np.clip(np.abs(shift_np) * 50, 0, 255).astype(np.uint8)
         return cv2.applyColorMap(feather_mask, cv2.COLORMAP_BONE)
 
@@ -69,7 +70,6 @@ def generate_preview_image(preview_type, left, right, shift_map, w, h):
 
     elif preview_type == "Overlay Arrows":
         debug = left.copy()
-        shift_np = shift_map.cpu().numpy()
         step = 20
         for y in range(0, h, step):
             for x in range(0, w, step):
@@ -79,3 +79,4 @@ def generate_preview_image(preview_type, left, right, shift_map, w, h):
         return debug
 
     return None
+
