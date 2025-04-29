@@ -12,6 +12,7 @@
   <a href="#"><img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Github All Releases"></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
 </h3>
+
 ---
 
 ## Table of Contents
