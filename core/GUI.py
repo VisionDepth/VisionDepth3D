@@ -71,6 +71,7 @@ from preview_gui import open_3d_preview_window
 # At the top of GUI.py
 cancel_requested = threading.Event()
 
+process_thread = None 
 suspend_flag = Event()
 cancel_flag = Event()
 SETTINGS_FILE = "settings.json"
@@ -87,74 +88,25 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def save_settings():
-    """Saves all current settings to a JSON file"""
-    settings = {
-        "input_video_path": input_video_path.get(),
-        "selected_depth_map": selected_depth_map.get(),
-        "output_sbs_video_path": output_sbs_video_path.get(),
-        "ffmpeg_codec": selected_ffmpeg_codec.get(),
-        "crf_value": crf_value.get(),
-        "output_format": output_format.get(),
-
-        # Depth 3D settings
-        "fg_shift": fg_shift.get(),
-        "mg_shift": mg_shift.get(),
-        "bg_shift": bg_shift.get(),
-        "sharpness_factor": sharpness_factor.get(),
-        "blend_factor": blend_factor.get(),
-        "delay_time": delay_time.get(),
-        "feather_strength": feather_strength.get(),
-        "blur_ksize": blur_ksize.get(),
-
-        # 🆕 Additional toggle/sliders for 3D convergence behavior
-        "parallax_balance": parallax_balance.get(),
-        "max_pixel_shift": max_pixel_shift.get(),
-        "use_subject_tracking": use_subject_tracking.get(),
-        "use_floating_window": use_floating_window.get(),
-        "auto_crop_black_bars": auto_crop_black_bars.get(),
-        "preserve_original_aspect": preserve_original_aspect.get(),
-        "convergence_offset": convergence_offset.get(),
-    }
-
+    settings = {name: var.get() for name, var in gui_variables.items()}
+    if root.winfo_exists():
+        settings["window_geometry"] = root.geometry()
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=4)
     print("💾 Settings saved.")
 
 
+
 def load_settings():
-    """Loads settings from the JSON file, if available"""
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, "r") as f:
             settings = json.load(f)
-
-            input_video_path.set(settings.get("input_video_path", ""))
-            selected_depth_map.set(settings.get("selected_depth_map", ""))
-            output_sbs_video_path.set(settings.get("output_sbs_video_path", ""))
-
-            selected_ffmpeg_codec.set(settings.get("ffmpeg_codec", "libx264"))
-            crf_value.set(settings.get("crf_value", 23))
-            output_format.set(settings.get("output_format", "Full-SBS"))
-
-            # Depth shift params
-            fg_shift.set(settings.get("fg_shift", 6.0))
-            mg_shift.set(settings.get("mg_shift", 3.0))
-            bg_shift.set(settings.get("bg_shift", -4.0))
-            sharpness_factor.set(settings.get("sharpness_factor", 0.2))
-            blend_factor.set(settings.get("blend_factor", 0.6))
-            delay_time.set(settings.get("delay_time", 1 / 30))
-            feather_strength.set(settings.get("feather_strength", 9.0))
-            blur_ksize.set(settings.get("blur_ksize", 6))
-
-            # 🆕 Additional render settings
-            parallax_balance.set(settings.get("parallax_balance", 0.8))
-            max_pixel_shift.set(settings.get("max_pixel_shift", 0.02))
-            use_subject_tracking.set(settings.get("use_subject_tracking", True))
-            use_floating_window.set(settings.get("use_floating_window", True))
-            auto_crop_black_bars.set(settings.get("auto_crop_black_bars", False))
-            preserve_original_aspect.set(settings.get("preserve_original_aspect", False))
-            convergence_offset.set(settings.get("convergence_offset", 0.01))
-
-
+        for name, var in gui_variables.items():
+            if name in settings:
+                var.set(settings[name])
+        # 🖼️ Restore window position if available
+        if "window_geometry" in settings:
+            root.geometry(settings["window_geometry"])
         print("✅ Settings loaded from file.")
 
 
@@ -165,34 +117,35 @@ def reset_settings():
     input_video_path.set("")
     selected_depth_map.set("")
     output_sbs_video_path.set("")
-    selected_codec.set("mp4v")
-    selected_ffmpeg_codec.set("libx264")
+    selected_codec.set("")
+    selected_ffmpeg_codec.set("")
     output_format.set("Full-SBS")
 
     # 🧠 3D Shifting Parameters
-    fg_shift.set(6.0)
-    mg_shift.set(3.0)
-    bg_shift.set(-4.0)
+    fg_shift.set(0.0)
+    mg_shift.set(0.0)
+    bg_shift.set(0.0)
 
     # ✨ Visual Enhancements
-    sharpness_factor.set(0.2)
-    blend_factor.set(0.6)
+    sharpness_factor.set(0.0)
+    blend_factor.set(0.0)
     delay_time.set(1 / 30)
 
     # 🧼 Edge Cleanup
-    feather_strength.set(9.0)
-    blur_ksize.set(6)
+    feather_strength.set(0.0)
+    blur_ksize.set(1)
 
     # 🎛️ Advanced Stereo Controls
-    parallax_balance.set(0.8)
-    max_pixel_shift.set(0.02)
+    parallax_balance.set(0.0)
+    max_pixel_shift.set(0.0)
 
     # 🟢 Toggles
     use_subject_tracking.set(False)
     use_floating_window.set(False)
     auto_crop_black_bars.set(False)
     preserve_original_aspect.set(False)
-    convergence_offset.set(0.01)
+    convergence_offset.set(0.0)
+    skip_blank_frames.set(False)
 
     # 🎥 CRF for FFmpeg
     crf_value.set(23)
@@ -232,6 +185,52 @@ def resume_processing():
     suspend_flag.clear()
     print("▶ Processing Resumed!")
 
+def handle_generate_3d():
+    global process_thread
+    try:
+        if process_thread is None or not process_thread.is_alive():
+            print("🚀 Starting new 3D processing thread...")
+            cancel_flag.clear()
+            suspend_flag.clear()
+            process_thread = threading.Thread(target=lambda: process_video(
+                input_video_path,
+                selected_depth_map,
+                output_sbs_video_path,
+                selected_codec,
+                fg_shift,
+                mg_shift,
+                bg_shift,
+                sharpness_factor,
+                output_format,
+                selected_aspect_ratio,
+                aspect_ratios,
+                feather_strength,
+                blur_ksize,
+                progress,
+                progress_label,
+                suspend_flag,
+                cancel_flag,
+                use_ffmpeg,
+                selected_ffmpeg_codec,
+                crf_value,
+                use_subject_tracking,
+                use_floating_window,
+                max_pixel_shift,
+                auto_crop_black_bars,
+                parallax_balance,
+                preserve_original_aspect,
+                convergence_offset,
+                enable_edge_masking,
+                enable_feathering,
+                skip_blank_frames
+            ), daemon=True)
+            process_thread.start()
+        else:
+            print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
+    except Exception as e:
+        print(f"❌ Error starting 3D processing: {e}")
+
+
 def grab_frame_from_video(video_path, frame_idx=0):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -242,124 +241,6 @@ def grab_frame_from_video(video_path, frame_idx=0):
     cap.release()
     return frame if ret else None
 
-def generate_preview_image(preview_type, left, right, shift_map, w, h):
-    if preview_type == "Passive Interlaced":
-        interlaced = np.zeros_like(left)
-        interlaced[::2] = left[::2]
-        interlaced[1::2] = right[1::2]
-        return interlaced
-
-    elif preview_type == "HSBS":
-        half_w = w // 2
-        left_resized = cv2.resize(left, (half_w, h))
-        right_resized = cv2.resize(right, (half_w, h))
-        return np.hstack((left_resized, right_resized))
-
-    elif preview_type == "Shift Heatmap":
-        shift_np = shift_map.cpu().numpy()
-        shift_norm = cv2.normalize(shift_np, None, 0, 255, cv2.NORM_MINMAX)
-        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
-
-    elif preview_type == "Shift Heatmap (Abs)":
-        shift_abs = np.abs(shift_map.cpu().numpy())
-        shift_norm = cv2.normalize(shift_abs, None, 0, 255, cv2.NORM_MINMAX)
-        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
-
-    elif preview_type == "Shift Heatmap (Clipped ±5px)":
-        shift_np = shift_map.cpu().numpy()
-        max_disp = 5.0
-        shift_clipped = np.clip(shift_np, -max_disp, max_disp)
-        shift_norm = ((shift_clipped + max_disp) / (2 * max_disp)) * 255
-        return cv2.applyColorMap(shift_norm.astype(np.uint8), cv2.COLORMAP_JET)
-
-    elif preview_type == "Left-Right Diff":
-        diff = cv2.absdiff(left, right)
-        return diff
-
-    elif preview_type == "Feather Blend":
-        return left
-
-    elif preview_type == "Feather Mask":
-        shift_np = shift_map.cpu().numpy()
-        feather_mask = np.clip(np.abs(shift_np) * 50, 0, 255).astype(np.uint8)
-        return cv2.applyColorMap(feather_mask, cv2.COLORMAP_BONE)
-
-    elif preview_type == "Red-Blue Anaglyph":
-        left = left.astype(np.uint8)
-        right = right.astype(np.uint8)
-        red_channel = left[:, :, 2]
-        green_channel = right[:, :, 1]
-        blue_channel = right[:, :, 0]
-        anaglyph = cv2.merge((blue_channel, green_channel, red_channel))
-        return anaglyph
-
-    elif preview_type == "Overlay Arrows":
-        # Simplified useful visual using arrows to debug horizontal displacement
-        debug = left.copy()
-        shift_np = shift_map.cpu().numpy()
-        step = 20
-        for y in range(0, h, step):
-            for x in range(0, w, step):
-                dx = int(shift_np[y, x] * 10)
-                if abs(dx) > 1:
-                    cv2.arrowedLine(debug, (x, y), (x + dx, y), (0, 255, 0), 1, tipLength=0.3)
-        return debug
-
-    return None
-
-
-
-def preview_passive_3d_frame():
-    input_path = input_video_path.get()
-    depth_path = selected_depth_map.get()
-
-    if not os.path.exists(input_path) or not os.path.exists(depth_path):
-        messagebox.showerror("Missing Input", "Please load both input video and depth map.")
-        return
-
-    frame_idx = frame_to_preview_var.get()
-
-    input_frame = grab_frame_from_video(input_path, frame_idx)
-    depth_frame = grab_frame_from_video(depth_path, frame_idx)
-
-    if input_frame is None or depth_frame is None:
-        messagebox.showerror("Frame Error", "Unable to extract frames from videos.")
-        return
-
-    h, w = input_frame.shape[:2]
-    frame_tensor = F.interpolate(
-        frame_to_tensor(input_frame).unsqueeze(0),
-        size=(h, w), mode='bilinear', align_corners=False
-    ).squeeze(0)
-
-    depth_tensor = F.interpolate(
-        depth_to_tensor(depth_frame).unsqueeze(0),
-        size=(h, w), mode='bilinear', align_corners=False
-    ).squeeze(0)
-
-    left, right, shift_map = pixel_shift_cuda(
-        frame_tensor, depth_tensor, w, h,
-        fg_shift.get(), mg_shift.get(), bg_shift.get(),
-        blur_ksize=blur_ksize.get(),
-        feather_strength=feather_strength.get(),
-        return_shift_map=True,
-        use_subject_tracking=use_subject_tracking.get(),
-        enable_floating_window=use_floating_window.get()
-    )
-
-    preview_type = preview_mode.get()
-    preview_img = generate_preview_image(preview_type, left, right, shift_map, w, h)
-
-
-    # Save and open preview image
-    if preview_img is not None:
-        safe_preview_name = re.sub(r'[^a-zA-Z0-9_]', '', preview_type.replace(' ', '_').lower())
-        preview_path = f"preview_{safe_preview_name}.png"
-        cv2.imwrite(preview_path, preview_img)
-        os.startfile(preview_path)
-        print(f"✅ {preview_type} preview saved to: {preview_path}")
-    else:
-        messagebox.showwarning("Preview Error", f"Could not generate preview for: {preview_type}")
 
 def update_aspect_preview(*args):
     try:
@@ -388,6 +269,36 @@ def update_aspect_preview(*args):
         aspect_preview_label.config(text="❌ Invalid Aspect Ratio")
         print(f"[Aspect Preview Error] {e}")
 
+# ✅ Simple Tooltip Helper for Tkinter
+class CreateToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x = y = 0
+        x, y, _, _ = self.widget.bbox("insert")
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 25
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=self.text, justify='left',
+                         background="#ffffe0", relief='solid', borderwidth=1,
+                         font=("tahoma", "8", "normal"))
+        label.pack(ipadx=4, ipady=2)
+
+    def hide_tooltip(self, event=None):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
+
 
 # ---GUI Setup---
 
@@ -397,8 +308,8 @@ def update_aspect_preview(*args):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D Video Generator")
-root.geometry("885x850")
+root.title("VisionDepth3D v3.1.4")
+root.geometry("885x860")
 
 # --- Notebook for Tabs ---
 tab_control = ttk.Notebook(root)
@@ -914,6 +825,8 @@ nvenc_cq_value = tk.IntVar(value=23)
 convergence_offset = tk.DoubleVar(value=0.01)
 enable_edge_masking = tk.BooleanVar(value=True)
 enable_feathering = tk.BooleanVar(value=True)
+skip_blank_frames = tk.BooleanVar()
+
 
 
 load_settings()
@@ -950,6 +863,45 @@ FFMPEG_CODEC_MAP = {
     "AV1 (CPU)": "libaom-av1",
     "AV1 (NVIDIA)": "av1_nvenc",
 }
+
+
+# 🧠 Master list of all variables that should be saved
+gui_variables = {
+    "input_video_path": input_video_path,
+    "selected_depth_map": selected_depth_map,
+    "output_sbs_video_path": output_sbs_video_path,
+    "selected_codec": selected_codec,
+    "selected_ffmpeg_codec": selected_ffmpeg_codec,
+    "use_ffmpeg": use_ffmpeg,
+    "crf_value": crf_value,
+    "nvenc_cq_value": nvenc_cq_value,
+    "output_format": output_format,
+    "preview_mode": preview_mode,
+    "frame_to_preview_var": frame_to_preview_var,
+    "fg_shift": fg_shift,
+    "mg_shift": mg_shift,
+    "bg_shift": bg_shift,
+    "sharpness_factor": sharpness_factor,
+    "blend_factor": blend_factor,
+    "delay_time": delay_time,
+    "blur_ksize": blur_ksize,
+    "feather_strength": feather_strength,
+    "parallax_balance": parallax_balance,
+    "max_pixel_shift": max_pixel_shift,
+    "use_subject_tracking": use_subject_tracking,
+    "use_floating_window": use_floating_window,
+    "auto_crop_black_bars": auto_crop_black_bars,
+    "preserve_original_aspect": preserve_original_aspect,
+    "convergence_offset": convergence_offset,
+    "enable_edge_masking": enable_edge_masking,
+    "enable_feathering": enable_feathering,
+    "skip_blank_frames": skip_blank_frames,
+    "selected_aspect_ratio": selected_aspect_ratio,
+    "original_video_width": original_video_width,
+    "original_video_height": original_video_height,
+    "preserve_content": preserve_content,
+}
+
 
 # Layout frames
 
@@ -1071,6 +1023,15 @@ tk.Checkbutton(
     anchor="w",
     justify="left"
 ).grid(row=1, column=2, sticky="w", padx=5)
+
+
+tk.Checkbutton(
+    options_frame,
+    text="Skip Blank/White Frames", bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+    variable=skip_blank_frames,
+    anchor="w",
+    justify="left"
+).grid(row=1, column=3, sticky="w", padx=5)
 
 
 
@@ -1196,7 +1157,6 @@ option_menu.config(width=10)  # Adjust width to keep consistent look
 option_menu.pack(side="left", padx=5)
 
 # Buttons Inside button_frame to Keep Everything on One Line
-# Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(
     button_frame,
     text="Generate 3D Video",
@@ -1204,42 +1164,12 @@ start_button = tk.Button(
     fg="white",
     command=lambda: (
         save_settings(),
-        process_video(
-            input_video_path,
-            selected_depth_map,
-            output_sbs_video_path,
-            selected_codec,
-            fg_shift,
-            mg_shift,
-            bg_shift,
-            sharpness_factor,
-            output_format,
-            selected_aspect_ratio,
-            aspect_ratios,
-            feather_strength,    
-            blur_ksize,           
-            progress,
-            progress_label,
-            suspend_flag,
-            cancel_flag,
-            use_ffmpeg,
-            selected_ffmpeg_codec,
-            crf_value,
-            use_subject_tracking,
-            use_floating_window,
-            max_pixel_shift,
-            auto_crop_black_bars,
-            parallax_balance,
-            preserve_original_aspect,
-            convergence_offset,
-            enable_edge_masking,
-            enable_feathering,
-        )
+        handle_generate_3d()
     )
 )
 
 start_button.pack(side="left", padx=5)
-
+CreateToolTip(start_button, "Start generating the 3D video.")
 
 preview_button = tk.Button(
     button_frame,
@@ -1262,7 +1192,6 @@ preview_button = tk.Button(
 )
 preview_button.pack(side="left", padx=5)
 
-
 suspend_button = tk.Button(
     button_frame, text="Suspend", command=suspend_processing, bg="orange", fg="black"
 )
@@ -1283,6 +1212,7 @@ reset_button = tk.Button(
     button_frame, text="Reset to Defaults", command=reset_settings, bg="#8B0000", fg="white"
 )
 reset_button.pack(side="left", padx=5)
+
 
 # 🔲 Encoding Settings Group
 encoding_frame = tk.LabelFrame(
@@ -1394,12 +1324,50 @@ audio_tool_button = tk.Button(
 )
 audio_tool_button.pack(side="left", padx=10)
 
+# 🟢 Buttons
+CreateToolTip(start_button, "Start generating the 3D video using the selected settings.")
+CreateToolTip(preview_button, "Preview the 3D effect frame by frame before full rendering.")
+CreateToolTip(suspend_button, "Pause the 3D video rendering process.")
+CreateToolTip(resume_button, "Resume rendering after a pause.")
+CreateToolTip(cancel_button, "Cancel the current rendering operation immediately.")
+CreateToolTip(reset_button, "Reset all settings and parameters to default values.")
+
+# 🟢 File Buttons
+CreateToolTip(option_menu, "Choose your preferred 3D format (SBS, Anaglyph, etc.).")
+CreateToolTip(aspect_preview_label, "Preview the output resolution and aspect ratio.")
+
+# 🟢 Sliders
+CreateToolTip(fg_shift, "Amount of horizontal shift for foreground objects (positive = pop out).")
+CreateToolTip(mg_shift, "Amount of shift for midground objects (fine-tune parallax at middle depths).")
+CreateToolTip(bg_shift, "Amount of horizontal shift for background objects (negative = push back).")
+CreateToolTip(sharpness_factor, "Enhance or soften image sharpness after depth warping.")
+CreateToolTip(convergence_offset, "Adjust convergence plane to stabilize near-zero parallax.")
+CreateToolTip(parallax_balance, "Balance between overall screen-depth and foreground depth emphasis.")
+CreateToolTip(max_pixel_shift, "Set maximum pixel displacement to limit 3D depth extremes.")
+
+# 🟢 Checkboxes
+CreateToolTip(preserve_original_aspect, "Maintain the original video's aspect ratio after rendering.")
+CreateToolTip(auto_crop_black_bars, "Automatically remove black bars before 3D processing.")
+CreateToolTip(use_subject_tracking, "Center subjects at screen depth automatically (zero parallax stabilization).")
+CreateToolTip(use_floating_window, "Adds a 'floating window' to reduce 3D window violations (recommended).")
+CreateToolTip(enable_edge_masking, "Mask problematic edges after depth shifts to reduce artifacts.")
+CreateToolTip(enable_feathering, "Feather mask edges smoothly for a more natural blend.")
+CreateToolTip(skip_blank_frames, "Skip solid white/blank frames to speed up rendering.")
+CreateToolTip(use_ffmpeg, "Use external FFmpeg encoder for faster GPU-based video encoding.")
+
+# 🟢 Encoding Settings
+CreateToolTip(crf_value, "CRF: Lower values = higher quality, bigger file size. 18-23 is common.")
+CreateToolTip(nvenc_cq_value, "NVENC CQ: Similar to CRF but for NVIDIA GPU hardware encoding.")
+CreateToolTip(selected_codec, "Choose the basic video codec for CPU-based encoding.")
+CreateToolTip(selected_ffmpeg_codec, "Choose FFmpeg codec for better quality/speed (NVENC recommended).")
+CreateToolTip(selected_aspect_ratio, "Select aspect ratio to match your target device or format.")
+
+
 # Ensure settings are saved when the program closes
 def on_exit():
-    save_settings()        # 💾 Save settings
-    root.destroy()         # ❌ Close GUI
+    save_settings()
+    root.destroy() # ❌ Close GUI
 
 root.protocol("WM_DELETE_WINDOW", on_exit)
-
 
 root.mainloop()
