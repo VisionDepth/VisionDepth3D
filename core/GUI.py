@@ -96,20 +96,6 @@ def save_settings():
     print("💾 Settings saved.")
 
 
-
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            settings = json.load(f)
-        for name, var in gui_variables.items():
-            if name in settings:
-                var.set(settings[name])
-        # 🖼️ Restore window position if available
-        if "window_geometry" in settings:
-            root.geometry(settings["window_geometry"])
-        print("✅ Settings loaded from file.")
-
-
 def reset_settings():
     """Resets all GUI values and UI elements to their default states."""
 
@@ -829,7 +815,6 @@ skip_blank_frames = tk.BooleanVar()
 
 
 
-load_settings()
 
 aspect_ratios = {
     "Default (16:9)": 16 / 9,
@@ -1044,48 +1029,90 @@ skip_blank_frames_checkbox.grid(row=1, column=3, sticky="w", padx=5)
 
 
 # Row 2
-tk.Label(options_frame, text="Foreground Shift", bg="#1c1c1c", fg="white").grid(row=2, column=0, sticky="w")
-
-fg_shift_slider = tk.Scale(
-    options_frame, from_=0, to=15, resolution=0.5, orient=tk.HORIZONTAL,
-    variable=fg_shift, bg="#1c1c1c", fg="white"
+fg_shift_label = tk.Label(
+    options_frame,
+    text="Foreground Shift",
+    bg="#1c1c1c",
+    fg="white"
 )
-fg_shift_slider.grid(row=2, column=1, sticky="ew")
+fg_shift_label.grid(row=2, column=0, sticky="w")
 
-tk.Label(options_frame, text="Midground Shift", bg="#1c1c1c", fg="white").grid(row=2, column=2, sticky="w")
+tk.Scale(
+    options_frame,
+    from_=0,
+    to=15,
+    resolution=0.5,
+    orient=tk.HORIZONTAL,
+    variable=fg_shift,
+    bg="#1c1c1c", fg="white"
+).grid(row=2, column=1, sticky="ew")
 
-mg_shift_slider = tk.Scale(
-    options_frame, from_=-5, to=5, resolution=0.5, orient=tk.HORIZONTAL,
-    variable=mg_shift, bg="#1c1c1c", fg="white"
+mg_shift_label = tk.Label(
+    options_frame,
+    text="Midground Shift",
+    bg="#1c1c1c",
+    fg="white"
 )
-mg_shift_slider.grid(row=2, column=3, sticky="ew")
+mg_shift_label.grid(row=2, column=2, sticky="w")
+
+tk.Scale(
+    options_frame, 
+    from_=-5, to=5,
+    resolution=0.5,
+    orient=tk.HORIZONTAL, variable=mg_shift,
+    bg="#1c1c1c", fg="white"
+).grid(row=2, column=3, sticky="ew")
 
 # Row 3
-tk.Label(options_frame, text="Background Shift", bg="#1c1c1c", fg="white").grid(row=3, column=0, sticky="w")
+bg_shift_label = tk.Label(
+    options_frame,
+    text="Background Shift",
+    bg="#1c1c1c", fg="white"
+)
+bg_shift_label.grid(row=3, column=0, sticky="w")
 
-bg_shift_slider = tk.Scale(
-    options_frame, from_=-15, to=0, resolution=0.5, orient=tk.HORIZONTAL,
+tk.Scale(
+    options_frame,
+    from_=-15, to=0, 
+    resolution=0.5, orient=tk.HORIZONTAL,
     variable=bg_shift, bg="#1c1c1c", fg="white"
-)
-bg_shift_slider.grid(row=3, column=1, sticky="ew")
+).grid(row=3, column=1, sticky="ew")
 
-tk.Label(options_frame, text="Sharpness Factor", bg="#1c1c1c", fg="white").grid(row=3, column=2, sticky="w")
-sharpness_factor_slider = tk.Scale(
-    options_frame, from_=-1, to=1, resolution=0.1, orient=tk.HORIZONTAL, 
-    variable=sharpness_factor, bg="#1c1c1c", fg="white"
+sharpness_factor_label = tk.Label(
+    options_frame,
+    text="Sharpness Factor",
+    bg="#1c1c1c", fg="white"
 )
-sharpness_factor_slider.grid(row=3, column=3, sticky="ew")
+sharpness_factor_label.grid(row=3, column=2, sticky="w")
+
+tk.Scale(
+    options_frame,
+    from_=-1, to=1,
+    resolution=0.1, orient=tk.HORIZONTAL, 
+    variable=sharpness_factor, bg="#1c1c1c", fg="white"
+).grid(row=3, column=3, sticky="ew")
 
 #Row 4
-tk.Label(options_frame, text="convergence offset", bg="#1c1c1c", fg="white").grid(row=4, column=0, sticky="w")
-convergence_offset_slider = tk.Scale(
+convergence_offset_label = tk.Label(
+    options_frame,
+    text="convergence offset",
+    bg="#1c1c1c", fg="white"
+)
+convergence_offset_label.grid(row=4, column=0, sticky="w")
+
+tk.Scale(
     options_frame, from_=-0.05, to=0.05, resolution=0.001, orient=tk.HORIZONTAL,
     variable=convergence_offset, length=200, bg="#1c1c1c", fg="white"
-)
-convergence_offset_slider.grid(row=4, column=1, sticky="ew")
+).grid(row=4, column=1, sticky="ew")
  
-tk.Label(options_frame, text="Parallax Balance", bg="#1c1c1c", fg="white").grid(row=4, column=2, sticky="w")
-parallax_balance_slider = tk.Scale(
+parallax_balance_label = tk.Label(
+    options_frame,
+    text="Parallax Balance",
+    bg="#1c1c1c", fg="white"
+)
+parallax_balance_label.grid(row=4, column=2, sticky="w")
+
+tk.Scale(
     options_frame,
     from_=0.0,
     to=1.0,
@@ -1093,16 +1120,24 @@ parallax_balance_slider = tk.Scale(
     orient="horizontal",
     variable=parallax_balance,
     bg="#1c1c1c", fg="white"
-)
-parallax_balance_slider.grid(row=4, column=3, sticky="ew")
+).grid(row=4, column=3, sticky="ew")
 
 #Row 5
-tk.Label(options_frame, text="Max Pixel Shift (%)", bg="#1c1c1c", fg="white").grid(row=5, column=0, sticky="w")
-max_pixel_shift_slider = tk.Scale(
-    options_frame, from_=0.005, to=0.10, resolution=0.005, orient=tk.HORIZONTAL,
-    variable=max_pixel_shift, length=200, bg="#1c1c1c", fg="white"
+max_pixel_shift_label = tk.Label(
+    options_frame,
+    text="Max Pixel Shift (%)",
+    bg="#1c1c1c", fg="white"
 )
-max_pixel_shift_slider.grid(row=5, column=1, sticky="ew")   
+max_pixel_shift_label.grid(row=5, column=0, sticky="w")
+
+tk.Scale(
+    options_frame,
+    from_=0.005, to=0.10,
+    resolution=0.005,
+    orient=tk.HORIZONTAL,
+    variable=max_pixel_shift,
+    length=200, bg="#1c1c1c", fg="white"
+).grid(row=5, column=1, sticky="ew")   
 
 # File Selection
 tk.Button(
@@ -1262,41 +1297,92 @@ for i in range(6):
     encoding_frame.columnconfigure(i, weight=1)
 
 # 🧮 Aspect Ratio
-tk.Label(encoding_frame, text="Aspect Ratio:", bg="#1c1c1c", fg="white").grid(row=0, column=0, sticky="w", padx=5)
-selected_aspect_ratio_menu = tk.OptionMenu(
-    encoding_frame, selected_aspect_ratio, *aspect_ratios.keys()
+selected_aspect_ratio_label = tk.Label(
+    encoding_frame,
+    text="Aspect Ratio:",
+    bg="#1c1c1c",
+    fg="white"
 )
-selected_aspect_ratio_menu.grid(row=0, column=1, sticky="ew", padx=5)
+selected_aspect_ratio_label.grid(row=0, column=0, sticky="w", padx=5)
+
+tk.OptionMenu(
+    encoding_frame,
+    selected_aspect_ratio,
+    *aspect_ratios.keys()
+).grid(row=0, column=1, sticky="ew", padx=5)
 
 # 🧰 FFmpeg Codec
-tk.Label(encoding_frame, text="FFmpeg Codec:", bg="#1c1c1c", fg="white").grid(row=0, column=2, sticky="w", padx=5)
-selected_ffmpeg_codec_menu = tk.OptionMenu(
-    encoding_frame, selected_ffmpeg_codec, *FFMPEG_CODEC_MAP.keys()
+selected_ffmpeg_codec_label = tk.Label(
+    encoding_frame,
+    text="FFmpeg Codec:",
+    bg="#1c1c1c", fg="white"
 )
-selected_ffmpeg_codec_menu.grid(row=0, column=3, sticky="ew", padx=5)
+selected_ffmpeg_codec_label.grid(row=0, column=2, sticky="w", padx=5)
+
+tk.OptionMenu(
+    encoding_frame,
+    selected_ffmpeg_codec,
+    *FFMPEG_CODEC_MAP.keys()
+).grid(row=0, column=3, sticky="ew", padx=5)
 
 # 🎞️ Codec
-tk.Label(encoding_frame, text="Codec:", bg="#1c1c1c", fg="white").grid(row=0, column=4, sticky="w", padx=5)
-selected_codec_menu = tk.OptionMenu(
-    encoding_frame, selected_codec, *codec_options
+selected_codec_label = tk.Label(
+    encoding_frame,
+    text="Codec:",
+    bg="#1c1c1c",
+    fg="white"
 )
-selected_codec_menu.grid(row=0, column=5, sticky="ew", padx=5)
+selected_codec_label.grid(row=0, column=4, sticky="w", padx=5)
+
+tk.OptionMenu(
+    encoding_frame,
+    selected_codec,
+    *codec_options
+).grid(row=0, column=5, sticky="ew", padx=5)
 
 # 📉 CRF
-tk.Label(encoding_frame, text="CRF", bg="#1c1c1c", fg="white").grid(row=1, column=0, sticky="w", padx=5)
-crf_value_slider = tk.Scale(encoding_frame, from_=0, to=51, resolution=1,
-         orient=tk.HORIZONTAL, variable=crf_value, length=150,
-         bg="#2b2b2b", fg="white", troughcolor="#444"
+crf_value_label = tk.Label(
+    encoding_frame,
+    text="CRF",
+    bg="#1c1c1c",
+    fg="white"
 )
-crf_value_slider.grid(row=1, column=1, columnspan=2, sticky="ew", padx=5)
+crf_value_label.grid(row=1, column=0, sticky="w", padx=5)
+
+tk.Scale(
+    encoding_frame,
+    from_=0,
+    to=51,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=crf_value, 
+    length=150,
+    bg="#2b2b2b",
+    fg="white", 
+    troughcolor="#444"
+).grid(row=1, column=1, columnspan=2, sticky="ew", padx=5)
 
 # 🚀 NVENC CQ
-tk.Label(encoding_frame, text="NVENC CQ", bg="#1c1c1c", fg="white").grid(row=1, column=3, sticky="w", padx=5)
-nvenc_cq_value_slider = tk.Scale(encoding_frame, from_=0, to=51, resolution=1,
-         orient=tk.HORIZONTAL, variable=nvenc_cq_value, length=150,
-         bg="#2b2b2b", fg="white", troughcolor="#444"
+nvenc_cq_value_label = tk.Label(
+    encoding_frame,
+    text="NVENC CQ",
+    bg="#1c1c1c",
+    fg="white"
 )
-nvenc_cq_value_slider.grid(row=1, column=4, columnspan=2, sticky="ew", padx=5)
+nvenc_cq_value_label.grid(row=1, column=3, sticky="w", padx=5)
+
+tk.Scale(
+    encoding_frame,
+    from_=0,
+    to=51,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=nvenc_cq_value,
+    length=150,
+    bg="#2b2b2b",
+    fg="white",
+    troughcolor="#444"
+).grid(row=1, column=4, columnspan=2, sticky="ew", padx=5)
 
 
 # Row 9 – Icon Buttons + Audio Tool
@@ -1375,13 +1461,13 @@ CreateToolTip(option_menu, "Choose your preferred 3D format (SBS, Anaglyph, etc.
 CreateToolTip(aspect_preview_label, "Preview the output resolution and aspect ratio.")
 
 # 🟢 Sliders
-CreateToolTip(fg_shift_slider, "Amount of horizontal shift for foreground objects (positive = pop out).")
-CreateToolTip(mg_shift_slider, "Amount of shift for midground objects (fine-tune parallax at middle depths).")
-CreateToolTip(bg_shift_slider, "Amount of horizontal shift for background objects (negative = push back).")
-CreateToolTip(sharpness_factor_slider, "Enhance or soften image sharpness after depth warping.")
-CreateToolTip(convergence_offset_slider, "Adjust convergence plane to stabilize near-zero parallax.")
-CreateToolTip(parallax_balance_slider, "Balance between overall screen-depth and foreground depth emphasis.")
-CreateToolTip(max_pixel_shift_slider, "Set maximum pixel displacement to limit 3D depth extremes.")
+CreateToolTip(fg_shift_label, "Amount of horizontal shift for foreground objects (positive = pop out).")
+CreateToolTip(mg_shift_label, "Amount of shift for midground objects (fine-tune parallax at middle depths).")
+CreateToolTip(bg_shift_label, "Amount of horizontal shift for background objects (negative = push back).")
+CreateToolTip(sharpness_factor_label, "Enhance or soften image sharpness after depth warping.")
+CreateToolTip(convergence_offset_label, "Adjust convergence plane to stabilize near-zero parallax.")
+CreateToolTip(parallax_balance_label, "Balance between overall screen-depth and foreground depth emphasis.")
+CreateToolTip(max_pixel_shift_label, "Set maximum pixel displacement to limit 3D depth extremes.")
 
 # 🟢 Checkboxes
 CreateToolTip(preserve_aspect_checkbox, "Maintain the original video's aspect ratio after rendering.")
@@ -1394,12 +1480,25 @@ CreateToolTip(skip_blank_frames_checkbox, "Skip solid white/blank frames to spee
 CreateToolTip(use_ffmpeg_checkbox, "Use external FFmpeg encoder for faster GPU-based video encoding.")
 
 # 🟢 Encoding Settings
-CreateToolTip(crf_value_slider, "CRF: Lower values = higher quality, bigger file size. 18-23 is common.")
-CreateToolTip(nvenc_cq_value_slider, "NVENC CQ: Similar to CRF but for NVIDIA GPU hardware encoding.")
-CreateToolTip(selected_codec_menu, "Choose the basic video codec for CPU-based encoding.")
-CreateToolTip(selected_ffmpeg_codec_menu, "Choose FFmpeg codec for better quality/speed (NVENC recommended).")
-CreateToolTip(selected_aspect_ratio_menu, "Select aspect ratio to match your target device or format.")
+CreateToolTip(crf_value_label, "CRF: Lower values = higher quality, bigger file size. 18-23 is common.")
+CreateToolTip(nvenc_cq_value_label, "NVENC CQ: Similar to CRF but for NVIDIA GPU hardware encoding.")
+CreateToolTip(selected_codec_label, "Choose the basic video codec for CPU-based encoding.")
+CreateToolTip(selected_ffmpeg_codec_label, "Choose FFmpeg codec for better quality/speed (NVENC recommended).")
+CreateToolTip(selected_aspect_ratio_label, "Select aspect ratio to match your target device or format.")
 
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+        for name, var in gui_variables.items():
+            if name in settings:
+                var.set(settings[name])
+        # 🖼️ Restore window position if available
+        if "window_geometry" in settings:
+            root.geometry(settings["window_geometry"])
+        print("✅ Settings loaded from file.")
+
+load_settings()
 
 # Ensure settings are saved when the program closes
 def on_exit():
@@ -1407,5 +1506,6 @@ def on_exit():
     root.destroy() # ❌ Close GUI
 
 root.protocol("WM_DELETE_WINDOW", on_exit)
+
 
 root.mainloop()
