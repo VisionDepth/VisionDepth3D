@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from collections import deque
 from scipy.ndimage import gaussian_filter
 from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
+from ffmpeg_blackdetect import detect_black_white_frames
 
 
 
@@ -32,6 +33,7 @@ print(f"🔥 CUDA available: {torch.cuda.is_available()} | Running on {torch_dev
 #Global flags
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
+process_thread = None 
 
 # Common Aspect Ratios
 aspect_ratios = {
@@ -631,11 +633,43 @@ def apply_side_mask(image, side="left", width=40):
     return cv2.bitwise_and(image, mask)
 
 # Render
-def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height, fg_shift, mg_shift, bg_shift,
-                  sharpness_factor, output_format, selected_aspect_ratio, aspect_ratios, feather_strength=10.0, blur_ksize=9,
-                  use_ffmpeg=False, selected_ffmpeg_codec="libx264", crf_value=23, max_pixel_shift_percent=0.02,
-                  parallax_balance=0.8, convergence_offset=0.01, enable_edge_masking=True, enable_feathering=True, use_subject_tracking=True, use_floating_window=True, auto_crop_black_bars=False,
-                  preserve_original_aspect=False, progress=None, progress_label=None, suspend_flag=None, cancel_flag=None):
+def render_sbs_3d(
+    input_path,
+    depth_path,
+    output_path,
+    selected_codec,
+    fps,
+    output_width,
+    output_height,
+    fg_shift,
+    mg_shift,
+    bg_shift,
+    sharpness_factor,
+    output_format,
+    selected_aspect_ratio,
+    aspect_ratios,
+    feather_strength=0.0,
+    blur_ksize=1,
+    use_ffmpeg=False,
+    selected_ffmpeg_codec=None,
+    crf_value=23,
+    use_subject_tracking=False,
+    use_floating_window=False,
+    max_pixel_shift_percent=0.02,
+    progress=None,
+    progress_label=None,
+    suspend_flag=None,
+    cancel_flag=None,
+    auto_crop_black_bars=False,
+    parallax_balance=0.8,
+    preserve_original_aspect=False,
+    convergence_offset=0.0,
+    enable_edge_masking=True,
+    enable_feathering=True,
+    skip_blank_frames=False,
+    original_video_width=None,
+    original_video_height=None,
+):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
     if not cap.isOpened() or not dcap.isOpened(): return
@@ -646,6 +680,24 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     ret2, depth = dcap.read()
     if not ret1 or not ret2: return
 
+    # --- Detect Blank Frames ---
+    blank_frames = []
+    if skip_blank_frames:
+        try:
+            blank_frames = detect_black_white_frames(
+                input_path,
+                mode="black",  # or "white" — if you later expose to user
+                duration_threshold=0.1,
+                pixel_threshold=0.10,
+                cache=True
+            )
+            blank_frames = set(blank_frames)  # For fast lookup
+        except Exception as e:
+            print(f"⚠️ Blank frame detection failed: {e}")
+            blank_frames = []
+
+
+    
     first_frame_tensor = frame_to_tensor(frame)
 
     if auto_crop_black_bars:
@@ -692,7 +744,7 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
             out_width = resized_width * 2
             out_height = resized_height
     else:
-        resized_height = height
+        resized_height = output_height
         resized_width = int(resized_height * target_ratio)
         if resized_width % 2 != 0:
             resized_width += 1
@@ -741,7 +793,7 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
         ffmpeg_cmd.append(output_path)
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
     else:
-        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*codec), fps, (out_width, out_height))
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*selected_codec), fps, (out_width, out_height))
 
     start_time = time.time()
     prev_time = time.time()
@@ -754,9 +806,24 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
     dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for idx in range(total_frames):
-        if cancel_flag and cancel_flag.is_set(): break
-        while suspend_flag and suspend_flag.is_set(): time.sleep(0.5)
+        if cancel_flag.is_set():
+            break
 
+        while suspend_flag.is_set():
+            if cancel_flag.is_set():
+                break
+            try:
+                time.sleep(0.2)
+            except KeyboardInterrupt:
+                print("⚡ KeyboardInterrupt during suspend. Forcing cancel.")
+                cancel_flag.set()
+                break
+            if progress:
+                progress.update()
+            if progress_label:
+                progress_label.update()
+
+            
         ret1, frame = cap.read()
         ret2, depth = dcap.read()
         if not ret1 or not ret2: break
@@ -804,19 +871,25 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
         if output_format in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
             bg *= 2.0
 
-        left_frame, right_frame = pixel_shift_cuda(
-            frame_tensor, depth_tensor, resized_width, resized_height,
-            fg, mg, bg,
-            blur_ksize=blur_ksize,
-            feather_strength=feather_strength,
-            use_subject_tracking=use_subject_tracking,
-            enable_floating_window=use_floating_window,
-            return_shift_map=False,
-            max_pixel_shift_percent=max_pixel_shift_percent,
-            convergence_offset=convergence_offset,
-            enable_edge_masking=enable_edge_masking,
-            enable_feathering=enable_feathering
-        )
+        if idx in blank_frames:
+            # 🔥 Detected blank frame: skip pixel shifting
+            print(f"⏩ Skipping blank frame {idx}")
+            left_frame = frame
+            right_frame = frame
+        else:
+            left_frame, right_frame = pixel_shift_cuda(
+                frame_tensor, depth_tensor, resized_width, resized_height,
+                fg, mg, bg,
+                blur_ksize=blur_ksize,
+                feather_strength=feather_strength,
+                use_subject_tracking=use_subject_tracking,
+                enable_floating_window=use_floating_window,
+                return_shift_map=False,
+                max_pixel_shift_percent=max_pixel_shift_percent,
+                convergence_offset=convergence_offset,
+                enable_edge_masking=enable_edge_masking,
+                enable_feathering=enable_feathering
+            )
 
         subject_depth = estimate_subject_depth(depth_tensor)
         zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
@@ -876,23 +949,25 @@ def render_sbs_3d(input_path, depth_path, output_path, codec, fps, width, height
 
     cap.release()
     dcap.release()
+
     if use_ffmpeg:
         try:
-            if not cancel_flag.is_set():
-                ffmpeg_proc.stdin.close()
-                ffmpeg_proc.wait()
-            else:
-                ffmpeg_proc.stdin.close()
-                ffmpeg_proc.terminate()
-                ffmpeg_proc.wait()
-                print("⚠️ FFmpeg terminated early due to cancel.")
+            ffmpeg_proc.stdin.close()
         except Exception as e:
-            print(f"❌ FFmpeg shutdown error: {e}")
+            print(f"⚠️ Error closing FFmpeg stdin: {e}")
 
+        try:
+            if cancel_flag.is_set():
+                ffmpeg_proc.kill()
+            else:
+                ffmpeg_proc.wait()
+        except Exception as e:
+            print(f"⚠️ Error terminating FFmpeg: {e}")
     else:
         out.release()
 
     torch.cuda.empty_cache()
+
 
 
 def start_processing_thread():
@@ -1004,7 +1079,7 @@ def process_video(
     aspect_ratios,
     feather_strength,
     blur_ksize,
-    progress_bar,
+    progress,
     progress_label,
     suspend_flag,
     cancel_flag,
@@ -1020,6 +1095,7 @@ def process_video(
     convergence_offset,
     enable_edge_masking,
     enable_feathering,
+    skip_blank_frames, 
 ):
 
     global original_video_width, original_video_height
@@ -1072,9 +1148,9 @@ def process_video(
 
 
     # 🟢 Start progress
-    progress_bar["value"] = 0
+    progress["value"] = 0
     progress_label.config(text="0%")
-    progress_bar.update()
+    progress.update()
 
     # 🔥 Start render process
     if format_selected in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph", "Passive Interlaced"]:
@@ -1101,7 +1177,7 @@ def process_video(
             use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
             max_pixel_shift_percent=max_pixel_shift.get(),
-            progress=progress_bar,
+            progress=progress,
             progress_label=progress_label,
             suspend_flag=suspend_flag,
             cancel_flag=cancel_flag,
@@ -1111,14 +1187,11 @@ def process_video(
             convergence_offset=convergence_offset.get(),
             enable_edge_masking=enable_edge_masking.get(),
             enable_feathering=enable_feathering.get(),
+            skip_blank_frames=skip_blank_frames.get(),
         )
 
 
-    if not cancel_flag.is_set():
-        progress_bar["value"] = 100
-        progress_label.config(text="100%")
-        progress_bar.update()
-        print("✅ Processing complete.")
+
 
 # Define SETTINGS_FILE at the top of the script
 SETTINGS_FILE = "settings.json"
