@@ -1,10 +1,20 @@
 @echo off
 cd /d "E:\Video Editing\VisionDepth3D-main"
-call VD3D_env\Scripts\activate
-python "E:\Video Editing\VisionDepth3D-main\core\GUI.py"
-call VD3D_env\Scripts\deactivate
-#DeleteMe2keepWindowOpen pause
-#Replace Both lines in quotes with your actual path to Main folder and GUI.py
-#Can delete both calls if not using a virtual environment
 
-#thank you Ryudoadema for providing the windows startup script
+:: Activate the local virtual environment (VD3D_env)
+call VD3D_env\Scripts\activate.bat
+
+:: Start the GUI
+python "core\GUI.py"
+
+:: Optional: deactivate environment after closing
+call VD3D_env\Scripts\deactivate.bat
+
+pause
+
+:: NOTES:
+:: - Replace "E:\Video Editing\VisionDepth3D-main" with your actual folder path if different.
+:: - Only keep the 'activate'/'deactivate' lines if you are using a virtual environment.
+:: - If using base Anaconda/Conda environment, you should 'call conda activate VD3D' instead.
+:: - Special thanks to Ryudoadema for helping provide the starter template!
+
