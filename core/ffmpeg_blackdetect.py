@@ -48,7 +48,7 @@ def detect_black_white_frames(input_path, mode="black", duration_threshold=0.1, 
     if mode == "black":
         filter_cmd = f"blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
     elif mode == "white":
-        filter_cmd = f"lutrgb='r=max(val\,240):g=max(val\,240):b=max(val\,240)',blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
+        filter_cmd = r"lutrgb='r=max(val\,240):g=max(val\,240):b=max(val\,240)',blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
     else:
         raise ValueError("mode must be 'black' or 'white'")
 
