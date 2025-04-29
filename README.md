@@ -12,7 +12,6 @@
   <a href="#"><img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Github All Releases"></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
 </h3>
-
 ---
 
 ## Table of Contents
@@ -164,18 +163,22 @@ Go to the official PyTorch website to find the best install command for your set
 
 if you are running Cuda 12.8 install Pytorch(nightly)-Cuda 12.8, if that doesnt work use 12.6 version
 
-- Once Pytorch and all dependancies are installed run the following command:
+- Once Pytorch and all dependancies are installed update the batch script for system you are running and run the following command:
 ```
-VisionDepth3D.bat
+Start_VD3D_Conda.bat
+# or 
+Start_VD3D_Linux.bat
+# or 
+Start_VD3D_Windows.bat
+
 ```
 Congrats you have successfully downloaded VisionDepth3D! 
-This snippet guides users through cloning the repo, creating and activating the environment, and running the app—all in a few simple steps.
+This quick setup ensures you clone the repository, configure your environment, and launch the app — all in just a few simple steps.
 
 ---
 ## 🛠️ Guide Sheet: **Updating VisionDepth3D**
 
 When a new version of **VisionDepth3D** is released, follow these steps to ensure a smooth transition:
-
 ---
 
 ### **Update Instructions**
@@ -396,8 +399,8 @@ I want to express my gratitude to the amazing creators and contributors behind t
 ### **Supported Depth Models**
 | Model Name | Creator / Organization | Hugging Face Repository |
 |------------|------------------------|-------------------------|
-| **Distil-Any-Depth-Large** | xingyang1 | [Distil-Any-Depth-Large-hf](xingyang1/Distill-Any-Depth-Large-hf) |
-| **Distil-Any-Depth-Small** | xingyang1 | [Distil-Any-Depth-Small-hf](xingyang1/Distill-Any-Depth-Small-hf) |
+| **Distil-Any-Depth-Large** | xingyang1 | [Distill-Any-Depth-Large-hf](https://huggingface.co/xingyang1/Distill-Any-Depth-Large-hf) |
+| **Distil-Any-Depth-Small** | xingyang1 | [Distill-Any-Depth-Large-hf](https://huggingface.co/xingyang1/Distill-Any-Depth-Small-hf) |
 | **Depth Anything V2 Large** | Depth Anything Team | [Depth-Anything-V2-Large-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Large-hf) |
 | **Depth Anything V2 Base** | Depth Anything Team | [Depth-Anything-V2-Base-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf) |
 | **Depth Anything V2 Small** | Depth Anything Team | [Depth-Anything-V2-Small-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf) |
