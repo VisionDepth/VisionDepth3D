@@ -14,7 +14,7 @@ from render_3d import (
 )
 from preview_utils import grab_frame_from_video, generate_preview_image
 
-SETTINGS_FILE = "preview_settings.json"
+SETTINGS_FILE = "settings.json"
 
 def save_settings(settings):
     with open(SETTINGS_FILE, 'w') as f:
@@ -26,20 +26,37 @@ def load_settings():
             return json.load(f)
     return {}
 
-def open_3d_preview_window(input_video_path, selected_depth_map,
-                           fg_shift, mg_shift, bg_shift,
-                           blur_ksize, feather_strength,
-                           use_subject_tracking, use_floating_window,
-                           convergence_offset, parallax_balance, enable_edge_masking, enable_feathering):
+def get_frame(capture, frame_idx):
+    capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = capture.read()
+    return frame if ret else None
+
+
+def open_3d_preview_window(
+    input_video_path, 
+    selected_depth_map,
+    fg_shift,
+    mg_shift, 
+    bg_shift,
+    blur_ksize,
+    feather_strength,
+    use_subject_tracking, 
+    use_floating_window,
+    convergence_offset, 
+    parallax_balance,
+    enable_edge_masking, 
+    enable_feathering
+):
+        
     settings = load_settings()
 
     preview_win = tk.Toplevel()
     preview_win.title("Live 3D Preview")
     preview_win.geometry("1010x800")
 
-    cap = cv2.VideoCapture(input_video_path.get())
+    global preview_cap
+    preview_cap = cv2.VideoCapture(input_video_path.get())
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 10000
-    cap.release()
 
     canvas = tk.Canvas(preview_win)
     scrollbar = tk.Scrollbar(preview_win, orient="vertical", command=canvas.yview)
@@ -68,12 +85,17 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
     height_entry.insert(0, settings.get('height', '540'))
     height_entry.pack(side="left", padx=(0, 20))
 
-    apply_size_button = tk.Button(top_controls_frame, text="Apply Size", command=lambda: apply_size())
+    apply_size_button = tk.Button(
+        top_controls_frame, text="Apply Size",
+        command=lambda: apply_size()
+    )
     apply_size_button.pack(side="left", padx=10)
 
-    preview_type_var = tk.StringVar(value=settings.get('preview_type', "Red-Blue Anaglyph"))
+    preview_type_var = tk.StringVar(
+        value=settings.get('preview_type', "HSBS")
+    )
     preview_dropdown = tk.OptionMenu(top_controls_frame, preview_type_var, *[
-        "Red-Blue Anaglyph", "HSBS", "Shift Heatmap", "Overlay Arrows", "Feather Mask", "Left-Right Diff"
+        "Passive Interlaced, Red-Blue Anaglyph", "HSBS", "Shift Heatmap", "Overlay Arrows", "Left-Right Diff"
     ])
     preview_dropdown.pack(side="left")
     
@@ -107,44 +129,83 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
 
     shift_sliders_frame = tk.Frame(inner_frame)
     shift_sliders_frame.pack(side="top", fill="x")
-    fg_slider = tk.Scale(shift_sliders_frame, from_=0, to=15, orient="horizontal", label="FG Shift", resolution=0.5, length=200)
+    
+    fg_slider = tk.Scale(
+        shift_sliders_frame, from_=0, to=15, 
+        orient="horizontal", label="FG Shift",
+        resolution=0.5, length=200, variable=fg_shift
+    )
     fg_slider.pack(side="left", padx=10)
-    mg_slider = tk.Scale(shift_sliders_frame, from_=-10, to=10, orient="horizontal", label="MG Shift", resolution=0.5, length=200)
+
+    mg_slider = tk.Scale(
+        shift_sliders_frame, from_=-10, to=10,
+        orient="horizontal", label="MG Shift",
+        resolution=0.5, length=200, variable=mg_shift
+    )
     mg_slider.pack(side="left", padx=10)
-    bg_slider = tk.Scale(shift_sliders_frame, from_=0, to=-10, orient="horizontal", label="BG Shift", resolution=0.5, length=200)
+    
+    bg_slider = tk.Scale(
+        shift_sliders_frame, from_=0, to=-10,
+        orient="horizontal", label="BG Shift",
+        resolution=0.5, length=200, variable=bg_shift
+    )
     bg_slider.pack(side="left", padx=10)
 
     feather_sliders_frame = tk.Frame(inner_frame)
     feather_sliders_frame.pack(side="top", fill="x")
-    feather_strength_slider = tk.Scale(feather_sliders_frame, from_=0, to=20, orient="horizontal", label="Feather Strength", resolution=0.5, length=200)
+    
+    feather_strength_slider = tk.Scale(
+        feather_sliders_frame, from_=0, to=20,
+        orient="horizontal", label="Feather Strength", 
+        resolution=0.5, length=200, variable=feather_strength
+    )
     feather_strength_slider.pack(side="left", padx=10)
-    blur_ksize_slider = tk.Scale(feather_sliders_frame, from_=1, to=15, orient="horizontal", label="Feather Blur Size", resolution=1, length=200)
+    
+    blur_ksize_slider = tk.Scale(
+        feather_sliders_frame, from_=1, to=15,
+        orient="horizontal", label="Feather Blur Size",
+        resolution=1, length=200, variable=blur_ksize
+    )
     blur_ksize_slider.pack(side="left", padx=10)
-    sharpening_slider = tk.Scale(feather_sliders_frame, from_=-1, to=1, orient="horizontal", label="Sharpen Factor", resolution=0.1, length=200)
+    
+    sharpening_slider = tk.Scale(
+        feather_sliders_frame, from_=-1, to=1,
+        orient="horizontal", label="Sharpen Factor",
+        resolution=0.1, length=200, variable=sharpness_factor
+    )
     sharpening_slider.pack(side="left", padx=10)
-    max_shift_slider = tk.Scale(feather_sliders_frame, from_=0.005, to=0.10, orient="horizontal", label="Max Pixel Shift (%)", resolution=0.005, length=200)
+    
+    max_shift_slider = tk.Scale(
+        feather_sliders_frame, from_=0.005, to=0.10,
+        orient="horizontal", label="Max Pixel Shift (%)",
+        resolution=0.005, length=200, variable=max_pixel_shift
+    )
     max_shift_slider.pack(side="left", padx=10)
+    
     convergence_slider = tk.Scale(
         feather_sliders_frame, from_=-0.05, to=0.05,
         orient="horizontal", label="Convergence Offset",
-        resolution=0.001, length=200
+        resolution=0.001, length=200, variable=convergence_offset
     )
     convergence_slider.pack(side="left", padx=10)
     
     parallax_balance_slider = tk.Scale(
         feather_sliders_frame, from_=0.0, to=2.0,
         orient="horizontal", label="Parallax Balance",
-        resolution=0.05, length=200
+        resolution=0.05, length=200, variable=parallax_balance
     )
     parallax_balance_slider.pack(side="left", padx=10)
 
 
     frame_slider_frame = tk.Frame(inner_frame)
     frame_slider_frame.pack(side="top")
+    
     prev_button = tk.Button(frame_slider_frame, text="⏪ Prev", command=lambda: step_frame(-1))
     prev_button.pack(side="left", padx=(10, 5))
+    
     frame_slider = tk.Scale(frame_slider_frame, from_=0, to=total_frames - 1, orient="horizontal", label="Frame", length=800)
     frame_slider.pack(side="left")
+    
     next_button = tk.Button(frame_slider_frame, text="Next ⏩", command=lambda: step_frame(1))
     next_button.pack(side="left", padx=(5, 10))
 
@@ -155,8 +216,9 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             return
 
         frame_idx = frame_slider.get()
-        frame = grab_frame_from_video(input_path, frame_idx)
-        depth = grab_frame_from_video(depth_path, frame_idx)
+        frame = get_frame(preview_cap, frame_idx)
+        depth = grab_frame_from_video(depth_path, frame_idx)  # keep depth loading normal
+
         if frame is None or depth is None:
             messagebox.showerror("Frame Error", "Unable to grab frame from video.")
             return
@@ -224,6 +286,7 @@ def open_3d_preview_window(input_video_path, selected_depth_map,
             'enable_feathering': enable_feathering.get(),
         }
         save_settings(settings)
+        preview_cap.release()
         preview_win.destroy()
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
