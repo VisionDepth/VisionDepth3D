@@ -48,6 +48,7 @@ def open_3d_preview_window(
     sharpness_factor,
     max_pixel_shift
 ):
+
     settings = load_settings()
 
     preview_win = tk.Toplevel()
@@ -144,6 +145,7 @@ def open_3d_preview_window(
 
     max_shift_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Max Pixel Shift (%)", variable=max_pixel_shift, length=200)
     max_shift_slider.grid(row=0, column=3, padx=10)
+
 
     convergence_offset_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Convergence Offset", variable=convergence_offset, length=200)
     convergence_offset_slider.grid(row=1, column=0, padx=10)

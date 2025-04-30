@@ -823,7 +823,6 @@ def render_sbs_3d(
             if progress_label:
                 progress_label.update()
 
-            
         ret1, frame = cap.read()
         ret2, depth = dcap.read()
         if not ret1 or not ret2: break
@@ -1064,7 +1063,8 @@ def select_depth_map(selected_depth_map, depth_map_label):
     depth_map_label.config(
         text=f"Selected Depth Map:\n{os.path.basename(depth_map_path)}"
     )
-
+    
+    
 def process_video(
     input_video_path,
     selected_depth_map,
@@ -1189,8 +1189,6 @@ def process_video(
             enable_feathering=enable_feathering.get(),
             skip_blank_frames=skip_blank_frames.get(),
         )
-
-
 
 
 # Define SETTINGS_FILE at the top of the script

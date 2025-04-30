@@ -103,6 +103,7 @@ def reset_settings():
     input_video_path.set("")
     selected_depth_map.set("")
     output_sbs_video_path.set("")
+
     selected_codec.set("mp4v")
     selected_ffmpeg_codec.set("H.264 / AVC (libx264)")
     output_format.set("Full-SBS")
@@ -114,6 +115,7 @@ def reset_settings():
 
     # ✨ Visual Enhancements
     sharpness_factor.set(1.0)
+
     blend_factor.set(0.0)
     delay_time.set(1 / 30)
 
@@ -124,6 +126,7 @@ def reset_settings():
     # 🎛️ Advanced Stereo Controls
     parallax_balance.set(0.80)
     max_pixel_shift.set(0.20)
+
 
     # 🟢 Toggles
     use_subject_tracking.set(False)
@@ -1203,6 +1206,7 @@ mg_shift_label = tk.Label(
 mg_shift_label.grid(row=2, column=2, sticky="w")
 
 tk.Scale(
+
     options_frame, 
     from_=-5, to=5,
     resolution=0.5,
@@ -1405,6 +1409,7 @@ preview_button = tk.Button(
     )
 )
 
+
 preview_button.pack(side="left", padx=5)
 
 suspend_button = tk.Button(
@@ -1432,7 +1437,6 @@ tk.Button(
     button_frame, text="Save Preset", bg="#1c1c1c", fg="white",
     command=lambda: save_current_preset("my_custom_preset.json")
 ).pack(side="left", padx=5)
-
 
 # 🔲 Encoding Settings Group
 encoding_frame = tk.LabelFrame(
@@ -1603,14 +1607,13 @@ audio_tool_button = tk.Button(
 )
 audio_tool_button.pack(side="left", padx=10)
 
+
 preset_var = tk.StringVar()
 preset_menu = ttk.Combobox(bottom_links_frame, textvariable=preset_var)
 preset_menu['values'] = ["Balanced Depth", "IMAX Depth", "Pop-Out 3D"]
 preset_menu.set("Select Preset")
 preset_menu.bind("<<ComboboxSelected>>", lambda e: apply_preset(preset_var.get()))
 preset_menu.pack(side="left", padx=10)
-
-
 
 # 🟢 Buttons
 CreateToolTip(start_button, "Start generating the 3D video using the selected settings.")
@@ -1709,7 +1712,6 @@ def save_current_preset(name="custom_preset.json"):
     with open(os.path.join(PRESET_DIR, name), 'w') as f:
         json.dump(preset, f, indent=4)
     print(f"💾 Preset saved: {name}")
-
 
 
 def load_settings():
