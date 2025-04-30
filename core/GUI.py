@@ -154,10 +154,17 @@ def reset_settings():
 
 
 def cancel_processing():
-    global cancel_flag, suspend_flag, cancel_requested  # Include all used flags
+    global cancel_flag, suspend_flag, cancel_requested, process_thread
     cancel_flag.set()
-    cancel_requested.set()  # For depth processing cancellation
+    cancel_requested.set()
+    cancel_requested.clear()
     suspend_flag.clear()
+
+    # 🔥 Reset the thread if it's no longer running
+    if process_thread is not None and not process_thread.is_alive():
+        print("🧼 Cleaning up finished thread...")
+        process_thread = None
+
     print("❌ Processing canceled (all systems).")
 
 
@@ -331,17 +338,53 @@ tab_control.add(FrameTools3D, text="FrameTools")
 preview_Video = tk.Frame(tab_control)
 tab_control.add(preview_Video, text="VDPlayer")
 
-# Colors
+
+# --- VDplayer ---
+# --- Variables (if not already declared above) ---
+input_video_path = tk.StringVar()
+selected_depth_map = tk.StringVar()
+output_sbs_video_path = tk.StringVar()
+selected_codec = tk.StringVar(value="XVID")
+fg_shift = tk.DoubleVar(value=4.5)
+mg_shift = tk.DoubleVar(value=-1.5)
+bg_shift = tk.DoubleVar(value=-6.0)
+sharpness_factor = tk.DoubleVar(value=0.2)
+blend_factor = tk.DoubleVar(value=0.6)
+delay_time = tk.DoubleVar(value=1 / 30)
+output_format = tk.StringVar(value="Full-SBS")
+blur_ksize = tk.IntVar(value=1)
+feather_strength = tk.DoubleVar(value=0.0)
+selected_ffmpeg_codec = tk.StringVar(value="h264_nvenc")
+crf_value = tk.IntVar(value=23)
+use_ffmpeg = tk.BooleanVar(value=False)
+use_subject_tracking = tk.BooleanVar(value=True)
+use_floating_window = tk.BooleanVar(value=True)
+preview_mode = tk.StringVar(value="Passive Interlaced")
+frame_to_preview_var = tk.IntVar(value=6478)
+original_video_width = tk.IntVar(value=1920)
+original_video_height = tk.IntVar(value=1080)
+preserve_content = tk.BooleanVar(value=True)
+max_pixel_shift = tk.DoubleVar(value=0.02)
+auto_crop_black_bars = tk.BooleanVar(value=True)
+parallax_balance = tk.DoubleVar(value=0.8)
+preserve_original_aspect = tk.BooleanVar(value=False)
+nvenc_cq_value = tk.IntVar(value=23)
+convergence_offset = tk.DoubleVar(value=0.01)
+enable_edge_masking = tk.BooleanVar(value=True)
+enable_feathering = tk.BooleanVar(value=True)
+skip_blank_frames = tk.BooleanVar()
+
+# --- Colors ---
 bg_main = "#1e1e1e"
 bg_controls = "#292929"
 accent_color = "#4dd0e1"
 fg_text = "white"
 
-# Content Frame
+# --- Main Content Container ---
 player_content_frame = tk.Frame(preview_Video, bg=bg_main)
 player_content_frame.pack(fill="both", expand=True)
 
-# Top Controls
+# --- Top Controls ---
 top_controls = tk.Frame(player_content_frame, bg=bg_controls, height=50)
 top_controls.pack(fill="x", pady=(10, 5))
 
@@ -359,9 +402,21 @@ load_button = tk.Button(
 )
 load_button.pack(side="left", padx=10)
 
-# Placeholder Video Area
+# --- Horizontal Split: Left / Center / Right ---
+content_frame = tk.Frame(player_content_frame, bg=bg_main)
+content_frame.pack(fill="both", expand=True)
+
+# LEFT PANEL
+left_panel = tk.Frame(content_frame, bg=bg_main, width=220)
+left_panel.pack(side="left", fill="y", padx=10, pady=10)
+left_panel.pack_propagate(False)  # ⬅ prevents collapse
+
+# CENTER PANEL
+center_panel = tk.Frame(content_frame, bg=bg_main)
+center_panel.pack(side="left", fill="both", expand=True, pady=10)
+
 video_frame = tk.Label(
-    player_content_frame,
+    center_panel,
     text="🎞️ No video loaded",
     bg="#121212",
     fg="gray",
@@ -371,20 +426,112 @@ video_frame = tk.Label(
     anchor="center",
     justify="center"
 )
-video_frame.pack(pady=10)
+video_frame.pack(expand=True)
 
-# Style ttk elements
+# RIGHT PANEL
+right_panel = tk.Frame(content_frame, bg=bg_main, width=220)
+right_panel.pack(side="right", fill="y", padx=10, pady=10)
+right_panel.pack_propagate(False)
+
+# --- Right Panel: Checkboxes & Dropdowns ---
+tk.Label(right_panel, text="3D Mode", bg=bg_main, fg="white").pack(anchor="w", pady=(5, 0))
+preview_mode_menu = ttk.OptionMenu(
+    right_panel,
+    preview_mode,
+    preview_mode.get(),
+    "Passive Interlaced",
+    "Red-Blue Anaglyph",
+    "HSBS",
+    "Shift Heatmap",
+    "Overlay Arrows",
+    "Left-Right Diff"
+)
+preview_mode_menu.pack(fill="x", pady=(0, 10))
+
+tk.Checkbutton(right_panel, text="Use Subject Tracking", variable=use_subject_tracking,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Checkbutton(right_panel, text="Floating Window", variable=use_floating_window,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Checkbutton(right_panel, text="Enable Edge Masking", variable=enable_edge_masking,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+               
+tk.Checkbutton(right_panel, text="Use FFmpeg", variable=use_ffmpeg,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Label(right_panel, text="FFmpeg Codec", bg=bg_main, fg="white").pack(anchor="w", pady=(10, 0))
+ffmpeg_codec_dropdown = ttk.OptionMenu(
+    right_panel,
+    selected_ffmpeg_codec,
+    selected_ffmpeg_codec.get(),
+    "h264_nvenc", "libx264", "hevc_nvenc", "prores", "mpeg4"
+)
+ffmpeg_codec_dropdown.pack(fill="x", pady=(0, 10))
+
+tk.Label(right_panel, text="CRF Quality", bg=bg_main, fg="white").pack(anchor="w")
+tk.Scale(
+    right_panel,
+    from_=15, to=35,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=crf_value,
+    bg=bg_main,
+    troughcolor="#444444",
+    fg="white",
+    highlightthickness=0
+).pack(fill="x", pady=(0, 10))
+
+
+
+tk.Label(right_panel, text="NVENC CQ", bg=bg_main, fg="white").pack(anchor="w")
+tk.Scale(
+    right_panel,
+    from_=15, to=35,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=nvenc_cq_value,
+    bg=bg_main,
+    troughcolor="#444444",
+    fg="white",
+    highlightthickness=0
+).pack(fill="x", pady=(0, 10))
+
+tk.Label(right_panel, text="Codec", bg=bg_main, fg="white").pack(anchor="w", pady=(10, 0))
+codec_dropdown = ttk.OptionMenu(
+    right_panel,
+    selected_codec,
+    selected_codec.get(),
+    "mp4v", "XVID", "DIVX"
+)
+codec_dropdown.pack(fill="x", pady=(0, 10))
+
+
+# --- Left Panel Sliders ---
+def add_slider(parent, text, var, frm, to, res):
+    tk.Label(parent, text=text, bg=bg_main, fg="white").pack(anchor="w", pady=(5, 0))
+    tk.Scale(
+        parent, from_=frm, to=to, resolution=res,
+        orient=tk.HORIZONTAL, variable=var,
+        bg=bg_main, troughcolor="#444444",
+        fg="white", highlightthickness=0
+    ).pack(fill="x", pady=(0, 10))
+
+add_slider(left_panel, "Foreground Shift", fg_shift, 0, 15, 0.5)
+add_slider(left_panel, "Midground Shift", mg_shift, -5, 5, 0.5)
+add_slider(left_panel, "Background Shift", bg_shift, -15, 0, 0.5)
+add_slider(left_panel, "Sharpness Factor", sharpness_factor, -1.0, 1.0, 0.1)
+add_slider(left_panel, "Convergence Offset", convergence_offset, -1.0, 1.0, 0.1)
+add_slider(left_panel, "parallax_balance", parallax_balance, -1.0, 1.0, 0.1)
+add_slider(left_panel, "Max Pixel Shift %", max_pixel_shift, -1.0, 1.0, 0.1)
+
+
+# --- Style ttk Scale ---
 style = ttk.Style()
 style.theme_use('clam')
-style.configure(
-    "TScale",
-    background=bg_main,
-    troughcolor="#444444",
-    sliderthickness=10,
-    sliderlength=14
-)
+style.configure("TScale", background=bg_main, troughcolor="#444444", sliderthickness=10, sliderlength=14)
 
-# Scrubber
+# --- Scrubber ---
 seek_bar = ttk.Scale(
     player_content_frame,
     from_=0, to=100,
@@ -394,7 +541,7 @@ seek_bar = ttk.Scale(
 )
 seek_bar.pack(pady=5)
 
-# Timestamp
+# --- Timestamp Label ---
 timestamp_label = tk.Label(
     player_content_frame,
     text="00:00 / 00:00",
@@ -404,34 +551,35 @@ timestamp_label = tk.Label(
 )
 timestamp_label.pack(pady=(0, 8))
 
-# Playback Controls
+# --- Playback Controls ---
 bottom_controls = tk.Frame(player_content_frame, bg=bg_controls, height=40)
 bottom_controls.pack(fill="x", pady=(0, 12))
 
+button_row = tk.Frame(bottom_controls, bg=bg_controls)
+button_row.pack(anchor="center")
+
 def make_button(text, cmd):
     return tk.Button(
-        bottom_controls,
+        button_row,
         text=text,
         command=cmd,
         bg=accent_color,
         fg="black",
         font=("Segoe UI", 10, "bold"),
-        padx=10,
-        pady=3,
-        relief="flat",
-        cursor="hand2",
+        padx=10, pady=3,
+        relief="flat", cursor="hand2",
         activebackground="#00acc1"
     )
 
-play_btn = make_button("▶ Play", lambda: play(video_frame, seek_bar, timestamp_label))
-pause_btn = make_button("⏸ Pause", lambda: pause_video(video_frame, seek_bar, timestamp_label))
-stop_btn = make_button("⏹ Stop", lambda: stop_video(video_frame, seek_bar, timestamp_label))
-fullscreen_btn = make_button("🖥 Fullscreen", lambda: open_fullscreen(video_frame))
-
-for btn in [play_btn, pause_btn, stop_btn, fullscreen_btn]:
+for btn in [
+    make_button("▶ Play", lambda: play(video_frame, seek_bar, timestamp_label)),
+    make_button("⏸ Pause", lambda: pause_video(video_frame, seek_bar, timestamp_label)),
+    make_button("⏹ Stop", lambda: stop_video(video_frame, seek_bar, timestamp_label)),
+    make_button("🖥 Fullscreen", lambda: open_fullscreen(video_frame))
+]:
     btn.pack(side="left", padx=10)
 
-# Optional Status Label
+# --- Status Bar ---
 status_bar = tk.Label(
     player_content_frame,
     text="🔋 Ready",
@@ -771,7 +919,6 @@ merged_progress.pack(pady=6)
 merged_status = tk.Label(FrameTools3D, text="Waiting to start...", bg="#1c1c1c", fg="white")
 merged_status.pack()
 
-
 # ---3D Generator Frame Contents ---
 
 # Dark Theme Styling
@@ -784,9 +931,9 @@ input_video_path = tk.StringVar()
 selected_depth_map = tk.StringVar()
 output_sbs_video_path = tk.StringVar()
 selected_codec = tk.StringVar(value="XVID")
-fg_shift = tk.DoubleVar(value=6.5)
+fg_shift = tk.DoubleVar(value=4.5)
 mg_shift = tk.DoubleVar(value=-1.5)
-bg_shift = tk.DoubleVar(value=-12.0)
+bg_shift = tk.DoubleVar(value=-6.0)
 sharpness_factor = tk.DoubleVar(value=0.2)
 blend_factor = tk.DoubleVar(value=0.6)
 delay_time = tk.DoubleVar(value=1 / 30)
@@ -1253,8 +1400,11 @@ preview_button = tk.Button(
         parallax_balance,
         enable_edge_masking,
         enable_feathering,
+        sharpness_factor,
+        max_pixel_shift 
     )
 )
+
 preview_button.pack(side="left", padx=5)
 
 suspend_button = tk.Button(
