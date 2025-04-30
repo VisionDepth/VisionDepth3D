@@ -251,7 +251,7 @@ Use the GUI to fine-tune your 3D conversion settings.
 ---
 ### 4. Background Shift
 - **Description**: Shift depth for background layers (far away).
-- **Default**: `-12.0`
+- **Default**: `-6.0`
 - **Range**: `-10.0` to `0.0`
 - **Effect**: More negative pushes content into the screen (deeper background).
 ---
