@@ -823,7 +823,6 @@ def render_sbs_3d(
             if progress_label:
                 progress_label.update()
 
-            
         ret1, frame = cap.read()
         ret2, depth = dcap.read()
         if not ret1 or not ret2: break

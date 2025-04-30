@@ -27,11 +27,11 @@ from .render_depth import (
     process_video_folder,
 )
 
-from .render_framestitch import (
-    start_processing,
+from .merged_pipeline import (
+    start_merged_pipeline,
     select_video_and_generate_frames,
-    select_frames_folder,
     select_output_file,
+    select_frames_folder, 
 )
 
 from .VDPlayer import (

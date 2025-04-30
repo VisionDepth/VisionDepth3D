@@ -103,17 +103,19 @@ def reset_settings():
     input_video_path.set("")
     selected_depth_map.set("")
     output_sbs_video_path.set("")
-    selected_codec.set("")
-    selected_ffmpeg_codec.set("")
+
+    selected_codec.set("mp4v")
+    selected_ffmpeg_codec.set("H.264 / AVC (libx264)")
     output_format.set("Full-SBS")
 
     # 🧠 3D Shifting Parameters
-    fg_shift.set(0.0)
-    mg_shift.set(0.0)
-    bg_shift.set(0.0)
+    fg_shift.set(5.0)
+    mg_shift.set(2.0)
+    bg_shift.set(6.0)
 
     # ✨ Visual Enhancements
-    sharpness_factor.set(0.0)
+    sharpness_factor.set(1.0)
+
     blend_factor.set(0.0)
     delay_time.set(1 / 30)
 
@@ -122,15 +124,16 @@ def reset_settings():
     blur_ksize.set(1)
 
     # 🎛️ Advanced Stereo Controls
-    parallax_balance.set(0.0)
-    max_pixel_shift.set(0.0)
+    parallax_balance.set(0.80)
+    max_pixel_shift.set(0.20)
+
 
     # 🟢 Toggles
     use_subject_tracking.set(False)
     use_floating_window.set(False)
     auto_crop_black_bars.set(False)
     preserve_original_aspect.set(False)
-    convergence_offset.set(0.0)
+    convergence_offset.set(0.000)
     skip_blank_frames.set(False)
 
     # 🎥 CRF for FFmpeg
@@ -154,10 +157,17 @@ def reset_settings():
 
 
 def cancel_processing():
-    global cancel_flag, suspend_flag, cancel_requested  # Include all used flags
+    global cancel_flag, suspend_flag, cancel_requested, process_thread
     cancel_flag.set()
-    cancel_requested.set()  # For depth processing cancellation
+    cancel_requested.set()
+    cancel_requested.clear()
     suspend_flag.clear()
+
+    # 🔥 Reset the thread if it's no longer running
+    if process_thread is not None and not process_thread.is_alive():
+        print("🧼 Cleaning up finished thread...")
+        process_thread = None
+
     print("❌ Processing canceled (all systems).")
 
 
@@ -294,7 +304,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.4")
+root.title("VisionDepth3D v3.1.5")
 root.geometry("885x860")
 
 # --- Notebook for Tabs ---
@@ -331,17 +341,53 @@ tab_control.add(FrameTools3D, text="FrameTools")
 preview_Video = tk.Frame(tab_control)
 tab_control.add(preview_Video, text="VDPlayer")
 
-# Colors
+
+# --- VDplayer ---
+# --- Variables (if not already declared above) ---
+input_video_path = tk.StringVar()
+selected_depth_map = tk.StringVar()
+output_sbs_video_path = tk.StringVar()
+selected_codec = tk.StringVar(value="XVID")
+fg_shift = tk.DoubleVar(value=4.5)
+mg_shift = tk.DoubleVar(value=-1.5)
+bg_shift = tk.DoubleVar(value=-6.0)
+sharpness_factor = tk.DoubleVar(value=0.2)
+blend_factor = tk.DoubleVar(value=0.6)
+delay_time = tk.DoubleVar(value=1 / 30)
+output_format = tk.StringVar(value="Full-SBS")
+blur_ksize = tk.IntVar(value=1)
+feather_strength = tk.DoubleVar(value=0.0)
+selected_ffmpeg_codec = tk.StringVar(value="h264_nvenc")
+crf_value = tk.IntVar(value=23)
+use_ffmpeg = tk.BooleanVar(value=False)
+use_subject_tracking = tk.BooleanVar(value=True)
+use_floating_window = tk.BooleanVar(value=True)
+preview_mode = tk.StringVar(value="Passive Interlaced")
+frame_to_preview_var = tk.IntVar(value=6478)
+original_video_width = tk.IntVar(value=1920)
+original_video_height = tk.IntVar(value=1080)
+preserve_content = tk.BooleanVar(value=True)
+max_pixel_shift = tk.DoubleVar(value=0.02)
+auto_crop_black_bars = tk.BooleanVar(value=True)
+parallax_balance = tk.DoubleVar(value=0.8)
+preserve_original_aspect = tk.BooleanVar(value=False)
+nvenc_cq_value = tk.IntVar(value=23)
+convergence_offset = tk.DoubleVar(value=0.01)
+enable_edge_masking = tk.BooleanVar(value=True)
+enable_feathering = tk.BooleanVar(value=True)
+skip_blank_frames = tk.BooleanVar()
+
+# --- Colors ---
 bg_main = "#1e1e1e"
 bg_controls = "#292929"
 accent_color = "#4dd0e1"
 fg_text = "white"
 
-# Content Frame
+# --- Main Content Container ---
 player_content_frame = tk.Frame(preview_Video, bg=bg_main)
 player_content_frame.pack(fill="both", expand=True)
 
-# Top Controls
+# --- Top Controls ---
 top_controls = tk.Frame(player_content_frame, bg=bg_controls, height=50)
 top_controls.pack(fill="x", pady=(10, 5))
 
@@ -359,9 +405,21 @@ load_button = tk.Button(
 )
 load_button.pack(side="left", padx=10)
 
-# Placeholder Video Area
+# --- Horizontal Split: Left / Center / Right ---
+content_frame = tk.Frame(player_content_frame, bg=bg_main)
+content_frame.pack(fill="both", expand=True)
+
+# LEFT PANEL
+left_panel = tk.Frame(content_frame, bg=bg_main, width=220)
+left_panel.pack(side="left", fill="y", padx=10, pady=10)
+left_panel.pack_propagate(False)  # ⬅ prevents collapse
+
+# CENTER PANEL
+center_panel = tk.Frame(content_frame, bg=bg_main)
+center_panel.pack(side="left", fill="both", expand=True, pady=10)
+
 video_frame = tk.Label(
-    player_content_frame,
+    center_panel,
     text="🎞️ No video loaded",
     bg="#121212",
     fg="gray",
@@ -371,20 +429,112 @@ video_frame = tk.Label(
     anchor="center",
     justify="center"
 )
-video_frame.pack(pady=10)
+video_frame.pack(expand=True)
 
-# Style ttk elements
+# RIGHT PANEL
+right_panel = tk.Frame(content_frame, bg=bg_main, width=220)
+right_panel.pack(side="right", fill="y", padx=10, pady=10)
+right_panel.pack_propagate(False)
+
+# --- Right Panel: Checkboxes & Dropdowns ---
+tk.Label(right_panel, text="3D Mode", bg=bg_main, fg="white").pack(anchor="w", pady=(5, 0))
+preview_mode_menu = ttk.OptionMenu(
+    right_panel,
+    preview_mode,
+    preview_mode.get(),
+    "Passive Interlaced",
+    "Red-Blue Anaglyph",
+    "HSBS",
+    "Shift Heatmap",
+    "Overlay Arrows",
+    "Left-Right Diff"
+)
+preview_mode_menu.pack(fill="x", pady=(0, 10))
+
+tk.Checkbutton(right_panel, text="Use Subject Tracking", variable=use_subject_tracking,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Checkbutton(right_panel, text="Floating Window", variable=use_floating_window,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Checkbutton(right_panel, text="Enable Edge Masking", variable=enable_edge_masking,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+               
+tk.Checkbutton(right_panel, text="Use FFmpeg", variable=use_ffmpeg,
+               bg=bg_main, fg="white", selectcolor=bg_main).pack(anchor="w", pady=2)
+
+tk.Label(right_panel, text="FFmpeg Codec", bg=bg_main, fg="white").pack(anchor="w", pady=(10, 0))
+ffmpeg_codec_dropdown = ttk.OptionMenu(
+    right_panel,
+    selected_ffmpeg_codec,
+    selected_ffmpeg_codec.get(),
+    "h264_nvenc", "libx264", "hevc_nvenc", "prores", "mpeg4"
+)
+ffmpeg_codec_dropdown.pack(fill="x", pady=(0, 10))
+
+tk.Label(right_panel, text="CRF Quality", bg=bg_main, fg="white").pack(anchor="w")
+tk.Scale(
+    right_panel,
+    from_=15, to=35,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=crf_value,
+    bg=bg_main,
+    troughcolor="#444444",
+    fg="white",
+    highlightthickness=0
+).pack(fill="x", pady=(0, 10))
+
+
+
+tk.Label(right_panel, text="NVENC CQ", bg=bg_main, fg="white").pack(anchor="w")
+tk.Scale(
+    right_panel,
+    from_=15, to=35,
+    resolution=1,
+    orient=tk.HORIZONTAL,
+    variable=nvenc_cq_value,
+    bg=bg_main,
+    troughcolor="#444444",
+    fg="white",
+    highlightthickness=0
+).pack(fill="x", pady=(0, 10))
+
+tk.Label(right_panel, text="Codec", bg=bg_main, fg="white").pack(anchor="w", pady=(10, 0))
+codec_dropdown = ttk.OptionMenu(
+    right_panel,
+    selected_codec,
+    selected_codec.get(),
+    "mp4v", "XVID", "DIVX"
+)
+codec_dropdown.pack(fill="x", pady=(0, 10))
+
+
+# --- Left Panel Sliders ---
+def add_slider(parent, text, var, frm, to, res):
+    tk.Label(parent, text=text, bg=bg_main, fg="white").pack(anchor="w", pady=(5, 0))
+    tk.Scale(
+        parent, from_=frm, to=to, resolution=res,
+        orient=tk.HORIZONTAL, variable=var,
+        bg=bg_main, troughcolor="#444444",
+        fg="white", highlightthickness=0
+    ).pack(fill="x", pady=(0, 10))
+
+add_slider(left_panel, "Foreground Shift", fg_shift, 0, 15, 0.5)
+add_slider(left_panel, "Midground Shift", mg_shift, -5, 5, 0.5)
+add_slider(left_panel, "Background Shift", bg_shift, -15, 0, 0.5)
+add_slider(left_panel, "Sharpness Factor", sharpness_factor, -1.0, 1.0, 0.1)
+add_slider(left_panel, "Convergence Offset", convergence_offset, -1.0, 1.0, 0.1)
+add_slider(left_panel, "parallax_balance", parallax_balance, -1.0, 1.0, 0.1)
+add_slider(left_panel, "Max Pixel Shift %", max_pixel_shift, -1.0, 1.0, 0.1)
+
+
+# --- Style ttk Scale ---
 style = ttk.Style()
 style.theme_use('clam')
-style.configure(
-    "TScale",
-    background=bg_main,
-    troughcolor="#444444",
-    sliderthickness=10,
-    sliderlength=14
-)
+style.configure("TScale", background=bg_main, troughcolor="#444444", sliderthickness=10, sliderlength=14)
 
-# Scrubber
+# --- Scrubber ---
 seek_bar = ttk.Scale(
     player_content_frame,
     from_=0, to=100,
@@ -394,7 +544,7 @@ seek_bar = ttk.Scale(
 )
 seek_bar.pack(pady=5)
 
-# Timestamp
+# --- Timestamp Label ---
 timestamp_label = tk.Label(
     player_content_frame,
     text="00:00 / 00:00",
@@ -404,34 +554,35 @@ timestamp_label = tk.Label(
 )
 timestamp_label.pack(pady=(0, 8))
 
-# Playback Controls
+# --- Playback Controls ---
 bottom_controls = tk.Frame(player_content_frame, bg=bg_controls, height=40)
 bottom_controls.pack(fill="x", pady=(0, 12))
 
+button_row = tk.Frame(bottom_controls, bg=bg_controls)
+button_row.pack(anchor="center")
+
 def make_button(text, cmd):
     return tk.Button(
-        bottom_controls,
+        button_row,
         text=text,
         command=cmd,
         bg=accent_color,
         fg="black",
         font=("Segoe UI", 10, "bold"),
-        padx=10,
-        pady=3,
-        relief="flat",
-        cursor="hand2",
+        padx=10, pady=3,
+        relief="flat", cursor="hand2",
         activebackground="#00acc1"
     )
 
-play_btn = make_button("▶ Play", lambda: play(video_frame, seek_bar, timestamp_label))
-pause_btn = make_button("⏸ Pause", lambda: pause_video(video_frame, seek_bar, timestamp_label))
-stop_btn = make_button("⏹ Stop", lambda: stop_video(video_frame, seek_bar, timestamp_label))
-fullscreen_btn = make_button("🖥 Fullscreen", lambda: open_fullscreen(video_frame))
-
-for btn in [play_btn, pause_btn, stop_btn, fullscreen_btn]:
+for btn in [
+    make_button("▶ Play", lambda: play(video_frame, seek_bar, timestamp_label)),
+    make_button("⏸ Pause", lambda: pause_video(video_frame, seek_bar, timestamp_label)),
+    make_button("⏹ Stop", lambda: stop_video(video_frame, seek_bar, timestamp_label)),
+    make_button("🖥 Fullscreen", lambda: open_fullscreen(video_frame))
+]:
     btn.pack(side="left", padx=10)
 
-# Optional Status Label
+# --- Status Bar ---
 status_bar = tk.Label(
     player_content_frame,
     text="🔋 Ready",
@@ -771,7 +922,6 @@ merged_progress.pack(pady=6)
 merged_status = tk.Label(FrameTools3D, text="Waiting to start...", bg="#1c1c1c", fg="white")
 merged_status.pack()
 
-
 # ---3D Generator Frame Contents ---
 
 # Dark Theme Styling
@@ -784,9 +934,9 @@ input_video_path = tk.StringVar()
 selected_depth_map = tk.StringVar()
 output_sbs_video_path = tk.StringVar()
 selected_codec = tk.StringVar(value="XVID")
-fg_shift = tk.DoubleVar(value=6.5)
+fg_shift = tk.DoubleVar(value=4.5)
 mg_shift = tk.DoubleVar(value=-1.5)
-bg_shift = tk.DoubleVar(value=-12.0)
+bg_shift = tk.DoubleVar(value=-6.0)
 sharpness_factor = tk.DoubleVar(value=0.2)
 blend_factor = tk.DoubleVar(value=0.6)
 delay_time = tk.DoubleVar(value=1 / 30)
@@ -1056,6 +1206,7 @@ mg_shift_label = tk.Label(
 mg_shift_label.grid(row=2, column=2, sticky="w")
 
 tk.Scale(
+
     options_frame, 
     from_=-5, to=5,
     resolution=0.5,
@@ -1253,8 +1404,12 @@ preview_button = tk.Button(
         parallax_balance,
         enable_edge_masking,
         enable_feathering,
+        sharpness_factor,
+        max_pixel_shift 
     )
 )
+
+
 preview_button.pack(side="left", padx=5)
 
 suspend_button = tk.Button(
@@ -1278,6 +1433,10 @@ reset_button = tk.Button(
 )
 reset_button.pack(side="left", padx=5)
 
+tk.Button(
+    button_frame, text="Save Preset", bg="#1c1c1c", fg="white",
+    command=lambda: save_current_preset("my_custom_preset.json")
+).pack(side="left", padx=5)
 
 # 🔲 Encoding Settings Group
 encoding_frame = tk.LabelFrame(
@@ -1448,6 +1607,14 @@ audio_tool_button = tk.Button(
 )
 audio_tool_button.pack(side="left", padx=10)
 
+
+preset_var = tk.StringVar()
+preset_menu = ttk.Combobox(bottom_links_frame, textvariable=preset_var)
+preset_menu['values'] = ["Balanced Depth", "IMAX Depth", "Pop-Out 3D"]
+preset_menu.set("Select Preset")
+preset_menu.bind("<<ComboboxSelected>>", lambda e: apply_preset(preset_var.get()))
+preset_menu.pack(side="left", padx=10)
+
 # 🟢 Buttons
 CreateToolTip(start_button, "Start generating the 3D video using the selected settings.")
 CreateToolTip(preview_button, "Preview the 3D effect frame by frame before full rendering.")
@@ -1463,7 +1630,7 @@ CreateToolTip(aspect_preview_label, "Preview the output resolution and aspect ra
 # 🟢 Sliders
 CreateToolTip(fg_shift_label, "Amount of horizontal shift for foreground objects (positive = pop out).")
 CreateToolTip(mg_shift_label, "Amount of shift for midground objects (fine-tune parallax at middle depths).")
-CreateToolTip(bg_shift_label, "Amount of horizontal shift for background objects (negative = push back).")
+CreateToolTip(bg_shift_label, "Amount of horizontal shift for background objects (bg_shift = value × 2).")
 CreateToolTip(sharpness_factor_label, "Enhance or soften image sharpness after depth warping.")
 CreateToolTip(convergence_offset_label, "Adjust convergence plane to stabilize near-zero parallax.")
 CreateToolTip(parallax_balance_label, "Balance between overall screen-depth and foreground depth emphasis.")
@@ -1485,6 +1652,67 @@ CreateToolTip(nvenc_cq_value_label, "NVENC CQ: Similar to CRF but for NVIDIA GPU
 CreateToolTip(selected_codec_label, "Choose the basic video codec for CPU-based encoding.")
 CreateToolTip(selected_ffmpeg_codec_label, "Choose FFmpeg codec for better quality/speed (NVENC recommended).")
 CreateToolTip(selected_aspect_ratio_label, "Select aspect ratio to match your target device or format.")
+
+PRESET_DIR = "presets"
+os.makedirs(PRESET_DIR, exist_ok=True)
+
+import glob
+
+def get_all_presets():
+    return [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(PRESET_DIR, "*.json"))]
+
+preset_menu['values'] = get_all_presets()
+
+
+def apply_preset(preset_name):
+    path = os.path.join(PRESET_DIR, f"{preset_name}.json")
+
+    if not os.path.exists(path):
+        print(f"❌ Preset not found: {path}")
+        return
+
+    with open(path, 'r') as f:
+        config = json.load(f)
+
+    fg_shift.set(config.get("fg_shift", 8.0))
+    mg_shift.set(config.get("mg_shift", -3.0))
+    bg_shift.set(config.get("bg_shift", -6.0))
+    convergence_offset.set(config.get("convergence_offset", 0.0))
+    max_pixel_shift.set(config.get("max_pixel_shift", 0.02))
+    parallax_balance.set(config.get("parallax_balance", 0.8))
+    sharpness_factor.set(config.get("sharpness_factor", 1.0))
+
+    use_ffmpeg.set(config.get("use_ffmpeg", False))
+    enable_feathering.set(config.get("enable_feathering", True))
+    enable_edge_masking.set(config.get("enable_edge_masking", True))
+    use_floating_window.set(config.get("use_floating_window", True))
+    auto_crop_black_bars.set(config.get("auto_crop_black_bars", False))
+    skip_blank_frames.set(config.get("skip_blank_frames", False))
+
+    print(f"✅ Applied preset: {preset_name}")
+
+
+def save_current_preset(name="custom_preset.json"):
+    preset = {
+        "fg_shift": fg_shift.get(),
+        "mg_shift": mg_shift.get(),
+        "bg_shift": bg_shift.get(),
+        "convergence_offset": convergence_offset.get(),
+        "max_pixel_shift": max_pixel_shift.get(),
+        "parallax_balance": parallax_balance.get(),
+        "sharpness_factor": sharpness_factor.get(),
+        "use_ffmpeg": use_ffmpeg.get(),
+        "enable_feathering": enable_feathering.get(),
+        "enable_edge_masking": enable_edge_masking.get(),
+        "use_floating_window": use_floating_window.get(),
+        "auto_crop_black_bars": auto_crop_black_bars.get(),
+        "skip_blank_frames": skip_blank_frames.get()
+    }
+
+    with open(os.path.join(PRESET_DIR, name), 'w') as f:
+        json.dump(preset, f, indent=4)
+    print(f"💾 Preset saved: {name}")
+
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
