@@ -103,17 +103,17 @@ def reset_settings():
     input_video_path.set("")
     selected_depth_map.set("")
     output_sbs_video_path.set("")
-    selected_codec.set("")
-    selected_ffmpeg_codec.set("")
+    selected_codec.set("mp4v")
+    selected_ffmpeg_codec.set("H.264 / AVC (libx264)")
     output_format.set("Full-SBS")
 
     # 🧠 3D Shifting Parameters
-    fg_shift.set(0.0)
-    mg_shift.set(0.0)
-    bg_shift.set(0.0)
+    fg_shift.set(5.0)
+    mg_shift.set(2.0)
+    bg_shift.set(6.0)
 
     # ✨ Visual Enhancements
-    sharpness_factor.set(0.0)
+    sharpness_factor.set(1.0)
     blend_factor.set(0.0)
     delay_time.set(1 / 30)
 
@@ -122,15 +122,15 @@ def reset_settings():
     blur_ksize.set(1)
 
     # 🎛️ Advanced Stereo Controls
-    parallax_balance.set(0.0)
-    max_pixel_shift.set(0.0)
+    parallax_balance.set(0.80)
+    max_pixel_shift.set(0.20)
 
     # 🟢 Toggles
     use_subject_tracking.set(False)
     use_floating_window.set(False)
     auto_crop_black_bars.set(False)
     preserve_original_aspect.set(False)
-    convergence_offset.set(0.0)
+    convergence_offset.set(0.000)
     skip_blank_frames.set(False)
 
     # 🎥 CRF for FFmpeg
@@ -301,7 +301,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.4")
+root.title("VisionDepth3D v3.1.5")
 root.geometry("885x860")
 
 # --- Notebook for Tabs ---
@@ -1428,6 +1428,11 @@ reset_button = tk.Button(
 )
 reset_button.pack(side="left", padx=5)
 
+tk.Button(
+    button_frame, text="Save Preset", bg="#1c1c1c", fg="white",
+    command=lambda: save_current_preset("my_custom_preset.json")
+).pack(side="left", padx=5)
+
 
 # 🔲 Encoding Settings Group
 encoding_frame = tk.LabelFrame(
@@ -1598,6 +1603,15 @@ audio_tool_button = tk.Button(
 )
 audio_tool_button.pack(side="left", padx=10)
 
+preset_var = tk.StringVar()
+preset_menu = ttk.Combobox(bottom_links_frame, textvariable=preset_var)
+preset_menu['values'] = ["Balanced Depth", "IMAX Depth", "Pop-Out 3D"]
+preset_menu.set("Select Preset")
+preset_menu.bind("<<ComboboxSelected>>", lambda e: apply_preset(preset_var.get()))
+preset_menu.pack(side="left", padx=10)
+
+
+
 # 🟢 Buttons
 CreateToolTip(start_button, "Start generating the 3D video using the selected settings.")
 CreateToolTip(preview_button, "Preview the 3D effect frame by frame before full rendering.")
@@ -1613,7 +1627,7 @@ CreateToolTip(aspect_preview_label, "Preview the output resolution and aspect ra
 # 🟢 Sliders
 CreateToolTip(fg_shift_label, "Amount of horizontal shift for foreground objects (positive = pop out).")
 CreateToolTip(mg_shift_label, "Amount of shift for midground objects (fine-tune parallax at middle depths).")
-CreateToolTip(bg_shift_label, "Amount of horizontal shift for background objects (negative = push back).")
+CreateToolTip(bg_shift_label, "Amount of horizontal shift for background objects (bg_shift = value × 2).")
 CreateToolTip(sharpness_factor_label, "Enhance or soften image sharpness after depth warping.")
 CreateToolTip(convergence_offset_label, "Adjust convergence plane to stabilize near-zero parallax.")
 CreateToolTip(parallax_balance_label, "Balance between overall screen-depth and foreground depth emphasis.")
@@ -1635,6 +1649,68 @@ CreateToolTip(nvenc_cq_value_label, "NVENC CQ: Similar to CRF but for NVIDIA GPU
 CreateToolTip(selected_codec_label, "Choose the basic video codec for CPU-based encoding.")
 CreateToolTip(selected_ffmpeg_codec_label, "Choose FFmpeg codec for better quality/speed (NVENC recommended).")
 CreateToolTip(selected_aspect_ratio_label, "Select aspect ratio to match your target device or format.")
+
+PRESET_DIR = "presets"
+os.makedirs(PRESET_DIR, exist_ok=True)
+
+import glob
+
+def get_all_presets():
+    return [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(PRESET_DIR, "*.json"))]
+
+preset_menu['values'] = get_all_presets()
+
+
+def apply_preset(preset_name):
+    path = os.path.join(PRESET_DIR, f"{preset_name}.json")
+
+    if not os.path.exists(path):
+        print(f"❌ Preset not found: {path}")
+        return
+
+    with open(path, 'r') as f:
+        config = json.load(f)
+
+    fg_shift.set(config.get("fg_shift", 8.0))
+    mg_shift.set(config.get("mg_shift", -3.0))
+    bg_shift.set(config.get("bg_shift", -6.0))
+    convergence_offset.set(config.get("convergence_offset", 0.0))
+    max_pixel_shift.set(config.get("max_pixel_shift", 0.02))
+    parallax_balance.set(config.get("parallax_balance", 0.8))
+    sharpness_factor.set(config.get("sharpness_factor", 1.0))
+
+    use_ffmpeg.set(config.get("use_ffmpeg", False))
+    enable_feathering.set(config.get("enable_feathering", True))
+    enable_edge_masking.set(config.get("enable_edge_masking", True))
+    use_floating_window.set(config.get("use_floating_window", True))
+    auto_crop_black_bars.set(config.get("auto_crop_black_bars", False))
+    skip_blank_frames.set(config.get("skip_blank_frames", False))
+
+    print(f"✅ Applied preset: {preset_name}")
+
+
+def save_current_preset(name="custom_preset.json"):
+    preset = {
+        "fg_shift": fg_shift.get(),
+        "mg_shift": mg_shift.get(),
+        "bg_shift": bg_shift.get(),
+        "convergence_offset": convergence_offset.get(),
+        "max_pixel_shift": max_pixel_shift.get(),
+        "parallax_balance": parallax_balance.get(),
+        "sharpness_factor": sharpness_factor.get(),
+        "use_ffmpeg": use_ffmpeg.get(),
+        "enable_feathering": enable_feathering.get(),
+        "enable_edge_masking": enable_edge_masking.get(),
+        "use_floating_window": use_floating_window.get(),
+        "auto_crop_black_bars": auto_crop_black_bars.get(),
+        "skip_blank_frames": skip_blank_frames.get()
+    }
+
+    with open(os.path.join(PRESET_DIR, name), 'w') as f:
+        json.dump(preset, f, indent=4)
+    print(f"💾 Preset saved: {name}")
+
+
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
