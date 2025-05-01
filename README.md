@@ -162,7 +162,9 @@ nvidia-smi
 Go to the official PyTorch website to find the best install command for your setup:
 🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-if you are running Cuda 12.8 install Pytorch(nightly)-Cuda 12.8, if that doesnt work use 12.6 version
+install Pytorch-Cuda 12.8 or which CUDA version you are running
+
+if you are running AMD GPU select CPU build
 
 - Once Pytorch and all dependancies are installed update the batch script for system you are running and run the following command:
 ```
