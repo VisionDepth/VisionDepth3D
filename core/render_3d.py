@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from collections import deque
 from scipy.ndimage import gaussian_filter
 from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
-from ffmpeg_blackdetect import detect_black_white_frames
+from core.ffmpeg_blackdetect import detect_black_white_frames
 
 
 
