@@ -1,51 +1,54 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import os
-import ffmpeg
+import subprocess
+import shutil
+
+def get_ffmpeg_path():
+    """Get the path to ffmpeg executable."""
+    path = shutil.which("ffmpeg")
+    if not path:
+        messagebox.showerror("FFmpeg Not Found", "❌ FFmpeg is not installed or not in system PATH.")
+        raise FileNotFoundError("FFmpeg not found in system PATH.")
+    return path
 
 def rip_audio(source_path, output_audio_path, audio_codec='copy', bitrate=None):
     try:
-        # Don't force channel layout; copy original if possible
-        audio_kwargs = {
-            'map': 'a',
-            'acodec': audio_codec or 'copy'
-        }
+        ffmpeg_path = get_ffmpeg_path()
+        cmd = [ffmpeg_path, "-y", "-i", source_path, "-map", "0:a", "-c:a", audio_codec]
 
-        if bitrate and audio_codec != 'copy':
-            audio_kwargs['b:a'] = bitrate
+        if bitrate and audio_codec != "copy":
+            cmd.extend(["-b:a", bitrate])
 
-        (
-            ffmpeg
-            .input(source_path)
-            .output(output_audio_path, **audio_kwargs)
-            .run(overwrite_output=True)
-        )
-        messagebox.showinfo("Success", f"Audio ripped to:\n{output_audio_path}")
-    except ffmpeg.Error as e:
-        error_output = e.stderr.decode(errors='ignore') if e.stderr else str(e)
-        messagebox.showerror("Error", error_output)
+        cmd.append(output_audio_path)
 
+        subprocess.run(cmd, check=True)
+        messagebox.showinfo("Success", f"✅ Audio ripped to:\n{output_audio_path}")
+    except subprocess.CalledProcessError as e:
+        messagebox.showerror("Error", f"❌ FFmpeg failed:\n{e}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
 
 def attach_audio(video_path, audio_path, output_path):
     try:
-        input_video = ffmpeg.input(video_path)
-        input_audio = ffmpeg.input(audio_path)
+        ffmpeg_path = get_ffmpeg_path()
+        cmd = [
+            ffmpeg_path, "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            output_path
+        ]
 
-        (
-            ffmpeg
-            .output(input_video, input_audio, output_path, **{
-                'c:v': 'copy',
-                'c:a': 'copy',     # Don't re-encode audio, keep full 7.1 or source format
-                'map': '0:v:0',
-                'map': '1:a:0'
-            })
-            .run(overwrite_output=True)
-        )
-        messagebox.showinfo("Success", f"Audio attached to video:\n{output_path}")
-    except ffmpeg.Error as e:
-        error_output = e.stderr.decode(errors='ignore') if e.stderr else str(e)
-        messagebox.showerror("Error", error_output)
-
+        subprocess.run(cmd, check=True)
+        messagebox.showinfo("Success", f"✅ Audio attached to video:\n{output_path}")
+    except subprocess.CalledProcessError as e:
+        messagebox.showerror("Error", f"❌ FFmpeg failed:\n{e}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
 
 def launch_audio_gui():
     root = tk.Toplevel()
