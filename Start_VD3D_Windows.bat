@@ -5,7 +5,7 @@ cd /d "E:\Video Editing\VisionDepth3D-main"
 call VD3D_env\Scripts\activate.bat
 
 :: Start the GUI
-python "core\GUI.py"
+python "VisionDepth3D.py"
 
 :: Optional: deactivate environment after closing
 call VD3D_env\Scripts\deactivate.bat
