@@ -3,8 +3,11 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import re
-from render_3d import pixel_shift_cuda
-from render_3d import frame_to_tensor, depth_to_tensor
+from core.render_3d import(
+    pixel_shift_cuda,
+    frame_to_tensor, 
+    depth_to_tensor,
+)
 
 
 def grab_frame_from_video(video_path, frame_idx=0):
