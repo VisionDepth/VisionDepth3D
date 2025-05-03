@@ -2,35 +2,62 @@
 
 import os
 import re
+import sys
 import time
 import threading
 import numpy as np
 import cv2
 import onnxruntime as ort
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from tqdm import tqdm
-from tkinter import filedialog
+import subprocess
+
 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 progress_bar = None
 status_label = None
 
-available_providers = ort.get_available_providers()
-device = ["CUDAExecutionProvider"] if "CUDAExecutionProvider" in available_providers else ["CPUExecutionProvider"]
-print(f"\u2705 Using ONNX Execution Providers: {device}")
+# ✅ Get absolute path to resource (for PyInstaller compatibility)
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS2  # ✅ Corrected for PyInstaller
+    except AttributeError:
+        base_path = os.path.abspath(".")
 
+    return os.path.join(base_path, relative_path)
+
+
+
+# ✅ ONNX session options with graph optimization
 session_options = ort.SessionOptions()
 session_options.log_severity_level = 3
+session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-rife_path = os.path.join("weights", "RIFE_fp32.onnx")
-if not os.path.exists(rife_path):
-    print(f"\u274C RIFE model missing at {rife_path}")
-    rife_session = None
+# ✅ ONNX Execution Provider fallback logic
+available_providers = ort.get_available_providers()
+
+if "TensorrtExecutionProvider" in available_providers:
+    device = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+elif "CUDAExecutionProvider" in available_providers:
+    device = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 else:
-    rife_session = ort.InferenceSession(rife_path, sess_options=session_options, providers=device)
+    device = ["CPUExecutionProvider"]
 
-esrgan_session = None  # Delay ESRGAN loading
+print(f"🧠 ONNX will use providers: {device}")
+
+
+# ✅ Load RIFE
+rife_path = resource_path(os.path.join("weights", "RIFE_fp32.onnx"))
+
+try:
+    rife_session = ort.InferenceSession(rife_path, sess_options=session_options, providers=device)
+    print("✅ RIFE model loaded.")
+except Exception as e:
+    print(f"❌ Failed to load RIFE model: {e}")
+    rife_session = None
+
+esrgan_session = None  # Lazy-load ESRGAN
 
 def update_progress(done, total, start):
     if not progress_bar or not status_label:
@@ -55,9 +82,7 @@ def select_video_and_generate_frames(set_folder_callback=None):
         return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-
     output_folder = os.path.join("frames", f"{base_name}_frames")
     os.makedirs(output_folder, exist_ok=True)
 
@@ -69,8 +94,6 @@ def select_video_and_generate_frames(set_folder_callback=None):
 
     cap.release()
     messagebox.showinfo("Done", f"✅ Extracted {total_frames} frames to:\n{output_folder}")
-
-    # 👇 Set GUI path only if callback is provided
     if set_folder_callback:
         set_folder_callback(output_folder)
 
@@ -92,7 +115,7 @@ def extract_frame_number(filename):
     return int(match.group(1)) if match else float("inf")
 
 def natural_sort(files):
-    return sorted(files, key=lambda x: extract_frame_number(x))
+    return sorted(files, key=extract_frame_number)
 
 def concatenate_images(frame1, frame2):
     return np.concatenate((frame1.astype(np.float32) / 255.0, frame2.astype(np.float32) / 255.0), axis=2)
@@ -105,16 +128,19 @@ def preprocess_rife(frame):
 def run_rife(frame1, frame2, multiplier):
     if not rife_session:
         return []
-    interpolated = []
-    for _ in range(multiplier - 1):
-        merged = concatenate_images(frame1, frame2)
-        tensor = preprocess_rife(merged)
-        output = rife_session.run(None, {rife_session.get_inputs()[0].name: tensor})[0]
-        output = np.squeeze(output, axis=0)
+
+    merged = concatenate_images(frame1, frame2)
+    tensor = preprocess_rife(merged)
+    batch_tensor = np.repeat(tensor, repeats=multiplier - 1, axis=0)
+
+    try:
+        output = rife_session.run(None, {rife_session.get_inputs()[0].name: batch_tensor})[0]
         output = np.clip(output, 0, 1)
-        output = np.transpose(output, (1, 2, 0))
-        interpolated.append((output * 255).astype(np.uint8))
-    return interpolated
+        output = np.transpose(output, (0, 2, 3, 1))
+        return [(frame * 255).astype(np.uint8) for frame in output]
+    except Exception as e:
+        print(f"❌ RIFE inference error: {e}")
+        return []
 
 def preprocess_esr(frame):
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -134,42 +160,35 @@ def blend_images(original, upscaled, mode="OFF"):
     alpha_map = {"LOW": 0.85, "MEDIUM": 0.5, "HIGH": 0.25}
     alpha = alpha_map.get(mode.upper(), 1.0)
     return cv2.addWeighted(upscaled, alpha, original, 1 - alpha, 0)
-
-def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_Gx4_fp16"):
+    
+def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_Gx4_fp16", target_size=None):
     global esrgan_session
     if not esrgan_session:
         return frame
 
-    original = frame.copy()  # For blending
-
+    original = frame.copy()
     if input_res_pct != 100:
         h, w = frame.shape[:2]
-        new_w = int(w * input_res_pct / 100)
-        new_h = int(h * input_res_pct / 100)
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        frame = cv2.resize(frame, (int(w * input_res_pct / 100), int(h * input_res_pct / 100)), interpolation=cv2.INTER_CUBIC)
 
     tensor = preprocess_esr(frame)
-
     try:
         output = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: tensor})[0]
         upscaled = postprocess_esr(output)
 
-        # 🔍 Detect scale from model name (e.g. x2 or x4)
-        scale = 4  # Default to x4
-        if "x2" in model_name.lower():
-            scale = 2
-
-        # 🧠 Resize ESRGAN output back to match original (pre-blend) size
-        expected_w = frame.shape[1] * scale
-        expected_h = frame.shape[0] * scale
-        upscaled = cv2.resize(upscaled, (expected_w, expected_h), interpolation=cv2.INTER_CUBIC)
+        scale = 2 if "x2" in model_name.lower() else 4
+        upscaled = cv2.resize(upscaled, (frame.shape[1] * scale, frame.shape[0] * scale), interpolation=cv2.INTER_CUBIC)
         upscaled = cv2.resize(upscaled, (original.shape[1], original.shape[0]), interpolation=cv2.INTER_CUBIC)
 
+        # 🔁 Force to output resolution if specified
+        if target_size:
+            upscaled = cv2.resize(upscaled, target_size, interpolation=cv2.INTER_CUBIC)
+
         return blend_images(original, upscaled, mode=blend_mode)
+
     except Exception as e:
         print(f"❌ ESRGAN failed: {e}")
         return original
-
 
 def start_merged_pipeline(settings, progress_widget, status_label_widget):
     global progress_bar, status_label, esrgan_session
@@ -178,7 +197,7 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
 
     frames_dir = settings["frames_folder"]
     output_path = settings["output_file"]
-    codec = cv2.VideoWriter_fourcc(*settings["codec"])
+    codec = settings["codec"]
     width, height = settings["width"], settings["height"]
     fps = settings["fps"]
     fps_mult = settings["fps_multiplier"]
@@ -188,7 +207,6 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     input_res_pct = settings.get("input_res_pct", 100)
     model_path = settings.get("model_path", "weights/RealESR_Gx4_fp16.onnx")
 
-    # 🧠 Load ESRGAN session dynamically
     if enable_upscale:
         if not os.path.exists(model_path):
             print(f"\u274C ESRGAN model missing: {model_path}")
@@ -206,7 +224,7 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
         return
 
     output_fps = fps * fps_mult if enable_rife else fps
-    video = cv2.VideoWriter(output_path, codec, output_fps, (width, height))
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, settings["codec"])
     start = time.time()
 
     total = len(files)
@@ -217,29 +235,47 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
             break
 
         f1 = cv2.imread(files[i])
-        f1 = cv2.resize(f1, (width, height))
-        if enable_upscale:
-            f1 = run_esrgan(f1, blend_mode=blend_mode, input_res_pct=input_res_pct)
-        video.write(f1)
+        f1 = run_esrgan(f1, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(f1, (width, height))
+        video.stdin.write(f1.tobytes())
 
         if enable_rife and i + 1 < total:
             f2 = cv2.imread(files[i + 1])
-            f2 = cv2.resize(f2, (width, height))
-            if enable_upscale:
-                f2 = run_esrgan(f2, blend_mode=blend_mode, input_res_pct=input_res_pct)
+            f2 = run_esrgan(f2, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(f2, (width, height))
             interpolated = run_rife(f1, f2, fps_mult)
             for frame in interpolated:
-                video.write(frame)
+                video.stdin.write(frame.tobytes())
 
         update_progress(i + 1, frame_count, start)
 
     if not enable_rife:
         last_frame = cv2.imread(files[-1])
-        last_frame = cv2.resize(last_frame, (width, height))
-        if enable_upscale:
-            last_frame = run_esrgan(last_frame, blend_mode=blend_mode, input_res_pct=input_res_pct)
-        video.write(last_frame)
+        last_frame = run_esrgan(last_frame, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(last_frame, (width, height))
+        video.stdin.write(last_frame.tobytes())
 
-    video.release()
+    video.stdin.close()
+    video.wait()
+
     update_progress(frame_count, frame_count, start)
     status_label["text"] = "\u2705 Processing Complete!"
+
+
+def start_ffmpeg_writer(output_path, width, height, fps, codec):
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "-",
+        "-c:v", codec,
+        "-preset", "p5" if "nvenc" in codec else "medium",
+        "-b:v", "10M",
+        "-maxrate", "20M",
+        "-bufsize", "40M",
+        "-pix_fmt", "yuv420p",
+        output_path
+    ]
+    return subprocess.Popen(command, stdin=subprocess.PIPE)
+
