@@ -246,7 +246,7 @@ def update_progress(processed, total, fps, eta, progress_bar, status_label):
 
     # Format FPS and ETA
     fps_text = f"{fps:.2f} FPS"
-    eta_text = f"ETA: {int(eta)}s" if eta > 0 else "ETA: --s"
+    eta_text = f"ETA: {time.strftime('%H:%M:%S', time.gmtime(eta))}" if eta > 0 else "ETA: --:--:--"
     progress_text = f"📸 Processed: {processed}/{total} | {fps_text} | {eta_text}"
 
     status_label.config(text=progress_text)
@@ -538,10 +538,14 @@ def process_video2(
 
         progress = int(((frames_processed_all + frame_count) / total_frames_all) * 100)
         progress_bar.config(value=progress)
+        elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+        eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+
         status_label.config(
             text=f"🎬 {frame_count}/{total_frames} frames | FPS: {avg_fps:.2f} | "
-                 f"ETA: {time.strftime('%M:%S', time.gmtime(eta))} | Processing: {name}"
+                 f"Elapsed: {elapsed_str} | ETA: {eta_str} | Processing: {name}"
         )
+
         status_label.update_idletasks()
 
     cap.release()
