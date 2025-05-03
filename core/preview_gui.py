@@ -6,13 +6,13 @@ import torch
 import torch.nn.functional as F
 import json
 import os
-from render_3d import (
+from core.render_3d import (
     frame_to_tensor,
     depth_to_tensor,
     pixel_shift_cuda,
     apply_sharpening,
 )
-from preview_utils import grab_frame_from_video, generate_preview_image
+from core.preview_utils import grab_frame_from_video, generate_preview_image
 
 SETTINGS_FILE = "settings.json"
 
@@ -48,7 +48,6 @@ def open_3d_preview_window(
     sharpness_factor,
     max_pixel_shift
 ):
-
     settings = load_settings()
 
     preview_win = tk.Toplevel()
@@ -63,7 +62,7 @@ def open_3d_preview_window(
     main_frame.pack(fill="both", expand=True)
 
     preview_canvas = tk.Label(main_frame)
-    preview_canvas.pack(side="top", fill="both", expand=True)
+    preview_canvas.pack(side="top", anchor="center")
 
     frame_slider = tk.Scale(main_frame, from_=0, to=total_frames-1, orient="horizontal", label="Frame", length=800)
     frame_slider.pack(side="top", pady=5)
@@ -134,18 +133,63 @@ def open_3d_preview_window(
     feather_frame = tk.LabelFrame(control_container, text="Feathering / Sharpening", padx=10, pady=5)
     feather_frame.pack(pady=(0, 10), anchor="center")
 
-    feather_strength_slider = tk.Scale(feather_frame, from_=0, to=20, resolution=0.5, orient="horizontal", label="Feather Strength", variable=feather_strength, length=200)
-    feather_strength_slider.grid(row=0, column=0, padx=10)
+    tk.Label(feather_frame, text="Feather Strength").grid(row=0, column=0, padx=10)
+    feather_strength_slider = tk.Entry(feather_frame, width=8)
+    feather_strength_slider.insert(0, str(feather_strength.get()))
+    feather_strength_slider.grid(row=0, column=1, padx=10)
+    
+    tk.Label(feather_frame, text="Blur Size").grid(row=0, column=2, padx=10)
+    blur_ksize_slider = tk.Entry(feather_frame, width=8)
+    blur_ksize_slider.insert(0, str(blur_ksize.get()))
+    blur_ksize_slider.grid(row=0, column=3, padx=10)
+    
+    tk.Label(feather_frame, text="Sharpen").grid(row=0, column=4, padx=10)
+    sharpening_slider = tk.Entry(feather_frame, width=8)
+    sharpening_slider.insert(0, str(sharpness_factor.get()))
+    sharpening_slider.grid(row=0, column=5, padx=10)
+    
 
-    blur_ksize_slider = tk.Scale(feather_frame, from_=1, to=15, resolution=1, orient="horizontal", label="Feather Blur Size", variable=blur_ksize, length=200)
-    blur_ksize_slider.grid(row=0, column=1, padx=10)
+    tk.Label(feather_frame, text="Max Pixel Shift (%)").grid(row=0, column=6, padx=10)
+    max_shift_slider= tk.Entry(feather_frame, width=8)
+    max_shift_slider.insert(0, str(max_pixel_shift.get()))
+    max_shift_slider.grid(row=0, column=7, padx=10)
 
-    sharpening_slider = tk.Scale(feather_frame, from_=-1, to=1, resolution=0.1, orient="horizontal", label="Sharpness", variable=sharpness_factor, length=200)
-    sharpening_slider.grid(row=0, column=2, padx=10)
+    def update_max_shift(*_):
+        try:
+            val = float(max_shift_slider.get())
+            max_pixel_shift.set(val)
+            update_preview()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid float for max pixel shift.")
 
-    max_shift_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Max Pixel Shift (%)", variable=max_pixel_shift, length=200)
-    max_shift_slider.grid(row=0, column=3, padx=10)
+    def update_feather_strength(*_):
+        try:
+            val = float(feather_strength_slider.get())
+            feather_strength.set(val)
+            update_preview()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid float for feather strength.")
 
+    def update_blur_ksize(*_):
+        try:
+            val = int(blur_ksize_slider.get())
+            blur_ksize.set(val)
+            update_preview()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid integer for feather blur size.")
+
+    def update_sharpness(*_):
+        try:
+            val = float(sharpening_slider.get())
+            sharpness_factor.set(val)
+            update_preview()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid float for sharpness.")
+
+    feather_strength_slider.bind("<KeyRelease>", update_feather_strength)
+    blur_ksize_slider.bind("<KeyRelease>", update_blur_ksize)
+    sharpening_slider.bind("<KeyRelease>", update_sharpness)
+    max_shift_slider.bind("<KeyRelease>", update_max_shift)
 
     convergence_offset_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Convergence Offset", variable=convergence_offset, length=200)
     convergence_offset_slider.grid(row=1, column=0, padx=10)
@@ -188,12 +232,22 @@ def open_3d_preview_window(
 
         preview_img = generate_preview_image(preview_type_var.get(), left, right, shift_map, w, h)
         if preview_img is not None:
-            preview_img = apply_sharpening(preview_img, sharpening_slider.get())
+            preview_img = apply_sharpening(preview_img, sharpness_factor.get())
             img_rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(img_rgb)
+
+            # Get target preview size from user input
+            try:
+                preview_width = int(width_entry.get())
+                preview_height = int(height_entry.get())
+            except ValueError:
+                preview_width, preview_height = img_rgb.shape[1], img_rgb.shape[0]  # fallback to original size
+
+            # Resize and convert to PhotoImage
+            pil_img = Image.fromarray(img_rgb).resize((preview_width, preview_height), Image.LANCZOS)
             img_tk = ImageTk.PhotoImage(pil_img)
             preview_canvas.config(image=img_tk)
             preview_canvas.image = img_tk
+
 
     def on_close():
         settings = {
@@ -222,10 +276,8 @@ def open_3d_preview_window(
     fg_slider.config(command=update_preview)
     mg_slider.config(command=update_preview)
     bg_slider.config(command=update_preview)
-    feather_strength_slider.config(command=update_preview)
-    blur_ksize_slider.config(command=update_preview)
-    sharpening_slider.config(command=update_preview)
-    max_shift_slider.config(command=update_preview)
+    convergence_offset_slider.config(command=update_preview)
+    parallax_balance_slider.config(command=update_preview)
     preview_type_var.trace_add("write", lambda *_: update_preview())
     enable_edge_masking.trace_add("write", lambda *_: update_preview())
     enable_feathering.trace_add("write", lambda *_: update_preview())
