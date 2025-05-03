@@ -300,7 +300,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.5")
+root.title("VisionDepth3D v3.1.6")
 root.geometry("885x860")
 
 # --- Notebook for Tabs ---
