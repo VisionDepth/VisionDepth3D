@@ -17,16 +17,19 @@ Sell, rent, lease, or otherwise commercially exploit the Software.
 3. Ownership
 Licensor retains all ownership, rights, title, and interest in and to the Software, including all copyrights and intellectual property rights. This Agreement does not transfer any ownership rights to the User.
 
-4. Third-Party Components and Attributions  
-The Software may include third-party libraries, models, or components that are governed by their own respective open-source licenses. In particular, the Software utilizes depth estimation models licensed under the Apache License, Version 2.0.  
-By using this Software, you acknowledge and agree to comply with the requirements of those licenses.  
-For Apache 2.0 licensed models, the following notice is hereby provided:
+4. Third-Party Components and Attributions
 
-> This product includes software developed by third parties under the Apache License, Version 2.0 (the "Apache License").  
-> You may obtain a copy of the Apache License at http://www.apache.org/licenses/LICENSE-2.0
+The Software utilizes third-party libraries and tools, which are governed by their respective open-source licenses. By using this Software, you acknowledge and agree to comply with the terms of those licenses.
 
-No modifications were made to these models beyond integration for inference purposes.
+**Included Components:**
 
+- **Depth Estimation Models** (e.g., DPT, MiDaS, ZoeDepth): Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0). No modifications have been made beyond inference integration.
+
+- **FFmpeg**: This software makes use of the FFmpeg multimedia framework by invoking FFmpeg binaries for audio/video processing. FFmpeg is licensed under the [GNU General Public License (GPL) v3](https://www.gnu.org/licenses/gpl-3.0.html) or the [Lesser GPL (LGPL)](https://www.gnu.org/licenses/lgpl-3.0.html), depending on how it is built. The VisionDepth3D application does **not distribute**, link, or modify FFmpeg, but instead executes it as an external process.
+
+> This product uses the FFmpeg library for multimedia processing, which is licensed separately under the GPL or LGPL. Visit https://ffmpeg.org for details.
+
+No changes were made to FFmpeg binaries or source code. Users must ensure their FFmpeg installation complies with the appropriate license.
 
 5. No Warranty
 The Software is provided "as is" and "as available", without warranties of any kind, whether express or implied. Licensor makes no guarantees regarding performance, reliability, security, accuracy, or fitness for any particular purpose. User assumes all risks associated with using the Software.
