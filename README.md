@@ -435,4 +435,11 @@ I want to express my gratitude to the amazing creators and contributors behind t
 **🙏 Thank You!**
 A huge thank you to all the researchers, developers, and contributors who created and shared these models. Your work is inspiring and enables developers like me to build exciting and innovative applications! 🚀💙
 
+### **Multimedia Framework**
+This project utilizes the FFmpeg multimedia framework for video/audio processing via subprocess invocation.
+FFmpeg is licensed under the GNU GPL v3 or LGPL, depending on how it was built. No modifications were made to the FFmpeg source or binaries — the software simply executes FFmpeg as an external process.
 
+You may obtain a copy of the FFmpeg license at:
+https://www.gnu.org/licenses/
+
+VisionDepth3D calls FFmpeg strictly for encoding, muxing, audio extraction, and frame rendering operations, in accordance with license requirements.
