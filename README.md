@@ -10,8 +10,15 @@
 
 <h3 align="center">
   <a href="#"><img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Github All Releases"></a>
-  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python Version">
+  <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python Version">
 </h3>
+
+<p align="center">
+  <a href="https://visiondepth3d.itch.io/visiondepth3d">
+    <img src="assets/widget-preview.png" alt="Download VisionDepth3D" />
+  </a>
+</p>
+
 
 ---
 
