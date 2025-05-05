@@ -7,17 +7,21 @@
   Built from AI depth + custom stereo logic —<br>
   Designed for cinema in VR.</em>
 </p>
-
 <h3 align="center">
-  <a href="#"><img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Github All Releases"></a>
+  <a href="https://github.com/VisionDepth/VisionDepth3D/releases">
+    <img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="GitHub Downloads">
+  </a>
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python Version">
 </h3>
 
 <p align="center">
-  <a href="https://visiondepth3d.itch.io/visiondepth3d">
-    <img src="assets/widget-preview.png" alt="Download VisionDepth3D" />
+  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
+    <img src="assets/widget-preview.png" alt="Download VisionDepth3D on Itch.io" width="300" style="border-radius: 8px;">
   </a>
+  <br>
+  <em style="font-size: 14px; color: #888;">Click to download or support the project 💙</em>
 </p>
+
 
 
 ---
