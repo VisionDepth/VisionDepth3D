@@ -1,4 +1,5 @@
 accelerate
+onnxruntime
 onnxruntime-gpu
 numpy
 opencv-contrib-python
