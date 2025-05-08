@@ -196,17 +196,31 @@ def open_3d_preview_window(
 
     parallax_balance_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Parallax Balance", variable=parallax_balance, length=200)
     parallax_balance_slider.grid(row=1, column=2, padx=10)
-  
-    def update_preview(*args):
-        input_path = input_video_path.get()
-        depth_path = selected_depth_map.get()
+    
+    preview_job = None  # <-- Add this at the top level of open_3d_preview_window()
+
+    def update_preview_debounced(*args):
+        nonlocal preview_job
+        if preview_job is not None:
+            preview_win.after_cancel(preview_job)
+        preview_job = preview_win.after(150, update_preview_now)  # 150ms debounce
+
+    def update_preview_now():
+        nonlocal preview_job
+        preview_job = None  # clear the job ID
+
+        try:
+            frame_idx = frame_slider.get()
+            input_path = input_video_path.get()
+            depth_path = selected_depth_map.get()
+        except (tk.TclError, AttributeError):
+            return
+
         if not input_path or not depth_path:
             return
 
-        frame_idx = frame_slider.get()
         frame = get_frame(preview_cap, frame_idx)
         depth = grab_frame_from_video(depth_path, frame_idx)
-
         if frame is None or depth is None:
             messagebox.showerror("Frame Error", "Unable to grab frame from video.")
             return
@@ -235,18 +249,17 @@ def open_3d_preview_window(
             preview_img = apply_sharpening(preview_img, sharpness_factor.get())
             img_rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB)
 
-            # Get target preview size from user input
             try:
                 preview_width = int(width_entry.get())
                 preview_height = int(height_entry.get())
             except ValueError:
-                preview_width, preview_height = img_rgb.shape[1], img_rgb.shape[0]  # fallback to original size
+                preview_width, preview_height = img_rgb.shape[1], img_rgb.shape[0]
 
-            # Resize and convert to PhotoImage
             pil_img = Image.fromarray(img_rgb).resize((preview_width, preview_height), Image.LANCZOS)
             img_tk = ImageTk.PhotoImage(pil_img)
             preview_canvas.config(image=img_tk)
             preview_canvas.image = img_tk
+
 
 
     def on_close():
@@ -272,12 +285,12 @@ def open_3d_preview_window(
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
 
-    frame_slider.config(command=update_preview)
-    fg_slider.config(command=update_preview)
-    mg_slider.config(command=update_preview)
-    bg_slider.config(command=update_preview)
-    convergence_offset_slider.config(command=update_preview)
-    parallax_balance_slider.config(command=update_preview)
-    preview_type_var.trace_add("write", lambda *_: update_preview())
-    enable_edge_masking.trace_add("write", lambda *_: update_preview())
-    enable_feathering.trace_add("write", lambda *_: update_preview())
+    frame_slider.config(command=update_preview_debounced)
+    fg_slider.config(command=update_preview_debounced)
+    mg_slider.config(command=update_preview_debounced)
+    bg_slider.config(command=update_preview_debounced)
+    convergence_offset_slider.config(command=update_preview_debounced)
+    parallax_balance_slider.config(command=update_preview_debounced)
+    preview_type_var.trace_add("write", lambda *_: update_preview_debounced())
+    enable_edge_masking.trace_add("write", lambda *_: update_preview_debounced())
+    enable_feathering.trace_add("write", lambda *_: update_preview_debounced())
