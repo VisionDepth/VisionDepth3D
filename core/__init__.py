@@ -25,11 +25,3 @@ from .merged_pipeline import (
     select_frames_folder, 
 )
 
-from .VDPlayer import (
-    load_video,
-    seek_video,
-    play,
-    pause_video,
-    stop_video,
-    open_fullscreen,
-)

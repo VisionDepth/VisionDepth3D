@@ -34,6 +34,8 @@ print(f"🔥 CUDA available: {torch.cuda.is_available()} | Running on {torch_dev
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 process_thread = None 
+global_session_start_time = None
+
 
 # Common Aspect Ratios
 aspect_ratios = {
@@ -47,21 +49,32 @@ aspect_ratios = {
 }
 
 FFMPEG_CODEC_MAP = {
-    # 🔹 Software (CPU) Codecs
-    "H.264 / AVC (libx264)": "libx264",          # Standard CPU-based H.264
-    "H.265 / HEVC (libx265)": "libx265",         # Better compression, slower
-    "MPEG-4 (mp4v)": "mp4v",                     # Legacy MPEG-4 Part 2
-    "XviD (AVI - CPU)": "XVID",                  # Good for AVI containers
-    "DivX (AVI - CPU)": "DIVX",                  # Older compatibility
+    # Software (CPU) Encoders
+    "H.264 / AVC (libx264 - CPU)": "libx264",
+    "H.265 / HEVC (libx265 - CPU)": "libx265",
+    "AV1 (libaom - CPU)": "libaom-av1",
+    "AV1 (SVT - CPU, faster)": "libsvtav1",
+    "MPEG-4 (mp4v - CPU)": "mp4v",
+    "XviD (AVI - CPU)": "XVID",
+    "DivX (AVI - CPU)": "DIVX",
 
-    # 🔹 NVIDIA NVENC (GPU) Codecs
-    "AVC (NVENC GPU)": "h264_nvenc",             # Hardware-accelerated H.264
-    "HEVC / H.265 (NVENC GPU)": "hevc_nvenc",    # Hardware-accelerated H.265
+    # NVIDIA NVENC
+    "H.264 / AVC (NVENC - NVIDIA GPU)": "h264_nvenc",
+    "H.265 / HEVC (NVENC - NVIDIA GPU)": "hevc_nvenc",
+    "AV1 (NVENC - NVIDIA RTX 40+ GPU)": "av1_nvenc",
 
-    # 🔹 Optional / Experimental
-    "AV1 (CPU)": "libaom-av1",
-    "AV1 (NVIDIA)": "av1_nvenc",  # Supported on newer RTX GPUs
+    # AMD AMF
+    "H.264 / AVC (AMF - AMD GPU)": "h264_amf",
+    "H.265 / HEVC (AMF - AMD GPU)": "hevc_amf",
+    "AV1 (AMF - AMD RDNA3+)": "av1_amf",
+
+    # Intel QSV
+    "H.264 / AVC (QSV - Intel GPU)": "h264_qsv",
+    "H.265 / HEVC (QSV - Intel GPU)": "hevc_qsv",
+    "VP9 (QSV - Intel GPU)": "vp9_qsv",
+    "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
+
 
 
 def pad_to_aspect_ratio(image, target_width, target_height, bg_color=(0, 0, 0)):
@@ -672,13 +685,28 @@ def render_sbs_3d(
 ):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
-    if not cap.isOpened() or not dcap.isOpened(): return
+    if not cap.isOpened() or not dcap.isOpened():
+        return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    
     ret1, frame = cap.read()
     ret2, depth = dcap.read()
-    if not ret1 or not ret2: return
+    if not ret1 or not ret2:
+        return
+
+    global global_session_start_time
+    if global_session_start_time is None:
+        global_session_start_time = time.time()
+
+    # 🛡️ Validate and fallback selected_ffmpeg_codec BEFORE it's used
+    if use_ffmpeg:
+        if not selected_ffmpeg_codec or not isinstance(selected_ffmpeg_codec, str) or selected_ffmpeg_codec.strip() == "":
+            print("⚠️ No valid FFmpeg codec selected — falling back to libx264.")
+            selected_ffmpeg_codec = "libx264"
+        elif selected_ffmpeg_codec not in FFMPEG_CODEC_MAP.values():
+            print(f"⚠️ Unrecognized codec '{selected_ffmpeg_codec}' — defaulting to libx264.")
+            selected_ffmpeg_codec = "libx264"
 
     # --- Detect Blank Frames ---
     blank_frames = []
@@ -686,18 +714,16 @@ def render_sbs_3d(
         try:
             blank_frames = detect_black_white_frames(
                 input_path,
-                mode="black",  # or "white" — if you later expose to user
+                mode="black",  # or "white"
                 duration_threshold=0.1,
                 pixel_threshold=0.10,
                 cache=True
             )
-            blank_frames = set(blank_frames)  # For fast lookup
+            blank_frames = set(blank_frames)
         except Exception as e:
             print(f"⚠️ Blank frame detection failed: {e}")
             blank_frames = []
 
-
-    
     first_frame_tensor = frame_to_tensor(frame)
 
     if auto_crop_black_bars:
@@ -804,6 +830,8 @@ def render_sbs_3d(
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    avg_fps = 0
 
     for idx in range(total_frames):
         if cancel_flag.is_set():
@@ -818,10 +846,18 @@ def render_sbs_3d(
                 print("⚡ KeyboardInterrupt during suspend. Forcing cancel.")
                 cancel_flag.set()
                 break
-            if progress:
-                progress.update()
             if progress_label:
+                elapsed = time.time() - global_session_start_time
+                elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                percent = (idx / total_frames) * 100
+                eta = (total_frames - idx) / avg_fps if avg_fps > 0 else 0
+                eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+                progress_label.config(
+                    text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} ⏸️ Paused"
+                )
                 progress_label.update()
+
+
 
         ret1, frame = cap.read()
         ret2, depth = dcap.read()
@@ -930,7 +966,9 @@ def render_sbs_3d(
             out.write(final)
 
         percent = (idx / total_frames) * 100
-        elapsed = time.time() - start_time
+        elapsed = time.time() - global_session_start_time
+        elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+
         curr_time = time.time()
         delta = curr_time - prev_time
         if delta > 0:
@@ -942,9 +980,28 @@ def render_sbs_3d(
         if progress:
             progress["value"] = percent
             progress.update()
+        remaining_frames = total_frames - idx
+        eta = remaining_frames / avg_fps if avg_fps > 0 else 0
+        eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+
         if progress_label:
-            progress_label.config(text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%H:%M:%S', time.gmtime(elapsed))}")
+            progress_label.config(
+                text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
+            )
+
         prev_time = curr_time
+
+    # ✅ Final progress update
+    if progress:
+        progress["value"] = 100
+        progress.update()
+
+    if progress_label:
+        elapsed = time.time() - global_session_start_time
+        elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+        progress_label.config(
+            text=f"100.00% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: 00:00:00"
+        )
 
     cap.release()
     dcap.release()
@@ -966,16 +1023,52 @@ def render_sbs_3d(
         out.release()
 
     torch.cuda.empty_cache()
-
+    total_time = time.time() - global_session_start_time
+    print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
+    global_session_start_time = None
 
 
 def start_processing_thread():
     global process_thread
-    cancel_flag.clear()  # ✅ Reset cancel state
-    suspend_flag.clear()  # Ensure it's not paused
-    process_thread = threading.Thread(target=process_video, daemon=True)
+    cancel_flag.clear()
+    suspend_flag.clear()
+    process_thread = threading.Thread(
+        target=process_video,
+        args=(  # <-- ADD THIS
+            input_video_path,
+            selected_depth_map,
+            output_sbs_video_path,
+            selected_codec,
+            fg_shift,
+            mg_shift,
+            bg_shift,
+            sharpness_factor,
+            output_format,
+            selected_aspect_ratio,
+            aspect_ratios,
+            feather_strength,
+            blur_ksize,
+            progress,
+            progress_label,
+            suspend_flag,
+            cancel_flag,
+            use_ffmpeg,
+            selected_ffmpeg_codec,
+            crf_value,
+            use_subject_tracking,
+            use_floating_window,
+            max_pixel_shift,
+            auto_crop_black_bars,
+            parallax_balance,
+            preserve_original_aspect,
+            convergence_offset,
+            enable_edge_masking,
+            enable_feathering,
+            skip_blank_frames
+        ),
+        daemon=True
+    )
     process_thread.start()
-
 
 
 def select_input_video(
