@@ -31,12 +31,14 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
-        "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
+        "Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
         "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
+        "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
+        "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
