@@ -35,7 +35,6 @@ def load_supported_models():
         "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
         "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
-        "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
         "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),

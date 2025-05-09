@@ -101,7 +101,7 @@ def open_3d_preview_window(
             return
         frame_slider.config(length=preview_width - 120)
         preview_canvas.config(width=preview_width, height=preview_height)
-        update_preview()
+        update_preview_debounced()
 
     apply_size_button = tk.Button(top_controls_frame, text="Apply Size", command=apply_size)
     apply_size_button.grid(row=0, column=4, padx=(0, 10))
@@ -158,7 +158,7 @@ def open_3d_preview_window(
         try:
             val = float(max_shift_slider.get())
             max_pixel_shift.set(val)
-            update_preview()
+            update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for max pixel shift.")
 
@@ -166,7 +166,7 @@ def open_3d_preview_window(
         try:
             val = float(feather_strength_slider.get())
             feather_strength.set(val)
-            update_preview()
+            update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for feather strength.")
 
@@ -174,7 +174,7 @@ def open_3d_preview_window(
         try:
             val = int(blur_ksize_slider.get())
             blur_ksize.set(val)
-            update_preview()
+            update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid integer for feather blur size.")
 
@@ -182,7 +182,7 @@ def open_3d_preview_window(
         try:
             val = float(sharpening_slider.get())
             sharpness_factor.set(val)
-            update_preview()
+            update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for sharpness.")
 
