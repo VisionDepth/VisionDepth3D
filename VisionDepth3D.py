@@ -400,12 +400,14 @@ os.makedirs(local_model_dir, exist_ok=True)
 def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
-        "Video Depth Anything": "model.onnx",
+        "Distill Any Depth Large": "model.onnx",
         "Distill Any Depth Base": "model.onnx",
+        "Distill Any Depth Small": "model.onnx",
         "Distill-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distil-Any-Depth-Small-hf",
+        "Video Depth Anything": "model.onnx",
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -420,7 +422,6 @@ def load_supported_models():
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
         "DPT-Large": "Intel/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
-        "security_model": "nagayama0706/security_model",
     }
 
     # ✅ Add local models from weights directory
