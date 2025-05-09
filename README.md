@@ -37,82 +37,75 @@
 
 # Key Features – VisionDepth3D All-in-One 3D Suite
 
-## AI-Powered Depth Estimation (GPU Accelerated)
-- Seamless integration with 20+ transformer-based depth models: **ZoeDepth, Depth Anything, MiDaS, DPT, DepthPro, DinoV2**, and more
-- One-click model selection with **automatic downloads**, no CLI setup or config files
-- **PyTorch GPU acceleration** (no OpenCV recompile needed)
-- Batch support for both **video sequences and image folders**
-- **Temporal smoothing**, intelligent scene-adaptive normalization
-- Built-in **color inversion**, customizable **colormaps** (Viridis, Inferno, Magma)
-- Real-time frame-by-frame **progress bar, FPS display, and ETA tracking**
-- Auto-resizing, smart batching, and graceful handling of large resolutions
-- Pause/resume/cancel supported during all GPU operations
 
-## Advanced 3D Rendering Engine (Real-Time Stereo Composer)
-- **Pixel-accurate depth parallax shifting** using CUDA + PyTorch
-- Full control over **foreground(pop) / midground(balance) / background(pull) parallax**
-- **Half-SBS, Full-SBS, VR, Passive Interlaced, Anaglyph, and Dynamic Floating Window** formats
-- Dynamic floating window with **cinema-style masking that slides and eases smoothly**
-- Built-in **Pulfrich effect renderer** (motion delay-based left-eye blending)
-- **Feathered shift masking**, sharpening, and edge-aware smoothing
-- **Subject tracking-based convergence** for natural stereo alignment
-- GPU-accelerated real-time processing with live GUI stats (FPS, elapsed time, %)
-- Output is compatible with **Quest VR, YouTube 3D, and most stereo players**
+# AI-Powered Depth Estimation (GPU Accelerated)
+- Supports 20+ transformer-based models: **ZoeDepth, Depth Anything, MiDaS, DPT, DepthPro, DINOv2**, etc.
+- One-click model selection with **automatic downloads** – zero CLI/config required
+- **PyTorch GPU-accelerated inference** (no OpenCV recompile needed)
+- Batch-ready: process **image folders or video sequences**
+- Includes **temporal smoothing** and scene-adaptive normalization
+- Built-in **color inversion** and customizable **colormaps** (Viridis, Inferno, Magma)
+- Real-time GUI: **progress bar, FPS meter, ETA tracker**
+- Handles large resolutions via **auto-resizing + smart batching**
+- Full GPU task control: **pause/resume/cancel**
+- Optional local **ONNX model + TensorRT** for max performance
 
-## RIFE Frame Interpolation (ONNX Runtime)
-- Integrated **RIFE ONNX** model (no PyTorch required) for real-time frame doubling
-- Interpolation modes: **2x, 4x, 8x FPS** with smooth motion blending
-- Folder-based processing of raw frames + automatic **video reassembly**
-- Preserves **frame resolution, count, audio sync**, and aspect ratio
-- Supports preview and export at high quality using FFmpeg codecs
-- Real-time progress tracking + FPS + ETA built into GUI
+# Real-Time 3D Stereo Composer
+- CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate)
+- Fine-tuned control: **foreground pop / midground balance / background pull**
+- Export formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
+- Floating window engine with **cinema-style dynamic masking**
+- Supports **feathered masking, edge-aware smoothing, sharpening**
+- **Convergence tracking** based on subject movement
+- Live performance stats: **FPS, elapsed time, percent complete**
 
-## 4x Super Resolution Upscaling (Real-ESRGAN Powered – ONNX GPU)
-- Integrated **Real-ESRGAN (x4) super-resolution model**, exported to ONNX with full GPU support
-- Batch upscaling with intelligent **VRAM-aware batching** (1–8 frames)
-- Supports **720p ➜ 1080p**, **1080p ➜ 4K**, or any custom resolution
-- Automatically resizes final frames to match output format and target resolution
-- Lightning-fast **CUDA-accelerated ONNX runtime** (no PyTorch required)
-- Full integration with frame renderer: upscales after 3D rendering or interpolation
-- Clean, artifact-free outputs using enhanced fp16 inference for visual clarity
-- Progress bar, FPS counter, ETA timer integrated into the GUI
-- Fully exportable to video with codec support: **MP4V, XVID, MJPG, FFmpeg NVENC**
+# RIFE Frame Interpolation (ONNX)
+- Integrated **RIFE ONNX model** – PyTorch-free, real-time frame doubling
+- Supports **2x, 4x, 8x FPS interpolation**
+- Processes raw image folders + **auto video reassembly**
+- Maintains **frame count, resolution, audio sync**, and aspect ratio
+- Preview and export using **FFmpeg codecs** (GUI-integrated)
+- Real-time **progress, FPS, ETA** feedback
 
-## Smart Depth-Aware Effects
-- **Gradient-aware artifact suppression** near depth edges (limbs, hair)
-- **Feathered transition masks** to avoid ghosting and popping
-- Depth-aware **sharpening and blending** for polished 3D output
-- **Dynamic bar generation** for floating window masking that **eases smoothly** like theatrical films
-- Real-time **zero parallax estimation and smoothing** per-frame
+# 4x Super Resolution (Real-ESRGAN – ONNX GPU)
+- Uses **Real-ESRGAN x4**, exported to ONNX with full CUDA acceleration
+- Intelligent **VRAM-aware batching** for 1–8 frames
+- Upscaling: **720p → 1080p**, **1080p → 4K**, or custom targets
+- Auto-scaling to match 3D or interpolated frame resolutions
+- Uses **fp16 inference** for clean, artifact-free output
+- Fully integrated into pipeline with **FFmpeg NVENC export**
+- GUI includes **progress bar, FPS, ETA tracking**
 
-## Audio + Video Re-Integration
-- Audio button to directly rip and attach audio from source video using **FFmpeg**
-- Format choices: **AAC, MP3, WAV** with adjustable bitrate
-- Built-in tools, no shell commands needed – fully GUI-based
+# Smart Depth-Aware Effects
+- **Edge-aware artifact suppression** (e.g., hair, limbs)
+- Feathered transition masks to eliminate **ghosting/pop artifacts**
+- Adaptive **depth sharpening + blending** for polished output
+- Floating window masking with **cinematic easing**
+- Per-frame **zero parallax estimation + smoothing**
 
-## Preview System with Format Testing
-- Choose preview format: **Passive Interlaced**, **HSBS**, **Shift Heatmap**
-- Live preview on frame for quick tuning
-- Auto-exports as image preview file, no temp videos needed
-- Toggle convergence depth and parallax before full render
+# Audio & Video Sync
+- Extract + reattach source audio using **FFmpeg** (GUI-based)
+- Format options: **AAC, MP3, WAV** (bitrate adjustable)
+- No shell access needed – fully built into GUI
 
-## Real-Time 3D Player (VDPlayer)
-- Lightweight player built for **Half-SBS, Full-SBS**, and **VR** output
-- Fast seeking, play/pause/fullscreen toggles
-- Timestamp scrubber + resolution-aware display
-- Designed to instantly preview 3D results without leaving the app
+# Preview + Format Testing
+- Real-time preview: **Interlaced, HSBS, Depth Heatmap**
+- On-frame previews with **convergence + parallax tuning**
+- Preview exports as images – no temp videos needed
 
-## Smart GUI & Workflow Features
-- Multi-tab **Tkinter interface**, responsive and persistent settings
-- Pause, resume, and cancel buttons for all rendering threads
-- Codec selector with **GPU NVENC options** (H.264, HEVC, AV1-ready)
-- **One-click launcher**, no pip/CLI scripting needed
-- slider recall, and auto-cropping for black bars
+# Smart GUI + Workflow
+- Language support: **EN, FR, ES, DE**
+- Responsive **multi-tab Tkinter interface** with persistent settings
+- Full GPU render control: **pause, resume, cancel**
+- Codec selector with **NVENC options** (H.264, HEVC, AV1-ready)
+- One-click launch – no pip or scripting required
 
-## Supported Output Formats & Aspect Ratios
-- Formats: **Half-SBS**, **Full-SBS**, **VR Mode**, **Red-Cyan Anaglyph**, **Passive Interlaced**
-- Ratios: **16:9**, **CinemaScope (2.39:1)**, **2.76:1**, **4:3**, **21:9**, **Square 1:1**, **Classic 2.35:1**
-- Supports export in **MP4, MKV, AVI** with codecs: **XVID, MP4V, MJPG, DIVX**, and **FFmpeg NVENC**
+# Output Formats & Aspect Ratios
+- Formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
+- Aspect Ratios: **16:9**, **2.39:1**, **2.76:1**, **4:3**, **21:9**, **1:1**, **2.35:1**
+- Export formats: **MP4, MKV, AVI**
+- Codec support: **XVID, MP4V, MJPG, DIVX**, **FFmpeg NVENC**
+
 
 ---
 
@@ -127,7 +120,7 @@
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
 - 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
 - 3️⃣ Download models [Here](https://drive.google.com/file/d/1eEMcKItBn8MqH6fTCJX890A9HD054Ei4/view?usp=sharing) and extract weights folder into VisionDepth3D Main Folder
-- 4️⃣ Download Distill Any Depth Base [here](https://huggingface.co/FuryTMP/Distill-Any-Depth-Base-onnx) (if you want to use it) and put the Distill Any Depth Base Folder into Weights Folder
+- 4️⃣ Download Distill Any Depth onnx models [here](https://huggingface.co/collections/FuryTMP/distill-any-depth-onnx-models-681cad0ff43990f5dc2ff670) (if you want to use it) and put the Distill Any Depth Folder into Weights Folder
 - 
 ### 📌 Step 2: Create Env and Install Required Dependencies 
 
