@@ -402,7 +402,9 @@ This tool is being developed by a solo dev with nightly grind energy (🕐 ~4 ho
 
 ## Acknowledgments & Credits
 
-I want to express my gratitude to the amazing creators and contributors behind the depth estimation models used in this project. Your work has made it possible to push the boundaries of 3D rendering and video processing. 🙌
+**Thank You!**
+
+A heartfelt thank you to all the researchers, developers, and contributors behind the incredible depth estimation models and open-source tools used in this project. Your dedication, innovation, and generosity have made it possible to explore the frontiers of 3D rendering and video processing. Your work continues to inspire and empower developers like me to build transformative, creative applications.
 
 ### **Supported Depth Models**
 | Model Name | Creator / Organization | Hugging Face Repository |
@@ -426,8 +428,6 @@ I want to express my gratitude to the amazing creators and contributors behind t
 | **DinoV2** | Facebook | [dpt-dinov2-small-kitti](https://huggingface.co/facebook/dpt-dinov2-small-kitti) |
 | **dpt-beit-large-512** | Intel | [dpt-beit-large-512](https://huggingface.co/Intel/dpt-beit-large-512) |
 
-**🙏 Thank You!**
-A huge thank you to all the researchers, developers, and contributors who created and shared these models. Your work is inspiring and enables developers like me to build exciting and innovative applications! 🚀💙
 
 ### **Multimedia Framework**
 This project utilizes the FFmpeg multimedia framework for video/audio processing via subprocess invocation.
