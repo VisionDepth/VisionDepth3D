@@ -50,6 +50,7 @@
   "Enable Edge Masking": "Enable Edge Masking",
   "Enable Feathering": "Enable Feathering",
   "Skip Blank/White Frames": "Skip Blank/White Frames",
+  "DOF Strength": "DOF Strength",
 
   "Aspect Ratio:": "Aspect Ratio:",
   "FFmpeg Codec:": "FFmpeg Codec:",
@@ -139,6 +140,9 @@
   "Tooltip.ConvergenceOffset": "Adjusts the convergence plane (screen depth). Helps reduce eye strain.",
   "Tooltip.ParallaxBalance": "Balances screen depth between foreground and background emphasis.",
   "Tooltip.MaxPixelShift": "Limits maximum disparity between left and right images. Reduces ghosting in 3D.",
+  "Tooltip.DOFStrength": "Controls the intensity of Depth of Field blur. Higher values simulate stronger focus falloff from the center depth plane.",
+
+  
 
   "Tooltip.PreserveAspect": "Keep the source video’s original aspect ratio in the final 3D output.",
   "Tooltip.AutoCrop": "Automatically removes black bars before 3D transformation to avoid artifacts.",

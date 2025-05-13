@@ -111,7 +111,19 @@ def save_settings():
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4)
     print("💾 Settings saved.")
+    
+def prompt_and_save_preset():
+    file_path = filedialog.asksaveasfilename(
+        title="Save Preset As",
+        defaultextension=".json",
+        filetypes=[("JSON Files", "*.json")],
+        initialdir=PRESET_DIR,
+        initialfile="custom_preset.json"
+    )
 
+    if file_path:
+        preset_name = os.path.basename(file_path)
+        save_current_preset(preset_name)
 
 
 def reset_settings():
@@ -142,6 +154,7 @@ def reset_settings():
     # 🎛️ Advanced Stereo Controls
     parallax_balance.set(0.80)
     max_pixel_shift.set(0.20)
+    dof_strength.set(2.0)
 
     # 🟢 Toggles
     use_subject_tracking.set(False)
@@ -222,7 +235,7 @@ def handle_generate_3d():
                 suspend_flag,
                 cancel_flag,
                 use_ffmpeg,
-                selected_ffmpeg_codec,  # ✅ FIXED
+                selected_ffmpeg_codec, 
                 crf_value,
                 use_subject_tracking,
                 use_floating_window,
@@ -233,7 +246,8 @@ def handle_generate_3d():
                 convergence_offset,
                 enable_edge_masking,
                 enable_feathering,
-                skip_blank_frames
+                skip_blank_frames,
+                dof_strength,
             ), daemon=True)
             process_thread.start()
         else:
@@ -319,7 +333,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.7")
+root.title("VisionDepth3D v3.1.8")
 root.geometry("885x860")
 
 # --- Menu Bar Setup ---
@@ -349,7 +363,7 @@ file_menu.add_command(label="Exit", command=root.quit)
 menu_bar.add_cascade(label="File", menu=file_menu)
 
 help_menu = tk.Menu(menu_bar, tearoff=0)
-help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About", "VisionDepth3D v3.1.7"))
+help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About", "VisionDepth3D v3.1.8"))
 menu_bar.add_cascade(label="Help", menu=help_menu)
 
 
@@ -920,6 +934,8 @@ convergence_offset = tk.DoubleVar(value=0.01)
 enable_edge_masking = tk.BooleanVar(value=True)
 enable_feathering = tk.BooleanVar(value=True)
 skip_blank_frames = tk.BooleanVar()
+dof_strength = tk.DoubleVar(value=2.0)  # Default strength (sigma)
+
 
 
 
@@ -1008,6 +1024,7 @@ gui_variables = {
     "original_video_width": original_video_width,
     "original_video_height": original_video_height,
     "preserve_content": preserve_content,
+    "dof_strength": dof_strength,
 }
 
 
@@ -1162,8 +1179,8 @@ fg_shift_label.grid(row=2, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-15,
-    to=15,
+    from_=0,
+    to=30,
     resolution=0.5,
     orient=tk.HORIZONTAL,
     variable=fg_shift,
@@ -1180,7 +1197,7 @@ mg_shift_label.grid(row=2, column=2, sticky="w")
 
 tk.Scale(
     options_frame, 
-    from_=-15, to=15,
+    from_=-10, to=10,
     resolution=0.5,
     orient=tk.HORIZONTAL, variable=mg_shift,
     bg="#1c1c1c", fg="white"
@@ -1196,7 +1213,7 @@ bg_shift_label.grid(row=3, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-15, to=15, 
+    from_=-20, to=0, 
     resolution=0.5, orient=tk.HORIZONTAL,
     variable=bg_shift, bg="#1c1c1c", fg="white"
 ).grid(row=3, column=1, sticky="ew")
@@ -1261,6 +1278,24 @@ tk.Scale(
     variable=max_pixel_shift,
     length=200, bg="#1c1c1c", fg="white"
 ).grid(row=5, column=1, sticky="ew")   
+
+dof_strength_label = tk.Label(
+    options_frame,
+    text=t("DoF Strength"),
+    bg="#1c1c1c", fg="white"
+)
+dof_strength_label.grid(row=5, column=2, sticky="w")
+
+tk.Scale(
+    options_frame,
+    from_=0.0, to=5.0,
+    resolution=0.1,
+    orient=tk.HORIZONTAL,
+    variable=dof_strength,
+    length=200,
+    bg="#1c1c1c", fg="white"
+).grid(row=5, column=3, sticky="ew")
+
 
 # File Selection
 select_input_video_button = tk.Button(
@@ -1383,8 +1418,10 @@ preview_button = tk.Button(
         enable_edge_masking,
         enable_feathering,
         sharpness_factor,
-        max_pixel_shift 
+        max_pixel_shift,
+        dof_strength
     )
+
 )
 
 preview_button.pack(side="left", padx=5)
@@ -1412,7 +1449,7 @@ reset_button.pack(side="left", padx=5)
 
 save_preset_button = tk.Button(
     button_frame, text=t("Save Preset"), bg="#1c1c1c", fg="white",
-    command=lambda: save_current_preset("my_custom_preset.json")
+    command=prompt_and_save_preset
 )
 save_preset_button.pack(side="left", padx=5)
 
@@ -1629,6 +1666,7 @@ tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, t("Tooltip.Sha
 tooltip_refs["ConvergenceOffset"] = CreateToolTip(convergence_offset_label, t("Tooltip.ConvergenceOffset"))
 tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, t("Tooltip.ParallaxBalance"))
 tooltip_refs["MaxPixelShift"] = CreateToolTip(max_pixel_shift_label, t("Tooltip.MaxPixelShift"))
+tooltip_refs["DOFStrength"] = CreateToolTip(dof_strength_label, t("Tooltip.DOFStrength"))
 
 # Checkboxes
 tooltip_refs["PreserveAspect"] = CreateToolTip(preserve_aspect_checkbox, t("Tooltip.PreserveAspect"))
@@ -1706,6 +1744,7 @@ def refresh_ui_labels():
     convergence_offset_label.config(text=t("Convergence Offset"))
     parallax_balance_label.config(text=t("parallax_balance"))
     max_pixel_shift_label.config(text=t("Max Pixel Shift %"))
+    dof_strength_label.config(text=t("DOF Strength"))
 
     # Toggles and Checkboxes
     preserve_aspect_checkbox.config(text=t("Preserve Original Aspect Ratio"))
@@ -1763,7 +1802,6 @@ def get_all_presets():
 
 preset_menu['values'] = get_all_presets()
 
-
 def apply_preset(preset_name):
     path = os.path.join(PRESET_DIR, f"{preset_name}.json")
 
@@ -1781,7 +1819,8 @@ def apply_preset(preset_name):
     max_pixel_shift.set(config.get("max_pixel_shift", 0.02))
     parallax_balance.set(config.get("parallax_balance", 0.8))
     sharpness_factor.set(config.get("sharpness_factor", 1.0))
-
+    dof_strength.set(config.get("dof_strength", 2.0))
+    
     use_ffmpeg.set(config.get("use_ffmpeg", False))
     enable_feathering.set(config.get("enable_feathering", True))
     enable_edge_masking.set(config.get("enable_edge_masking", True))
@@ -1806,30 +1845,44 @@ def save_current_preset(name="custom_preset.json"):
         "enable_edge_masking": enable_edge_masking.get(),
         "use_floating_window": use_floating_window.get(),
         "auto_crop_black_bars": auto_crop_black_bars.get(),
-        "skip_blank_frames": skip_blank_frames.get()
+        "skip_blank_frames": skip_blank_frames.get(),
+        "dof_strength": dof_strength.get()
     }
 
-    with open(os.path.join(PRESET_DIR, name), 'w') as f:
+    path = os.path.join(PRESET_DIR, name)
+    with open(path, 'w') as f:
         json.dump(preset, f, indent=4)
+
     print(f"💾 Preset saved: {name}")
+    preset_menu['values'] = get_all_presets()
+    preset_menu.set(os.path.splitext(name)[0])
+
 
 def load_settings():
     global current_language
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            settings = json.load(f)
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"❌ Error loading settings: {e}")
+            return
+
         for name, value in settings.items():
             if name in gui_variables:
-                gui_variables[name].set(value)
+                try:
+                    gui_variables[name].set(value)
+                except Exception as e:
+                    print(f"⚠️ Failed to set variable '{name}': {e}")
+
         if "language" in settings:
             current_language = settings["language"]
-            load_language(current_language)  # Load without refreshing yet
+            load_language(current_language)
+
         if "window_geometry" in settings:
             root.geometry(settings["window_geometry"])
+
         print("✅ Settings loaded from file.")
-
-
-load_settings()
 
 # Ensure settings are saved when the program closes
 def on_exit():

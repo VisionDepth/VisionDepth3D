@@ -36,6 +36,8 @@
   "Convergence Offset": "Desplazamiento de convergencia",
   "parallax_balance": "Equilibrio de paralaje",
   "Max Pixel Shift %": "Desplazamiento máximo de píxeles %",
+  "DOF Strength": "Intensidad de profundidad de campo",
+
 
   "Preserve Original Aspect Ratio": "Conservar relación de aspecto original",
   "Auto Crop Black Bars": "Recortar automáticamente las barras negras",
@@ -160,5 +162,6 @@
   "Tooltip.FPSMultiplier": "Controla cuántos fotogramas extra se generan entre los originales (por ejemplo, 2x, 4x, 8x FPS).",
   "Tooltip.AIBlend": "Controla cuánto de la salida IA se mezcla con el original. Valores altos conservan más textura original.",
   "Tooltip.InputResPct": "Reduce la escala de entrada antes de aumentar la escala para ahorrar memoria o mejorar la velocidad. 100% = resolución completa.",
-  "Tooltip.ModelSelect": "Selecciona un modelo ONNX ESRGAN. x2 = más rápido, x4 = más nítido pero más lento."
+  "Tooltip.ModelSelect": "Selecciona un modelo ONNX ESRGAN. x2 = más rápido, x4 = más nítido pero más lento.",
+  "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central."
 }

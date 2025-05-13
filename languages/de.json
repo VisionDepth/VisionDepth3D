@@ -38,6 +38,8 @@
   "Convergence Offset": "Konvergenz-Versatz",
   "parallax_balance": "Parallaxenausgleich",
   "Max Pixel Shift %": "Max. Pixelverschiebung %",
+  "DOF Strength": "Tiefenschärfe-Stärke",
+
 
   "Preserve Original Aspect Ratio": "Originalseitenverhältnis beibehalten",
   "Auto Crop Black Bars": "Schwarze Balken automatisch zuschneiden",
@@ -160,5 +162,7 @@
   "Tooltip.FPSMultiplier": "Steuert, wie viele zusätzliche Frames zwischen Originalen erzeugt werden (z. B. 2x, 4x, 8x FPS).",
   "Tooltip.AIBlend": "Steuert, wie stark das KI-Ergebnis mit dem Original vermischt wird. Hohe Werte bewahren mehr ursprüngliche Textur.",
   "Tooltip.InputResPct": "Skaliert die Eingabe vor dem Hochskalieren herunter, um Speicher zu sparen oder Geschwindigkeit zu erhöhen. 100 % = volle Auflösung.",
-  "Tooltip.ModelSelect": "Wähle ein ESRGAN-ONNX-Modell. x2 = schneller, x4 = schärfer, aber langsamer."
+  "Tooltip.ModelSelect": "Wähle ein ESRGAN-ONNX-Modell. x2 = schneller, x4 = schärfer, aber langsamer.",
+  "Tooltip.DOFStrength": "Steuert die Intensität der Tiefenschärfenunschärfe. Höhere Werte simulieren einen stärkeren Schärfeabfall von der zentralen Tiefenebene."
+
 }

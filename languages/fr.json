@@ -36,6 +36,7 @@
   "Convergence Offset": "Décalage de convergence",
   "parallax_balance": "Équilibre de parallaxe",
   "Max Pixel Shift %": "Décalage maximal des pixels %",
+  "DOF Strength": "Intensité de la profondeur de champ",
 
   "Preserve Original Aspect Ratio": "Préserver le rapport d'aspect original",
   "Auto Crop Black Bars": "Rogner automatiquement les bandes noires",
@@ -146,6 +147,8 @@
   "Tooltip.EdgeMasking": "Active le masquage des bords après le décalage pour réduire les distorsions des bords durs.",
   "Tooltip.Feathering": "Adoucit les bords du masque 3D pour des transitions visuelles plus douces.",
   "Tooltip.SkipBlankFrames": "Ignore les images blanches ou vides lors du rendu. Utile pour des coupes plus propres.",
-  "Tooltip.UseFFmpeg": "Active le rendu"
+  "Tooltip.UseFFmpeg": "Active le rendu",
+  "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central."
+
 }
  

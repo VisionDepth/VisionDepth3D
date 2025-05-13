@@ -35,6 +35,7 @@ def load_supported_models():
         "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
         "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
+        "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
         "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
@@ -153,7 +154,7 @@ def load_onnx_model(model_dir):
 
         return preds
 
-    return onnx_pipe, None
+    return onnx_pipe, {"is_onnx": True, "input_rank": input_rank}
 
 
 
@@ -169,27 +170,61 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
         return
 
     try:
-        model, processor = ensure_model_downloaded(checkpoint)
+        model, processor_or_metadata = ensure_model_downloaded(checkpoint)
         if not model:
             status_label_widget.config(text=f"❌ Failed to load model: {selected_checkpoint}")
             return
 
         device = 0 if torch.cuda.is_available() else -1
 
-        if callable(model):
-            # ONNX function pipeline
+        is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
+
+        if is_onnx:
+            # ✅ ONNX: model is already batch-safe
             pipe = model
             status_label_widget.config(text=f"✅ ONNX model loaded: {selected_checkpoint}")
+
+            # 🔥 ONNX Warm-up
+            try:
+                dummy_size = (518, 518)  # Safe default for ONNX, especially Video Depth Anything
+                dummy = Image.new("RGB", dummy_size, (127, 127, 127))
+                input_rank = processor_or_metadata.get("input_rank", 4)
+                dummy_batch = [dummy] * (32 if input_rank == 5 else 1)
+                _ = pipe(dummy_batch)
+
+                print("🔥 ONNX model warmed up with dummy input")
+            except Exception as e:
+                print(f"⚠️ ONNX warm-up failed: {e}")
+
         else:
-            pipe = pipeline(
+            processor = processor_or_metadata  # ✅ Fix: properly unpack processor
+
+            # ✅ Hugging Face: wrap pipeline to ensure batch-safety
+            raw_pipe = pipeline(
                 "depth-estimation",
                 model=model,
                 image_processor=processor,
                 device=device
             )
+
+            def hf_batch_safe_pipe(images):
+                if isinstance(images, list):
+                    return raw_pipe(images)
+                return [raw_pipe(images)]
+
+            pipe = hf_batch_safe_pipe
             status_label_widget.config(
                 text=f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
             )
+
+            # 🔥 HF Warm-up: Run dummy frame to reduce first-frame latency
+            try:
+                dummy_size = (384, 384)
+                dummy = Image.new("RGB", dummy_size, (127, 127, 127))
+                _ = pipe([dummy])
+                print("🔥 HF pipeline warmed up with dummy frame")
+            except Exception as e:
+                print(f"⚠️ HF warm-up failed: {e}")
 
         status_label_widget.update_idletasks()
 
@@ -240,8 +275,7 @@ def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, s
 def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, cancel_requested):
     output_dir = output_dir_var.get().strip()
     global global_session_start_time
-    if global_session_start_time is None:
-        global_session_start_time = time.time()
+    global_session_start_time = time.time()
 
     if not output_dir:
         messagebox.showwarning("Missing Output Folder", "⚠️ Please select an output directory before processing.")
@@ -501,8 +535,8 @@ def process_videos_in_folder(
 
     status_label.config(text=f"📂 Processing {len(video_files)} videos...")
     global global_session_start_time
-    if global_session_start_time is None:
-        global_session_start_time = time.time()
+    global_session_start_time = time.time()
+
 
     total_frames_all = sum(
         int(cv2.VideoCapture(os.path.join(folder_path, f)).get(cv2.CAP_PROP_FRAME_COUNT))
@@ -559,6 +593,8 @@ def process_video2(
     save_frames=False
 ):
     global pipe
+    global global_session_start_time
+
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
         status_label.config(text=f"❌ Error: Cannot open {file_path}")
@@ -606,6 +642,9 @@ def process_video2(
 
     inference_size = parse_inference_resolution(inference_res_var.get())
 
+    # ✅ Initialize session timer at the start of processing
+    global_session_start_time = time.time()
+
     while True:
         if cancel_requested.is_set():
             print("🛑 Cancel requested before frame read.")
@@ -618,7 +657,7 @@ def process_video2(
         frame_count += 1
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(frame_rgb)
-        
+
         if inference_size:
             pil_image = pil_image.resize(inference_size, Image.BICUBIC)
 
@@ -659,7 +698,7 @@ def process_video2(
 
             frames_batch.clear()
 
-        global global_session_start_time
+        # ✅ Elapsed/ETA calculation from consistent session start
         elapsed = time.time() - global_session_start_time
         avg_fps = frame_count / elapsed if elapsed > 0 else 0
         remaining_frames = total_frames_all - (frames_processed_all + frame_count)
