@@ -11,6 +11,9 @@ from core.render_3d import (
     depth_to_tensor,
     pixel_shift_cuda,
     apply_sharpening,
+    tensor_to_frame,
+    pad_to_aspect_ratio,
+    format_3d_output,
 )
 from core.preview_utils import grab_frame_from_video, generate_preview_image
 
@@ -46,7 +49,8 @@ def open_3d_preview_window(
     enable_edge_masking, 
     enable_feathering,
     sharpness_factor,
-    max_pixel_shift
+    max_pixel_shift,
+    dof_strength 
 ):
     settings = load_settings()
 
@@ -91,6 +95,15 @@ def open_3d_preview_window(
     height_entry = tk.Entry(top_controls_frame, width=5)
     height_entry.insert(0, settings.get('height', '540'))
     height_entry.grid(row=0, column=3, padx=(0, 10))
+    preview_job = None  
+
+
+    def update_preview_debounced(*args):
+        nonlocal preview_job
+        if preview_job is not None:
+            preview_win.after_cancel(preview_job)
+        preview_job = preview_win.after(150, update_preview_now)  # 150ms debounce
+
 
     def apply_size():
         try:
@@ -153,6 +166,11 @@ def open_3d_preview_window(
     max_shift_slider= tk.Entry(feather_frame, width=8)
     max_shift_slider.insert(0, str(max_pixel_shift.get()))
     max_shift_slider.grid(row=0, column=7, padx=10)
+    
+    tk.Label(feather_frame, text="DoF Strength").grid(row=1, column=4, padx=10)
+    dof_strength_slider = tk.Entry(feather_frame, width=8)
+    dof_strength_slider.insert(0, str(dof_strength.get()))
+    dof_strength_slider.grid(row=1, column=5, padx=10)
 
     def update_max_shift(*_):
         try:
@@ -186,24 +204,28 @@ def open_3d_preview_window(
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for sharpness.")
 
+    def update_dof_strength(*_):
+        try:
+            val = float(dof_strength_slider.get())
+            dof_strength.set(val)
+            update_preview_debounced()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Please enter a valid float for DoF Strength.")
+
+    dof_strength_slider.bind("<KeyRelease>", update_dof_strength)
+
+
     feather_strength_slider.bind("<KeyRelease>", update_feather_strength)
     blur_ksize_slider.bind("<KeyRelease>", update_blur_ksize)
     sharpening_slider.bind("<KeyRelease>", update_sharpness)
     max_shift_slider.bind("<KeyRelease>", update_max_shift)
+
 
     convergence_offset_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Convergence Offset", variable=convergence_offset, length=200)
     convergence_offset_slider.grid(row=1, column=0, padx=10)
 
     parallax_balance_slider = tk.Scale(feather_frame, from_=0.005, to=0.10, resolution=0.005, orient="horizontal", label="Parallax Balance", variable=parallax_balance, length=200)
     parallax_balance_slider.grid(row=1, column=2, padx=10)
-    
-    preview_job = None  # <-- Add this at the top level of open_3d_preview_window()
-
-    def update_preview_debounced(*args):
-        nonlocal preview_job
-        if preview_job is not None:
-            preview_win.after_cancel(preview_job)
-        preview_job = preview_win.after(150, update_preview_now)  # 150ms debounce
 
     def update_preview_now():
         nonlocal preview_job
@@ -229,26 +251,65 @@ def open_3d_preview_window(
         frame_tensor = F.interpolate(frame_to_tensor(frame).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
         depth_tensor = F.interpolate(depth_to_tensor(depth).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
 
-        left, right, shift_map = pixel_shift_cuda(
+        # ✅ Pull numeric values directly from Entry widgets
+        try:
+            blur_ksize_val = int(blur_ksize_slider.get())
+            feather_strength_val = float(feather_strength_slider.get())
+            max_pixel_shift_val = float(max_shift_slider.get())
+            convergence_offset_val = float(convergence_offset.get())
+            parallax_balance_val = float(parallax_balance.get())
+            dof_strength_val = float(dof_strength_slider.get())
+            sharpness_val = float(sharpening_slider.get())
+        except ValueError:
+            messagebox.showwarning("Input Error", "One or more numeric settings are invalid.")
+            return
+
+        # ✅ Call pixel_shift_cuda using actual slider values
+        left_tensor, right_tensor, shift_map = pixel_shift_cuda(
             frame_tensor, depth_tensor, w, h,
             fg_shift.get(), mg_shift.get(), bg_shift.get(),
-            blur_ksize=blur_ksize.get(),
-            feather_strength=feather_strength.get(),
+            blur_ksize=blur_ksize_val,
+            feather_strength=feather_strength_val,
             return_shift_map=True,
             use_subject_tracking=use_subject_tracking.get(),
             enable_floating_window=use_floating_window.get(),
-            max_pixel_shift_percent=max_pixel_shift.get(),
-            convergence_offset=convergence_offset.get(),
-            parallax_balance=parallax_balance.get(),
+            max_pixel_shift_percent=max_pixel_shift_val,
+            convergence_offset=convergence_offset_val,
+            parallax_balance=parallax_balance_val,
             enable_edge_masking=enable_edge_masking.get(),
-            enable_feathering=enable_feathering.get()
+            enable_feathering=enable_feathering.get(),
+            dof_strength=dof_strength_val,
         )
 
-        preview_img = generate_preview_image(preview_type_var.get(), left, right, shift_map, w, h)
-        if preview_img is not None:
-            preview_img = apply_sharpening(preview_img, sharpness_factor.get())
-            img_rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB)
+        # Convert tensors to frames
+        if isinstance(left_tensor, torch.Tensor):
+            left_frame = tensor_to_frame(left_tensor)
+        else:
+            left_frame = left_tensor
 
+        if isinstance(right_tensor, torch.Tensor):
+            right_frame = tensor_to_frame(right_tensor)
+        else:
+            right_frame = right_tensor
+
+        # Apply sharpening per-eye, just like render
+        left_frame = apply_sharpening(left_frame, sharpness_factor.get())
+        right_frame = apply_sharpening(right_frame, sharpness_factor.get())
+
+        # Format output according to preview type
+        preview_mode = preview_type_var.get()
+        if preview_mode == "HSBS":
+            preview_img = format_3d_output(left_frame, right_frame, "Half-SBS")
+        elif preview_mode == "Red-Blue Anaglyph":
+            preview_img = format_3d_output(left_frame, right_frame, "Red-Cyan Anaglyph")
+        elif preview_mode == "Passive Interlaced":
+            preview_img = format_3d_output(left_frame, right_frame, "Passive Interlaced")
+        else:
+            preview_img = generate_preview_image(preview_mode, left_tensor, right_tensor, shift_map, w, h)
+
+        # Resize for preview
+        if preview_img is not None:
+            img_rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB)
             try:
                 preview_width = int(width_entry.get())
                 preview_height = int(height_entry.get())
@@ -259,7 +320,6 @@ def open_3d_preview_window(
             img_tk = ImageTk.PhotoImage(pil_img)
             preview_canvas.config(image=img_tk)
             preview_canvas.image = img_tk
-
 
 
     def on_close():
@@ -278,6 +338,7 @@ def open_3d_preview_window(
             'parallax_balance': parallax_balance.get(),
             'enable_edge_masking': enable_edge_masking.get(),
             'enable_feathering': enable_feathering.get(),
+            'dof_strength': dof_strength.get(),
         }
         save_settings(settings)
         preview_cap.release()
