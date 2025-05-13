@@ -15,7 +15,7 @@ from collections import deque
 from scipy.ndimage import gaussian_filter
 from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
 from core.ffmpeg_blackdetect import detect_black_white_frames
-
+import math
 
 
 # Device setup
@@ -144,7 +144,7 @@ def estimate_subject_depth(depth_tensor):
 
     return subject_depth
 
-def enhance_curvature(depth_tensor, strength=0.08):
+def enhance_curvature(depth_tensor, strength=0.15):
     """
     Adds a 2D curvature profile to simulate facial/body roundness.
     """
@@ -444,7 +444,10 @@ def pixel_shift_cuda(
     return_shift_map=True,
     enable_feathering=True,
     enable_edge_masking=True,
+    dof_strength=2.0,
 ):
+    width = int(width)
+    height = int(height)
     device = frame_tensor.device
 
     frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
@@ -461,9 +464,14 @@ def pixel_shift_cuda(
 
     half_width = width / 2.0
 
-    raw_shift = (-depth_tensor * fg_weight * fg_shift +
-                 -depth_tensor * mg_weight * mg_shift +
-                 depth_tensor * bg_weight * bg_shift)
+    #raw_shift = (-depth_tensor * fg_weight * fg_shift +
+    #             -depth_tensor * mg_weight * mg_shift +
+    #             depth_tensor * bg_weight * bg_shift)
+                  
+    raw_shift = (fg_weight * fg_shift +
+             mg_weight * mg_shift +
+             bg_weight * bg_shift)
+             
 
     total_shift = (raw_shift * parallax_balance) / half_width
 
@@ -471,18 +479,19 @@ def pixel_shift_cuda(
         subject_depth = estimate_subject_depth(depth_tensor)
         adjusted_depth = subject_depth * parallax_balance
 
-        depth_flat = depth_tensor.view(-1)
-        depth_std = torch.std(depth_flat)
-        scaling_factor = torch.clamp(depth_std * 5.0, 0.5, 1.5).item()
-        fg_shift *= scaling_factor
-        mg_shift *= scaling_factor
-        bg_shift *= scaling_factor
+        #depth_flat = depth_tensor.view(-1)
+        #depth_std = torch.std(depth_flat)
+        #scaling_factor = torch.clamp(depth_std * 5.0, 0.5, 1.5).item()
+        #fg_shift *= scaling_factor
+        #mg_shift *= scaling_factor
+        #bg_shift *= scaling_factor
 
         zero_parallax_offset = (
             (-adjusted_depth * fg_shift) +
             (-adjusted_depth * mg_shift) +
             (adjusted_depth * bg_shift)
-        ) / half_width
+        ) / half_width - convergence_offset
+
 
         if enable_floating_window:
             subject_weight = torch.clamp(1.0 - subject_depth * 2.5, 0.25, 1.0)
@@ -491,36 +500,6 @@ def pixel_shift_cuda(
             zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset.item(), threshold=0.002)
 
         total_shift -= zero_parallax_offset
-
-    total_shift += convergence_offset
-
-    # --- Fix applied here ---
-    if convergence_offset != 0.0:
-        with torch.no_grad():
-            convergence_grid = -torch.full_like(depth_tensor, convergence_offset).squeeze(0)
-
-            dx = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0))
-            dy = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0))
-            grad_mag = torch.sqrt(dx ** 2 + dy ** 2)
-
-            edge_strength = np.clip(abs(convergence_offset) * 80.0, 30.0, 80.0)
-            edge_mask_orig = torch.sigmoid((grad_mag - 0.02) * edge_strength)
-            edge_mask_orig = F.avg_pool2d(edge_mask_orig.unsqueeze(0), kernel_size=7, stride=1, padding=3).squeeze(0)
-
-            soft_shift = convergence_grid * (1.0 - edge_mask_orig)
-
-            smoothness_mask = (grad_mag < 0.05).float()
-            smoothness_mask = F.avg_pool2d(smoothness_mask.unsqueeze(0), 5, stride=1, padding=2).squeeze(0)
-
-            blurred_shift = F.avg_pool2d(soft_shift.unsqueeze(0), 5, stride=1, padding=2).squeeze(0)
-            soft_shift = soft_shift * (1.0 - smoothness_mask) + blurred_shift * smoothness_mask
-
-            warped_depth = shift_mask(depth_tensor, soft_shift, width)
-            warped_frame = shift_mask(frame_tensor, soft_shift, width)
-
-            # UPDATE depth_tensor to warped_depth immediately
-            depth_tensor = warped_depth
-            frame_tensor = warped_frame
 
     warped_depth = depth_tensor
 
@@ -562,7 +541,15 @@ def pixel_shift_cuda(
     else:
         left_blended = left
         right_blended = right
+    
+    # === Depth of Field Simulation ===
+    focal_depth = estimate_subject_depth(warped_depth)
 
+    left_blended = apply_dof_cuda(left_blended, warped_depth, focal_depth, max_sigma=dof_strength)
+    right_blended = apply_dof_cuda(right_blended, warped_depth, focal_depth, max_sigma=dof_strength)
+
+
+    
     if return_shift_map:
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
     else:
@@ -586,6 +573,65 @@ def apply_sharpening(frame, factor=1.0):
     # Apply and clip result to valid range
     sharpened = cv2.filter2D(frame, -1, kernel)
     return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+
+def apply_dof_cuda(rgb_tensor, depth_tensor, focal_depth, max_sigma=2.0):
+    """
+    GPU-accelerated Depth of Field using adaptive Gaussian blur with soft interpolation.
+    - rgb_tensor: [3, H, W]
+    - depth_tensor: [1, H, W]
+    - focal_depth: scalar float (0..1)
+    """
+    C, H, W = rgb_tensor.shape
+    device = rgb_tensor.device
+
+    # 1. Compute blur weight map
+    depth_diff = torch.abs(depth_tensor - focal_depth)  # [1, H, W]
+    blur_weights = torch.clamp(depth_diff * 2.0, 0.0, 1.0)  # [1, H, W]
+    
+    # 2. Define blur levels
+    levels = [0.0, 0.5, 1.0, 1.5, 2.0]
+    blurred_versions = []
+    for sigma in levels:
+        if sigma == 0.0:
+            blurred_versions.append(rgb_tensor)
+        else:
+            ksize = int(2 * math.ceil(2 * sigma) + 1)
+            blurred = tv_gaussian_blur(rgb_tensor, kernel_size=ksize, sigma=sigma)
+            blurred_versions.append(blurred)
+
+    # 3. Stack: [N, 3, H, W]
+    stack = torch.stack(blurred_versions)
+
+    # 4. Indexing and alpha for blending
+    blur_idx = blur_weights * (len(levels) - 1)  # [1, H, W]
+    lower_idx = blur_idx.floor().long().clamp(0, len(levels) - 2)  # [1, H, W]
+    upper_idx = lower_idx + 1
+    alpha = (blur_idx - lower_idx.float())  # [1, H, W]
+
+    output = torch.zeros_like(rgb_tensor)
+
+    # Flatten for vectorized indexing
+    flat_idx = (H * W)
+    lower_idx_flat = lower_idx.view(-1)
+    upper_idx_flat = upper_idx.view(-1)
+    alpha_flat = alpha.view(-1)
+
+    for c in range(3):
+        blended = torch.zeros(H * W, device=device)
+        for i in range(len(levels) - 1):
+            mask = (lower_idx_flat == i)
+            if not mask.any():
+                continue
+            lower_vals = stack[i, c].view(-1)[mask]
+            upper_vals = stack[i + 1, c].view(-1)[mask]
+            a = alpha_flat[mask]
+            blended[mask] = (1 - a) * lower_vals + a * upper_vals
+        output[c] = blended.view(H, W)
+
+    return output.clamp(0.0, 1.0)
+
+
 
 # 3D Formats
 def format_3d_output(left, right, fmt):
@@ -661,6 +707,7 @@ def render_sbs_3d(
     output_format,
     selected_aspect_ratio,
     aspect_ratios,
+    dof_strength,
     feather_strength=0.0,
     blur_ksize=1,
     use_ffmpeg=False,
@@ -903,8 +950,6 @@ def render_sbs_3d(
         depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
 
         fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
-        if output_format in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
-            bg *= 2.0
 
         if idx in blank_frames:
             # 🔥 Detected blank frame: skip pixel shifting
@@ -923,7 +968,9 @@ def render_sbs_3d(
                 max_pixel_shift_percent=max_pixel_shift_percent,
                 convergence_offset=convergence_offset,
                 enable_edge_masking=enable_edge_masking,
-                enable_feathering=enable_feathering
+                enable_feathering=enable_feathering,
+                dof_strength=dof_strength,
+
             )
 
         subject_depth = estimate_subject_depth(depth_tensor)
@@ -1064,7 +1111,8 @@ def start_processing_thread():
             convergence_offset,
             enable_edge_masking,
             enable_feathering,
-            skip_blank_frames
+            skip_blank_frames,
+            dof_strength
         ),
         daemon=True
     )
@@ -1188,7 +1236,8 @@ def process_video(
     convergence_offset,
     enable_edge_masking,
     enable_feathering,
-    skip_blank_frames, 
+    skip_blank_frames,
+    dof_strength,    
 ):
 
     global original_video_width, original_video_height
@@ -1281,6 +1330,7 @@ def process_video(
             enable_edge_masking=enable_edge_masking.get(),
             enable_feathering=enable_feathering.get(),
             skip_blank_frames=skip_blank_frames.get(),
+            dof_strength=dof_strength.get(),
         )
 
 
