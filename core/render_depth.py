@@ -12,6 +12,7 @@ import matplotlib.cm as cm
 import onnxruntime as ort
 import subprocess
 import diffusers
+import diffusers
 import transformers
 
 from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
@@ -105,6 +106,7 @@ def ensure_model_downloaded(checkpoint):
                 model_id,
                 variant="fp16",
                 torch_dtype=torch.float16,
+                cache_dir=local_model_dir  # ✅ Force download to your custom weights folder
             ).to("cuda" if torch.cuda.is_available() else "cpu")
 
             def diffusion_pipe(images):
