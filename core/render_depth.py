@@ -11,6 +11,7 @@ import cv2
 import matplotlib.cm as cm
 import onnxruntime as ort
 import subprocess
+import diffusers
 
 from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
 
@@ -20,6 +21,8 @@ cancel_flag = threading.Event()
 cancel_requested = threading.Event()
 global_session_start_time = None
 
+previous_depth = None
+alpha = 0.6  # smoothing factor
 
 # === Setup: Local weights directory ===
 local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "weights"))
@@ -31,6 +34,7 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
+        "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
         "Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
         "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
         "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
@@ -90,7 +94,37 @@ def ensure_model_downloaded(checkpoint):
         except Exception as e:
             print(f"❌ Failed to load local model: {e}")
             return None, None
+    
+    # === Diffusion Model Check ===
+    if checkpoint.startswith("diffusers:"):
+        from diffusers import MarigoldDepthPipeline
+        model_id = checkpoint.replace("diffusers:", "")
+        try:
+            pipe = MarigoldDepthPipeline.from_pretrained(
+                model_id,
+                variant="fp16",
+                torch_dtype=torch.float16,
+            ).to("cuda" if torch.cuda.is_available() else "cpu")
 
+            def diffusion_pipe(images):
+                if not isinstance(images, list):
+                    images = [images]
+                results = []
+                for img in images:
+                    result = pipe(img)
+                    results.append({"predicted_depth": result.prediction[0]})
+                return results
+
+            print(f"🌀 Diffusion depth model loaded: {model_id}")
+            diffusion_pipe._is_marigold = True  # ✅ Add this!
+            diffusion_pipe.image_processor = pipe.image_processor 
+            return diffusion_pipe, {"is_diffusion": True}
+
+        except Exception as e:
+            print(f"❌ Failed to load diffusion depth model: {e}")
+            return None, None
+
+    
     # Hugging Face online model
     safe_folder_name = checkpoint.replace("/", "_")
     local_path = os.path.join(local_model_dir, safe_folder_name)
@@ -153,7 +187,7 @@ def load_onnx_model(model_dir):
             raise ValueError(f"❌ Unsupported input rank: {input_rank}")
 
         return preds
-
+    onnx_pipe._is_marigold = False  # ✅ Prevents false detection
     return onnx_pipe, {"is_onnx": True, "input_rank": input_rank}
 
 
@@ -178,6 +212,7 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
         device = 0 if torch.cuda.is_available() else -1
 
         is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
+        is_diffusion = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_diffusion", False)
 
         if is_onnx:
             # ✅ ONNX: model is already batch-safe
@@ -195,7 +230,19 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
                 print("🔥 ONNX model warmed up with dummy input")
             except Exception as e:
                 print(f"⚠️ ONNX warm-up failed: {e}")
+            
+        elif is_diffusion:
+            pipe = model  # Already a callable
+            status_label_widget.config(text=f"✅ Diffusion model loaded: {selected_checkpoint}")
 
+            try:
+                dummy = Image.new("RGB", (512, 512), (127, 127, 127))
+                _ = pipe(dummy)
+                print("🔥 Diffusion model warmed up with dummy frame")
+            except Exception as e:
+                print(f"⚠️ Diffusion warm-up failed: {e}")
+
+            
         else:
             processor = processor_or_metadata  # ✅ Fix: properly unpack processor
 
@@ -258,7 +305,7 @@ def get_dynamic_batch_size(base=4, scale_factor=1.0, max_limit=32, reserve_vram_
         return min(estimated_batch, max_limit)
     return base
 
-def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root):
+def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, invert_var, root):
     folder_path = filedialog.askdirectory(title="Select Folder Containing Images")
     if not folder_path:
         cancel_requested.clear()  # ✅ Reset before starting
@@ -267,12 +314,12 @@ def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, s
 
     threading.Thread(
         target=process_images_in_folder,
-        args=(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, cancel_requested),
+        args=(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, invert_var),
         daemon=True,
     ).start()
 
 
-def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, cancel_requested):
+def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, invert_var):
     output_dir = output_dir_var.get().strip()
     global global_session_start_time
     global_session_start_time = time.time()
@@ -290,9 +337,8 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
             root.after(10, lambda: status_label.config(text="❌ Failed to create output directory."))
             return
 
-    # ✅ Get and parse resolution from dropdown
     inference_size = parse_inference_resolution(inference_res_var.get())
-    
+
     try:
         user_value = batch_size_widget.get().strip()
         batch_size = int(user_value) if user_value else get_dynamic_batch_size()
@@ -301,7 +347,7 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
     except Exception:
         batch_size = get_dynamic_batch_size()
         status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
-        
+
     image_files = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
@@ -318,20 +364,22 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
 
     start_time = time.time()
 
-    # ✅ Process in batches using resized input images
     for i in range(0, total_images, batch_size):
         if cancel_requested.is_set():
             root.after(10, lambda: status_label.config(text="❌ Cancelled by user."))
             return
 
         batch_files = image_files[i:i + batch_size]
-
         images = []
         original_sizes = []
+
         for file in batch_files:
             img = Image.open(file).convert("RGB")
             original_sizes.append(img.size)
-            images.append(img.resize(inference_size, Image.BICUBIC))
+            if inference_size:
+                images.append(img.resize(inference_size, Image.BICUBIC))
+            else:
+                images.append(img)
 
         print(f"🚀 Running batch of {len(images)} images at {inference_size}")
         predictions = pipe(images)
@@ -342,19 +390,51 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
                 return
 
             file_path = batch_files[j]
-            raw_depth = prediction["predicted_depth"]
-            depth_norm = (raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())
-            depth_tensor = depth_norm.squeeze()
-            depth_np = (depth_tensor * 255).cpu().numpy().astype(np.uint8)
-
-            # ✅ Resize depth map back to original resolution
             orig_w, orig_h = original_sizes[j]
-            depth_np = cv2.resize(depth_np, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
 
-            image_name = os.path.splitext(os.path.basename(file_path))[0]
-            output_filename = f"{image_name}_depth.png"
-            file_save_path = os.path.join(output_dir, output_filename)
-            Image.fromarray(depth_np).save(file_save_path)
+            try:
+                depth_tensor = prediction["predicted_depth"]
+
+                # 🔄 Check for Marigold 16-bit support
+                if getattr(pipe, "_is_marigold", False):
+                    # ✅ Save 16-bit PNG from Marigold
+                    depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
+                    depth_image = depth_image.resize((orig_w, orig_h), Image.BICUBIC)
+
+                    if invert_var.get():
+                        print("🌀 Inverting 16-bit depth for:", file_path)
+                        depth_array = np.array(depth_image, dtype=np.uint16)
+                        depth_array = 65535 - depth_array  # Manual inversion
+                        depth_image = Image.fromarray(depth_array, mode="I;16")
+
+                else:
+                    # 🧠 Fallback to 8-bit normalized path
+                    depth_norm = (depth_tensor - depth_tensor.min()) / (depth_tensor.max() - depth_tensor.min())
+
+                    if isinstance(depth_tensor, np.ndarray):
+                        depth_np = (depth_norm.squeeze() * 255).astype(np.uint8)
+                    else:
+                        depth_np = (depth_norm.squeeze() * 255).cpu().numpy().astype(np.uint8)
+
+                    if invert_var.get():
+                        print("🌀 Inverting 8-bit depth for:", file_path)
+                        depth_np = 255 - depth_np
+
+                    depth_np = cv2.resize(depth_np, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+                    depth_image = Image.fromarray(depth_np)
+
+
+
+
+                # 💾 Save
+                image_name = os.path.splitext(os.path.basename(file_path))[0]
+                output_filename = f"{image_name}_depth.png"
+                file_save_path = os.path.join(output_dir, output_filename)
+                depth_image.save(file_save_path)
+
+            except Exception as e:
+                print(f"❌ Error processing {file_path}: {e}")
+                continue
 
             elapsed_time = time.time() - start_time
             fps = (i + j + 1) / elapsed_time if elapsed_time > 0 else 0
@@ -364,7 +444,6 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
 
     root.after(10, lambda: status_label.config(text="✅ All images processed successfully!"))
     root.after(10, lambda: progress_bar.config(value=progress_bar["maximum"]))
-
 
 
 def update_progress(processed, total, fps, eta, progress_bar, status_label):
@@ -379,44 +458,58 @@ def update_progress(processed, total, fps, eta, progress_bar, status_label):
 
 
 def process_image(file_path, colormap_var, invert_var, output_dir_var, inference_res_var, input_label, output_label, status_label, progress_bar, folder=False):
-    """Processes a single image file and saves the depth-mapped version."""
+    global pipe
     image = Image.open(file_path).convert("RGB")
     original_size = image.size
 
     inference_size = parse_inference_resolution(inference_res_var.get())
-
-    # ✅ Resize input image for inference if required
-    if inference_size:
-        image_resized = image.resize(inference_size, Image.BICUBIC)
-    else:
-        image_resized = image.copy()  # Keep original resolution
+    image_resized = image.resize(inference_size, Image.BICUBIC) if inference_size else image.copy()
 
     predictions = pipe(image_resized)
+    if not (isinstance(predictions, list) and "predicted_depth" in predictions[0]):
+        raise ValueError("❌ Unexpected prediction format from depth model.")
 
-    if "predicted_depth" in predictions:
-        raw_depth = predictions["predicted_depth"]
-        depth_norm = (raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())
-        depth_tensor = depth_norm.squeeze()
-        depth_np = (depth_tensor * 255).cpu().numpy().astype(np.uint8)
+    depth_tensor = predictions[0]["predicted_depth"]
 
-        # ✅ Resize depth map back to original resolution
-        depth_np = cv2.resize(depth_np, original_size, interpolation=cv2.INTER_CUBIC)
+    try:
+        # === Marigold 16-bit path ===
+        if getattr(pipe, "_is_marigold", False):
+            # === Marigold 16-bit path ===
+            depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
+            depth_image = depth_image.resize(original_size, Image.BICUBIC)
 
-        cmap_choice = colormap_var.get()
-        if cmap_choice == "Default":
-            depth_image = Image.fromarray(depth_np)
+            if invert_var.get():
+                print("🌀 Inverting 16-bit depth for single image")
+                depth_image = ImageOps.invert(depth_image.convert("I")).convert("I;16")
+
         else:
-            cmap = cm.get_cmap(cmap_choice.lower())
-            depth_np_float = depth_np.astype(np.float32) / 255.0
-            colored = cmap(depth_np_float)
-            colored = (colored[:, :, :3] * 255).astype(np.uint8)
-            depth_image = Image.fromarray(colored)
-    else:
-        depth_image = predictions["depth"]
+            # === Fallback for other models ===
+            depth_norm = (depth_tensor - depth_tensor.min()) / (depth_tensor.max() - depth_tensor.min())
+            depth_tensor = depth_norm.squeeze()
 
-    if invert_var.get():
-        print("Inversion enabled")
-        depth_image = ImageOps.invert(depth_image.convert("RGB"))
+            if isinstance(depth_tensor, torch.Tensor):
+                depth_np = (depth_tensor * 255).cpu().numpy().astype(np.uint8)
+            else:
+                depth_np = (depth_tensor * 255).astype(np.uint8)
+
+            if invert_var.get():
+                print("🌀 Inverting 8-bit depth for single image")
+                depth_np = 255 - depth_np
+
+            depth_np = cv2.resize(depth_np, original_size, interpolation=cv2.INTER_CUBIC)
+
+            if colormap_var.get() == "Default":
+                depth_image = Image.fromarray(depth_np)
+            else:
+                cmap = cm.get_cmap(colormap_var.get().lower())
+                colored = cmap(depth_np.astype(np.float32) / 255.0)
+                colored = (colored[:, :, :3] * 255).astype(np.uint8)
+                depth_image = Image.fromarray(colored)
+
+
+    except Exception as e:
+        print(f"❌ Error extracting depth: {e}")
+        return
 
     output_dir = output_dir_var.get().strip()
     if not output_dir:
@@ -432,21 +525,31 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
             status_label.config(text="❌ Failed to create output directory.")
             return
 
-    # ✅ Update preview in GUI
     if not folder:
         image_disp = image.copy()
         image_disp.thumbnail((480, 270))
-        photo_input = ImageTk.PhotoImage(image_disp)
-        input_label.config(image=photo_input)
-        input_label.image = photo_input
+        input_label.config(image=ImageTk.PhotoImage(image_disp))
+        input_label.image = ImageTk.PhotoImage(image_disp)
 
         depth_disp = depth_image.copy()
-        depth_disp.thumbnail((480, 270))
-        photo_depth = ImageTk.PhotoImage(depth_disp)
-        output_label.config(image=photo_depth)
-        output_label.image = photo_depth
 
-    # ✅ Save output to the selected directory
+        # ✅ Handle 16-bit grayscale preview safely
+        if depth_disp.mode in ("I", "I;16"):
+            depth_array = np.array(depth_disp)
+
+            if depth_array.dtype != np.uint16:
+                # Normalize to 16-bit range first if needed
+                depth_array = (depth_array - depth_array.min()) / (depth_array.max() - depth_array.min())
+                depth_array = (depth_array * 65535).astype(np.uint16)
+
+            # Downscale to 8-bit for preview display
+            preview_array = (depth_array / 256).astype(np.uint8)
+            depth_disp = Image.fromarray(preview_array, mode="L").convert("RGB")
+
+        depth_disp.thumbnail((480, 270))
+        output_label.config(image=ImageTk.PhotoImage(depth_disp))
+        output_label.image = ImageTk.PhotoImage(depth_disp)
+
     image_name = os.path.splitext(os.path.basename(file_path))[0]
     output_filename = f"{image_name}_depth.png"
     file_save_path = os.path.join(output_dir, output_filename)
@@ -456,6 +559,7 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
         cancel_requested.clear()
         status_label.config(text=f"✅ Image saved: {file_save_path}")
         progress_bar.config(value=100)
+
 
 def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_var, output_dir_var, inference_res_var, input_label_widget, output_label_widget):
     file_path = filedialog.askopenfilename(
@@ -595,6 +699,63 @@ def process_video2(
     global pipe
     global global_session_start_time
 
+    # Detect output directory from UI
+    output_dir = output_dir_var.get().strip()
+    if not output_dir:
+        messagebox.showwarning("Missing Output Folder", "⚠️ Please select an output directory before processing.")
+        status_label.config(text="❌ Output directory not selected.")
+        return 0
+
+    os.makedirs(output_dir, exist_ok=True)
+    input_dir, input_filename = os.path.split(file_path)
+    name, _ = os.path.splitext(input_filename)
+    output_filename = f"{name}_depth.mkv"
+    output_path = os.path.join(output_dir, output_filename)
+
+    # ✅ Special case for Marigold (16-bit export path)
+    if hasattr(pipe, "image_processor") and hasattr(pipe.image_processor, "export_depth_to_16bit_png"):
+        print("🎥 Marigold model detected — switching to frame-based 16-bit processing.")
+
+        tmp_frame_dir = os.path.join(output_dir, f"{name}_tmp_frames")
+        os.makedirs(tmp_frame_dir, exist_ok=True)
+
+        # === 1. Extract raw frames from video
+        extract_cmd = [
+            "ffmpeg", "-y", "-i", file_path,
+            os.path.join(tmp_frame_dir, "frame_%05d.png")
+        ]
+        subprocess.run(extract_cmd)
+
+        # === 2. Process images into depth maps (same folder)
+        dummy_widget = tk.StringVar(value=str(batch_size))
+        dummy_output_var = tk.StringVar(value=tmp_frame_dir)
+        dummy_root = tk.Tk(); dummy_root.withdraw()
+
+        process_images_in_folder(
+            tmp_frame_dir,
+            batch_size_widget=dummy_widget,
+            output_dir_var=dummy_output_var,
+            inference_res_var=inference_res_var,
+            status_label=status_label,
+            progress_bar=progress_bar,
+            root=dummy_root,
+            cancel_requested=cancel_requested,
+            invert_var=invert_var
+        )
+
+        # === 3. Encode depth frames to video using FFmpeg
+        encode_cmd = [
+            "ffmpeg", "-y", "-framerate", "24",  # fallback FPS
+            "-i", os.path.join(tmp_frame_dir, "frame_%05d_depth.png"),
+            "-c:v", "ffv1", "-pix_fmt", "yuv420p16le",
+            output_path
+        ]
+        subprocess.run(encode_cmd)
+
+        print(f"✅ Marigold 16-bit depth video saved: {output_path}")
+        return len(os.listdir(tmp_frame_dir))
+
+    # === Fallback: non-Marigold default behavior ===
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
         status_label.config(text=f"❌ Error: Cannot open {file_path}")
@@ -605,45 +766,23 @@ def process_video2(
     original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    output_dir = output_dir_var.get().strip()
-    if not output_dir:
-        messagebox.showwarning("Missing Output Folder", "⚠️ Please select an output directory before processing.")
-        status_label.config(text="❌ Output directory not selected.")
-        return 0
-
-    if not os.path.exists(output_dir):
-        try:
-            os.makedirs(output_dir)
-        except Exception as e:
-            messagebox.showerror("Folder Creation Failed", f"❌ Could not create output directory:\n{e}")
-            status_label.config(text="❌ Failed to create output directory.")
-            return 0
-
-    input_dir, input_filename = os.path.split(file_path)
-    name, _ = os.path.splitext(input_filename)
-    output_filename = f"{name}_depth.mkv"
-    output_path = os.path.join(output_dir, output_filename)
-
     print(f"📁 Saving video to: {output_path}")
-
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
-
     if not out.isOpened():
         print(f"❌ Failed to open video writer for {output_filename}")
         return 0
 
     frame_output_dir = os.path.join(output_dir, f"{name}_frames")
-    if save_frames and not os.path.exists(frame_output_dir):
-        os.makedirs(frame_output_dir)
+    if save_frames:
+        os.makedirs(frame_output_dir, exist_ok=True)
 
     frame_count = 0
     frames_batch = []
-
     inference_size = parse_inference_resolution(inference_res_var.get())
-
-    # ✅ Initialize session timer at the start of processing
     global_session_start_time = time.time()
+    previous_depth = None
+    alpha = 0.9
 
     while True:
         if cancel_requested.is_set():
@@ -660,7 +799,6 @@ def process_video2(
 
         if inference_size:
             pil_image = pil_image.resize(inference_size, Image.BICUBIC)
-
         frames_batch.append(pil_image)
 
         if len(frames_batch) == batch_size or frame_count == total_frames:
@@ -678,27 +816,34 @@ def process_video2(
                     out.release()
                     return frame_count
 
-                raw_depth = prediction["predicted_depth"]
-                depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze()
+                try:
+                    raw_depth = prediction["predicted_depth"]
+                    depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze()
 
-                if invert_var.get():
-                    print("🔁 Invert depth selected.")
-                    depth_tensor = 1.0 - depth_tensor
+                    if previous_depth is not None:
+                        depth_tensor = alpha * previous_depth + (1 - alpha) * depth_tensor
+                    previous_depth = depth_tensor
 
-                depth_tensor = depth_tensor.mul(255).byte()
-                depth_np = depth_tensor.cpu().numpy().astype("uint8")
-                depth_frame = cv2.cvtColor(depth_np, cv2.COLOR_GRAY2BGR)
-                depth_frame = cv2.resize(depth_frame, (original_width, original_height))
-                out.write(depth_frame)
+                    if invert_var.get():
+                        depth_tensor = 1.0 - depth_tensor
 
-                if save_frames:
-                    frame_idx = frame_count - len(predictions) + i + 1
-                    frame_filename = os.path.join(frame_output_dir, f"frame_{frame_idx}.png")
-                    cv2.imwrite(frame_filename, depth_frame)
+                    depth_tensor = depth_tensor.mul(255).byte()
+                    depth_np = depth_tensor.cpu().numpy().astype("uint8")
+
+                    depth_frame = cv2.cvtColor(depth_np, cv2.COLOR_GRAY2BGR)
+                    depth_frame = cv2.resize(depth_frame, (original_width, original_height))
+                    out.write(depth_frame)
+
+                    if save_frames:
+                        frame_idx = frame_count - len(predictions) + i + 1
+                        frame_filename = os.path.join(frame_output_dir, f"frame_{frame_idx}.png")
+                        cv2.imwrite(frame_filename, depth_frame)
+
+                except Exception as e:
+                    print(f"⚠️ Depth processing error: {e}")
 
             frames_batch.clear()
 
-        # ✅ Elapsed/ETA calculation from consistent session start
         elapsed = time.time() - global_session_start_time
         avg_fps = frame_count / elapsed if elapsed > 0 else 0
         remaining_frames = total_frames_all - (frames_processed_all + frame_count)
@@ -724,6 +869,8 @@ def process_video2(
         print(f"✅ Video saved: {output_path}")
 
     return frame_count
+
+
 
 def is_av1_encoded(file_path):
     try:
