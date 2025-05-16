@@ -8,3 +8,5 @@ matplotlib
 transformers
 ffmpeg-python
 scipy
+diffusers[torch]
+safetensors
