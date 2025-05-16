@@ -35,10 +35,13 @@
   "Midground Shift": "Verschiebung Mittelgrund",
   "Background Shift": "Verschiebung Hintergrund",
   "Sharpness Factor": "Schärfefaktor",
-  "Convergence Offset": "Konvergenz-Versatz",
-  "parallax_balance": "Parallaxenausgleich",
+  "Zero Parallax Strength": "Stärke der Null-Parallaxe",
+  "Parallax Balance": "Parallaxenausgleich",
   "Max Pixel Shift %": "Max. Pixelverschiebung %",
   "DOF Strength": "Tiefenschärfe-Stärke",
+  "Convergence Strength": "Konvergenzstärke",
+  "Enable Dynamic Convergence": "Dynamische Konvergenz aktivieren",
+
 
 
   "Preserve Original Aspect Ratio": "Originalseitenverhältnis beibehalten",
@@ -138,7 +141,7 @@
   "Tooltip.MGShift": "Passt die Parallaxe für Mittelgrundebenen an. Hilft, die 3D-Darstellung über die Tiefenebenen auszugleichen.",
   "Tooltip.BGShift": "Setzt den Tiefenoffset für Hintergrundbereiche. Negative Werte erhöhen die wahrgenommene Entfernung.",
   "Tooltip.Sharpness": "Steuert die Bildschärfung nach der 3D-Verzerrung. Negative Werte schärfen das Bild.",
-  "Tooltip.ConvergenceOffset": "Passt die Konvergenzebene (Bildschirmtiefe) an. Hilft, Augenbelastung zu reduzieren.",
+  "Tooltip.ZeroParallaxStrength": "Steuert, wie stark das Motiv auf Bildschirmtiefe (Null-Parallaxe) zentriert bleibt. Höhere Werte halten den Fokus zentriert.",
   "Tooltip.ParallaxBalance": "Balanciert die Bildtiefe zwischen Vorder- und Hintergrundausrichtung.",
   "Tooltip.MaxPixelShift": "Begrenzt die maximale Disparität zwischen linken und rechten Bildern. Reduziert Ghosting-Effekte in 3D.",
   "Tooltip.PreserveAspect": "Beibehaltung des ursprünglichen Seitenverhältnisses des Quellvideos in der endgültigen 3D-Ausgabe.",
@@ -164,5 +167,7 @@
   "Tooltip.InputResPct": "Skaliert die Eingabe vor dem Hochskalieren herunter, um Speicher zu sparen oder Geschwindigkeit zu erhöhen. 100 % = volle Auflösung.",
   "Tooltip.ModelSelect": "Wähle ein ESRGAN-ONNX-Modell. x2 = schneller, x4 = schärfer, aber langsamer.",
   "Tooltip.DOFStrength": "Steuert die Intensität der Tiefenschärfenunschärfe. Höhere Werte simulieren einen stärkeren Schärfeabfall von der zentralen Tiefenebene."
+  "Tooltip.ConvergenceStrength": "Fügt einen stereoskopischen Konvergenzversatz hinzu, um die wahrgenommene Bildtiefe des Hauptmotivs zu steuern. Höhere Werte ziehen das linke und rechte Bild zusammen und erzeugen stärkere Pop-out-Effekte.",
+  "Tooltip.EnableDynConvergence": "Passt die Konvergenzstärke dynamisch basierend auf der Tiefe des Hauptmotivs an. Hilft dabei, ein angenehmes 3D-Erlebnis zu bewahren, indem die Konvergenz automatisch auf wichtige Bildbereiche abgestimmt wird.",
 
 }
