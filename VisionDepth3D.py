@@ -96,21 +96,49 @@ load_language("en")
 # ✅ Get absolute path to resource (for PyInstaller compatibility)
 def resource_path(relative_path):
     try:
-        base_path = sys._MEIPASS  # ✅ Corrected for PyInstaller
+        base_path = sys._MEIPASS
     except AttributeError:
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
 
+# ✅ Force include core/ into path
+core_dir = resource_path("core")
+if core_dir not in sys.path:
+    sys.path.insert(0, core_dir)
+
+    
+# ✅ Inject DLL directory into PATH
+def inject_dll_directory():
+    dll_dir = resource_path("dlls")
+    if os.path.isdir(dll_dir):
+        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+    else:
+        print(f"[Warning] DLL folder not found: {dll_dir}")
+
+# 🟢 Call this before any ONNX/TensorRT/CUDA init
+inject_dll_directory()
+
 
 def save_settings():
     settings = {name: var.get() for name, var in gui_variables.items()}
+
     if root.winfo_exists():
         settings["window_geometry"] = root.geometry()
-    settings["language"] = current_language  # 🔁 Save selected language
+
+    settings["language"] = current_language
+
+    # ✅ Save input/depth video paths
+    if "input_video_path" in globals() and hasattr(input_video_path, "get"):
+        settings["input_video_path"] = input_video_path.get()
+    if "selected_depth_map" in globals() and hasattr(selected_depth_map, "get"):
+        settings["selected_depth_map"] = selected_depth_map.get()
+
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4)
+
     print("💾 Settings saved.")
+
     
 def prompt_and_save_preset():
     file_path = filedialog.asksaveasfilename(
@@ -161,8 +189,10 @@ def reset_settings():
     use_floating_window.set(False)
     auto_crop_black_bars.set(False)
     preserve_original_aspect.set(False)
-    convergence_offset.set(0.000)
+    zero_parallax_strength.set(0.000)
     skip_blank_frames.set(False)
+    convergence_strength.set(0.0),
+    enable_dynamic_convergence.set(True),
 
     # 🎥 CRF for FFmpeg
     crf_value.set(23)
@@ -243,11 +273,13 @@ def handle_generate_3d():
                 auto_crop_black_bars,
                 parallax_balance,
                 preserve_original_aspect,
-                convergence_offset,
+                zero_parallax_strength,
                 enable_edge_masking,
                 enable_feathering,
                 skip_blank_frames,
                 dof_strength,
+                convergence_strength,
+                enable_dynamic_convergence,
             ), daemon=True)
             process_thread.start()
         else:
@@ -333,7 +365,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.8")
+root.title("VisionDepth3D v3.1.9")
 root.geometry("885x860")
 
 # --- Menu Bar Setup ---
@@ -695,7 +727,6 @@ ft3d_selected_model = tk.StringVar(value="VD-GAN")
 
 
 REAL_ESRGAN_MODELS = {
-    "VD-GAN": "weights/VD-GAN.onnx",
     "RealESR_Gx4_fp16": "weights/RealESR_Gx4_fp16.onnx",
     "RealESRGAN_x4_fp16": "weights/RealESRGANx4_fp16.onnx",
     "RealESR_Animex4_fp16": "weights/RealESR_Animex4_fp16.onnx",
@@ -915,7 +946,7 @@ delay_time = tk.DoubleVar(value=1 / 30)
 output_format = tk.StringVar(value="Full-SBS")
 blur_ksize = tk.IntVar(value=1)
 feather_strength = tk.DoubleVar(value=0.0)
-selected_ffmpeg_codec = tk.StringVar(value="h264_nvenc")
+selected_ffmpeg_codec = tk.StringVar(value="H.264 / AVC (libx264 - CPU)")
 crf_value = tk.IntVar(value=23)
 use_ffmpeg = tk.BooleanVar(value=False)
 use_subject_tracking = tk.BooleanVar(value=True)
@@ -930,12 +961,13 @@ auto_crop_black_bars = tk.BooleanVar(value=True)
 parallax_balance = tk.DoubleVar(value=0.8)
 preserve_original_aspect = tk.BooleanVar(value=False)
 nvenc_cq_value = tk.IntVar(value=23)
-convergence_offset = tk.DoubleVar(value=0.01)
+zero_parallax_strength = tk.DoubleVar(value=0.01)
 enable_edge_masking = tk.BooleanVar(value=True)
 enable_feathering = tk.BooleanVar(value=True)
 skip_blank_frames = tk.BooleanVar()
 dof_strength = tk.DoubleVar(value=2.0)  # Default strength (sigma)
-
+enable_dynamic_convergence = tk.BooleanVar(value=True)
+convergence_strength = tk.DoubleVar(value=0.0)
 
 
 
@@ -1016,7 +1048,7 @@ gui_variables = {
     "use_floating_window": use_floating_window,
     "auto_crop_black_bars": auto_crop_black_bars,
     "preserve_original_aspect": preserve_original_aspect,
-    "convergence_offset": convergence_offset,
+    "zero_parallax_strength": zero_parallax_strength,
     "enable_edge_masking": enable_edge_masking,
     "enable_feathering": enable_feathering,
     "skip_blank_frames": skip_blank_frames,
@@ -1025,6 +1057,9 @@ gui_variables = {
     "original_video_height": original_video_height,
     "preserve_content": preserve_content,
     "dof_strength": dof_strength,
+    "convergence_strength": convergence_strength,
+    "enable_dynamic_convergence": enable_dynamic_convergence,
+
 }
 
 
@@ -1166,6 +1201,15 @@ skip_blank_frames_checkbox = tk.Checkbutton(
 )
 skip_blank_frames_checkbox.grid(row=1, column=3, sticky="w", padx=5)
 
+enable_dynamic_convergence_checkbox = tk.Checkbutton(
+    options_frame,
+    text=t("Enable Dynamic Convergence"), bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+    variable=enable_dynamic_convergence,
+    anchor="w",
+    justify="left"
+)
+enable_dynamic_convergence_checkbox.grid(row=2, column=2, sticky="w", padx=5)
+
 
 
 # Row 2
@@ -1187,13 +1231,16 @@ tk.Scale(
     bg="#1c1c1c", fg="white"
 ).grid(row=2, column=1, sticky="ew")
 
+
+# Row 3
+
 mg_shift_label = tk.Label(
     options_frame,
     text=t("Midground Shift"),
     bg="#1c1c1c",
     fg="white"
 )
-mg_shift_label.grid(row=2, column=2, sticky="w")
+mg_shift_label.grid(row=3, column=0, sticky="w")
 
 tk.Scale(
     options_frame, 
@@ -1201,48 +1248,48 @@ tk.Scale(
     resolution=0.5,
     orient=tk.HORIZONTAL, variable=mg_shift,
     bg="#1c1c1c", fg="white"
-).grid(row=2, column=3, sticky="ew")
+).grid(row=3, column=1, sticky="ew")
 
-# Row 3
-bg_shift_label = tk.Label(
+convergence_strength_label = tk.Label(
     options_frame,
-    text=t("Background Shift"),
+    text=t("Convergence Strength"),
     bg="#1c1c1c", fg="white"
 )
-bg_shift_label.grid(row=3, column=0, sticky="w")
+convergence_strength_label.grid(row=3, column=2, sticky="w")
 
 tk.Scale(
-    options_frame,
-    from_=-20, to=0, 
-    resolution=0.5, orient=tk.HORIZONTAL,
-    variable=bg_shift, bg="#1c1c1c", fg="white"
-).grid(row=3, column=1, sticky="ew")
+    options_frame, from_=-0.05, to=0.05, resolution=0.001, orient=tk.HORIZONTAL,
+    variable=convergence_strength, length=200, bg="#1c1c1c", fg="white"
+).grid(row=3, column=3, sticky="ew")
+
 
 sharpness_factor_label = tk.Label(
     options_frame,
     text=t("Sharpness Factor"),
     bg="#1c1c1c", fg="white"
 )
-sharpness_factor_label.grid(row=3, column=2, sticky="w")
+sharpness_factor_label.grid(row=4, column=2, sticky="w")
 
 tk.Scale(
     options_frame,
     from_=-1, to=1,
     resolution=0.1, orient=tk.HORIZONTAL, 
     variable=sharpness_factor, bg="#1c1c1c", fg="white"
-).grid(row=3, column=3, sticky="ew")
+).grid(row=4, column=3, sticky="ew")
 
 #Row 4
-convergence_offset_label = tk.Label(
+bg_shift_label = tk.Label(
     options_frame,
-    text=t("convergence offset"),
+    text=t("Background Shift"),
     bg="#1c1c1c", fg="white"
 )
-convergence_offset_label.grid(row=4, column=0, sticky="w")
+bg_shift_label.grid(row=4, column=0, sticky="w")
 
 tk.Scale(
-    options_frame, from_=-0.05, to=0.05, resolution=0.001, orient=tk.HORIZONTAL,
-    variable=convergence_offset, length=200, bg="#1c1c1c", fg="white"
+    options_frame,
+    from_=-20, to=0, 
+    resolution=0.5, orient=tk.HORIZONTAL,
+    variable=bg_shift, bg="#1c1c1c", fg="white"
 ).grid(row=4, column=1, sticky="ew")
  
 parallax_balance_label = tk.Label(
@@ -1250,7 +1297,7 @@ parallax_balance_label = tk.Label(
     text=t("Parallax Balance"),
     bg="#1c1c1c", fg="white"
 )
-parallax_balance_label.grid(row=4, column=2, sticky="w")
+parallax_balance_label.grid(row=5, column=2, sticky="w")
 
 tk.Scale(
     options_frame,
@@ -1260,15 +1307,27 @@ tk.Scale(
     orient="horizontal",
     variable=parallax_balance,
     bg="#1c1c1c", fg="white"
-).grid(row=4, column=3, sticky="ew")
+).grid(row=5, column=3, sticky="ew")
 
 #Row 5
+zero_parallax_strength_label = tk.Label(
+    options_frame,
+    text=t("Zero Parallax Strength"),
+    bg="#1c1c1c", fg="white"
+)
+zero_parallax_strength_label.grid(row=5, column=0, sticky="w")
+
+tk.Scale(
+    options_frame, from_=-0.05, to=0.05, resolution=0.001, orient=tk.HORIZONTAL,
+    variable=zero_parallax_strength, length=200, bg="#1c1c1c", fg="white"
+).grid(row=5, column=1, sticky="ew")
+
 max_pixel_shift_label = tk.Label(
     options_frame,
     text=t("Max Pixel Shift (%)"),
     bg="#1c1c1c", fg="white"
 )
-max_pixel_shift_label.grid(row=5, column=0, sticky="w")
+max_pixel_shift_label.grid(row=6, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
@@ -1277,14 +1336,14 @@ tk.Scale(
     orient=tk.HORIZONTAL,
     variable=max_pixel_shift,
     length=200, bg="#1c1c1c", fg="white"
-).grid(row=5, column=1, sticky="ew")   
+).grid(row=6, column=1, sticky="ew")   
 
 dof_strength_label = tk.Label(
     options_frame,
     text=t("DoF Strength"),
     bg="#1c1c1c", fg="white"
 )
-dof_strength_label.grid(row=5, column=2, sticky="w")
+dof_strength_label.grid(row=6, column=2, sticky="w")
 
 tk.Scale(
     options_frame,
@@ -1294,7 +1353,7 @@ tk.Scale(
     variable=dof_strength,
     length=200,
     bg="#1c1c1c", fg="white"
-).grid(row=5, column=3, sticky="ew")
+).grid(row=6, column=3, sticky="ew")
 
 
 # File Selection
@@ -1413,13 +1472,16 @@ preview_button = tk.Button(
         feather_strength,
         use_subject_tracking,
         use_floating_window,
-        convergence_offset,
+        zero_parallax_strength,
         parallax_balance,
         enable_edge_masking,
         enable_feathering,
         sharpness_factor,
         max_pixel_shift,
-        dof_strength
+        dof_strength,
+        convergence_strength,
+        enable_dynamic_convergence,
+
     )
 
 )
@@ -1663,10 +1725,11 @@ tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, t("Tooltip.FGShift"))
 tooltip_refs["mg_shift_label"] = CreateToolTip(mg_shift_label, t("Tooltip.MGShift"))
 tooltip_refs["MGShift"] = CreateToolTip(bg_shift_label, t("Tooltip.BGShift"))
 tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, t("Tooltip.Sharpness"))
-tooltip_refs["ConvergenceOffset"] = CreateToolTip(convergence_offset_label, t("Tooltip.ConvergenceOffset"))
+tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, t("Tooltip.ZeroParallaxStrength"))
 tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, t("Tooltip.ParallaxBalance"))
 tooltip_refs["MaxPixelShift"] = CreateToolTip(max_pixel_shift_label, t("Tooltip.MaxPixelShift"))
 tooltip_refs["DOFStrength"] = CreateToolTip(dof_strength_label, t("Tooltip.DOFStrength"))
+tooltip_refs["ConvergenceStrength"] = CreateToolTip(convergence_strength_label, t("Tooltip.ConvergenceStrength"))
 
 # Checkboxes
 tooltip_refs["PreserveAspect"] = CreateToolTip(preserve_aspect_checkbox, t("Tooltip.PreserveAspect"))
@@ -1677,6 +1740,8 @@ tooltip_refs["EdgeMasking"] = CreateToolTip(enable_edge_checkbox, t("Tooltip.Edg
 tooltip_refs["Feathering"] = CreateToolTip(enable_feathering_checkbox, t("Tooltip.Feathering"))
 tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, t("Tooltip.SkipBlankFrames"))
 tooltip_refs["UseFFmpeg"] = CreateToolTip(use_ffmpeg_checkbox, t("Tooltip.UseFFmpeg"))
+tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, t("Tooltip.EnableDynConvergence"))
+
 
 # Encoding
 tooltip_refs["CRF"] = CreateToolTip(crf_value_label, t("Tooltip.CRF"))
@@ -1741,10 +1806,11 @@ def refresh_ui_labels():
     mg_shift_label.config(text=t("Midground Shift"))
     bg_shift_label.config(text=t("Background Shift"))
     sharpness_factor_label.config(text=t("Sharpness Factor"))
-    convergence_offset_label.config(text=t("Convergence Offset"))
-    parallax_balance_label.config(text=t("parallax_balance"))
+    zero_parallax_strength_label.config(text=t("Zero Parallax Strength"))
+    parallax_balance_label.config(text=t("Parallax Balance"))
     max_pixel_shift_label.config(text=t("Max Pixel Shift %"))
     dof_strength_label.config(text=t("DOF Strength"))
+    convergence_strength_label.config(text=t("Convergence Strength"))
 
     # Toggles and Checkboxes
     preserve_aspect_checkbox.config(text=t("Preserve Original Aspect Ratio"))
@@ -1755,6 +1821,7 @@ def refresh_ui_labels():
     enable_edge_checkbox.config(text=t("Enable Edge Masking"))
     enable_feathering_checkbox.config(text=t("Enable Feathering"))
     skip_blank_frames_checkbox.config(text=t("Skip Blank/White Frames"))
+    enable_dynamic_convergence_checkbox.config(text=t("Enable Dynamic Convergence"))
 
     # Encoding Settings
     selected_aspect_ratio_label.config(text=t("Aspect Ratio:"))
@@ -1815,11 +1882,12 @@ def apply_preset(preset_name):
     fg_shift.set(config.get("fg_shift", 8.0))
     mg_shift.set(config.get("mg_shift", -3.0))
     bg_shift.set(config.get("bg_shift", -6.0))
-    convergence_offset.set(config.get("convergence_offset", 0.0))
+    zero_parallax_strength.set(config.get("zero_parallax_strength", 0.0))
     max_pixel_shift.set(config.get("max_pixel_shift", 0.02))
     parallax_balance.set(config.get("parallax_balance", 0.8))
     sharpness_factor.set(config.get("sharpness_factor", 1.0))
     dof_strength.set(config.get("dof_strength", 2.0))
+    convergence_strength.set(config.get("convergence_strength", 0.0))
     
     use_ffmpeg.set(config.get("use_ffmpeg", False))
     enable_feathering.set(config.get("enable_feathering", True))
@@ -1827,6 +1895,7 @@ def apply_preset(preset_name):
     use_floating_window.set(config.get("use_floating_window", True))
     auto_crop_black_bars.set(config.get("auto_crop_black_bars", False))
     skip_blank_frames.set(config.get("skip_blank_frames", False))
+    enable_dynamic_convergence.set(config.get("enable_dynamic_convergence", True))
 
     print(f"✅ Applied preset: {preset_name}")
 
@@ -1836,7 +1905,7 @@ def save_current_preset(name="custom_preset.json"):
         "fg_shift": fg_shift.get(),
         "mg_shift": mg_shift.get(),
         "bg_shift": bg_shift.get(),
-        "convergence_offset": convergence_offset.get(),
+        "zero_parallax_strength": zero_parallax_strength.get(),
         "max_pixel_shift": max_pixel_shift.get(),
         "parallax_balance": parallax_balance.get(),
         "sharpness_factor": sharpness_factor.get(),
@@ -1846,7 +1915,9 @@ def save_current_preset(name="custom_preset.json"):
         "use_floating_window": use_floating_window.get(),
         "auto_crop_black_bars": auto_crop_black_bars.get(),
         "skip_blank_frames": skip_blank_frames.get(),
-        "dof_strength": dof_strength.get()
+        "dof_strength": dof_strength.get(),
+        "convergence_strength": convergence_strength.get(),
+        "enable_dynamic_convergence": enable_dynamic_convergence.get(),
     }
 
     path = os.path.join(PRESET_DIR, name)
@@ -1874,6 +1945,33 @@ def load_settings():
                     gui_variables[name].set(value)
                 except Exception as e:
                     print(f"⚠️ Failed to set variable '{name}': {e}")
+
+        # ✅ Restore input video path and refresh preview
+        if "input_video_path" in settings and "input_video_path" in globals():
+            try:
+                input_video_path.set(settings["input_video_path"])
+                if os.path.exists(input_video_path.get()):
+                    select_input_video(
+                        input_video_path,
+                        video_thumbnail_label,
+                        video_specs_label,
+                        update_aspect_preview,
+                        original_video_width,
+                        original_video_height
+                    )
+            except Exception as e:
+                print(f"⚠️ Could not restore input path: {e}")
+
+        # ✅ Restore depth map and label
+        if "selected_depth_map" in settings and "selected_depth_map" in globals():
+            try:
+                selected_depth_map.set(settings["selected_depth_map"])
+                if os.path.exists(selected_depth_map.get()):
+                    depth_map_label.config(
+                        text=f"Selected Depth Map:\n{os.path.basename(selected_depth_map.get())}"
+                    )
+            except Exception as e:
+                print(f"⚠️ Could not restore depth path: {e}")
 
         if "language" in settings:
             current_language = settings["language"]
