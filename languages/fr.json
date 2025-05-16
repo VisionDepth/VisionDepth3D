@@ -33,10 +33,13 @@
   "Midground Shift": "Décalage du plan intermédiaire",
   "Background Shift": "Décalage de l'arrière-plan",
   "Sharpness Factor": "Facteur de netteté",
-  "Convergence Offset": "Décalage de convergence",
+  "Zero Parallax Strength": "Force de Zéro Parallaxe",
   "parallax_balance": "Équilibre de parallaxe",
   "Max Pixel Shift %": "Décalage maximal des pixels %",
   "DOF Strength": "Intensité de la profondeur de champ",
+  "Convergence Strength": "Intensité de Convergence",
+  "Enable Dynamic Convergence": "Activer la Convergence Dynamique",
+
 
   "Preserve Original Aspect Ratio": "Préserver le rapport d'aspect original",
   "Auto Crop Black Bars": "Rogner automatiquement les bandes noires",
@@ -137,7 +140,7 @@
   "Tooltip.MGShift": "Ajuste la parallaxe pour les couches de milieu de plan. Aide à équilibrer la 3D à travers la profondeur de la scène.",
   "Tooltip.BGShift": "Définit le décalage de profondeur pour les régions d'arrière-plan. Les valeurs négatives augmentent la distance perçue.",
   "Tooltip.Sharpness": "Contrôle le renforcement de l'image après la déformation 3D. Les valeurs négatives affinent l'image.",
-  "Tooltip.ConvergenceOffset": "Ajuste le plan de convergence (profondeur de l'écran). Aide à réduire la fatigue oculaire.",
+  "Tooltip.ZeroParallaxStrength": "Ajuste la force avec laquelle le sujet reste à la profondeur de l'écran (zéro parallaxe). Une valeur plus élevée centre la mise au point.",
   "Tooltip.ParallaxBalance": "Équilibre la profondeur de l'écran entre l'accent sur le premier plan et l'arrière-plan.",
   "Tooltip.MaxPixelShift": "Limite la disparité maximale entre les images gauche et droite. Réduit les images fantômes en 3D.",
   "Tooltip.PreserveAspect": "Conserve le rapport d'aspect original de la vidéo source dans la sortie 3D finale.",
@@ -149,6 +152,8 @@
   "Tooltip.SkipBlankFrames": "Ignore les images blanches ou vides lors du rendu. Utile pour des coupes plus propres.",
   "Tooltip.UseFFmpeg": "Active le rendu",
   "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central."
+  "Tooltip.ConvergenceStrength": "Ajoute un décalage de convergence stéréo pour contrôler la profondeur perçue à l'écran du sujet principal. Des valeurs plus élevées rapprochent les vues gauche et droite, créant un effet de jaillissement plus fort.",
+  "Tooltip.EnableDynConvergence": "Ajuste dynamiquement la force de convergence en fonction de la profondeur du sujet. Améliore le confort visuel en alignant automatiquement la convergence sur les zones clés de la scène.",
 
 }
  
