@@ -1931,56 +1931,73 @@ def save_current_preset(name="custom_preset.json"):
 
 def load_settings():
     global current_language
-    if os.path.exists(SETTINGS_FILE):
+    if not os.path.exists(SETTINGS_FILE):
+        return
+
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"❌ Error loading settings: {e}")
+        return
+
+    for name, value in settings.items():
+        if name in gui_variables:
+            try:
+                gui_variables[name].set(value)
+            except Exception as e:
+                print(f"⚠️ Failed to set variable '{name}': {e}")
+
+    # ✅ Restore input video path and refresh thumbnail + video info
+    input_path = settings.get("input_video_path", "")
+    if input_path and os.path.exists(input_path):
+        input_video_path.set(input_path)
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"❌ Error loading settings: {e}")
-            return
+            cap = cv2.VideoCapture(input_path)
+            ret, frame = cap.read()
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
 
-        for name, value in settings.items():
-            if name in gui_variables:
-                try:
-                    gui_variables[name].set(value)
-                except Exception as e:
-                    print(f"⚠️ Failed to set variable '{name}': {e}")
+            if ret:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(rgb).resize((128, 72), Image.LANCZOS)
+                img_tk = ImageTk.PhotoImage(img)
+                video_thumbnail_label.config(image=img_tk)
+                video_thumbnail_label.image = img_tk  # Retain reference
 
-        # ✅ Restore input video path and refresh preview
-        if "input_video_path" in settings and "input_video_path" in globals():
-            try:
-                input_video_path.set(settings["input_video_path"])
-                if os.path.exists(input_video_path.get()):
-                    select_input_video(
-                        input_video_path,
-                        video_thumbnail_label,
-                        video_specs_label,
-                        update_aspect_preview,
-                        original_video_width,
-                        original_video_height
-                    )
-            except Exception as e:
-                print(f"⚠️ Could not restore input path: {e}")
+                original_video_width.set(width)
+                original_video_height.set(height)
+                video_specs_label.config(
+                    text=f"Resolution: {width}x{height}\nFPS: {fps:.2f}" if fps > 0 else "FPS: Unknown"
+                )
 
-        # ✅ Restore depth map and label
-        if "selected_depth_map" in settings and "selected_depth_map" in globals():
-            try:
-                selected_depth_map.set(settings["selected_depth_map"])
-                if os.path.exists(selected_depth_map.get()):
-                    depth_map_label.config(
-                        text=f"Selected Depth Map:\n{os.path.basename(selected_depth_map.get())}"
-                    )
-            except Exception as e:
-                print(f"⚠️ Could not restore depth path: {e}")
+                update_aspect_preview()
+        except Exception as e:
+            print(f"⚠️ Could not render video thumbnail: {e}")
 
-        if "language" in settings:
-            current_language = settings["language"]
-            load_language(current_language)
+    # ✅ Restore depth map path and label
+    depth_path = settings.get("selected_depth_map", "")
+    if depth_path and os.path.exists(depth_path):
+        selected_depth_map.set(depth_path)
+        try:
+            depth_map_label.config(
+                text=f"Selected Depth Map:\n{os.path.basename(depth_path)}"
+            )
+        except Exception as e:
+            print(f"⚠️ Could not render depth label: {e}")
 
-        if "window_geometry" in settings:
-            root.geometry(settings["window_geometry"])
+    # ✅ Restore language and window size
+    if "language" in settings:
+        current_language = settings["language"]
+        load_language(current_language)
 
-        print("✅ Settings loaded from file.")
+    if "window_geometry" in settings:
+        root.geometry(settings["window_geometry"])
+
+    print("✅ Settings loaded from file.")
+
 
 # Ensure settings are saved when the program closes
 def on_exit():
@@ -1989,5 +2006,6 @@ def on_exit():
 
 root.protocol("WM_DELETE_WINDOW", on_exit)
 
+load_settings() 
 
 root.mainloop()
