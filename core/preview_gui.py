@@ -294,9 +294,9 @@ def open_3d_preview_window(
     # Slider replacing the Entry
     convergence_slider = tk.Scale(
         feather_frame,
-        from_=0.0,
-        to=1.0,
-        resolution=0.01,
+        from_=-0.05,
+        to=0.05,
+        resolution=0.001,
         orient="horizontal",
         label=None,  
         variable=convergence_strength,
