@@ -288,14 +288,23 @@ def open_3d_preview_window(
     parallax_balance_slider = tk.Scale(feather_frame, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", label="Parallax Balance", variable=parallax_balance, length=200)
     parallax_balance_slider.grid(row=1, column=2, padx=10)
     
+    # Label for the slider
     tk.Label(feather_frame, text="Convergence Strength").grid(row=2, column=0, padx=10)
-    convergence_slider = tk.Entry(feather_frame, width=8)
-    convergence_slider.insert(0, str(convergence_strength.get()))
-    convergence_slider.grid(row=3, column=1, padx=10)
 
-    dynamic_check = tk.Checkbutton(feather_frame, text="Dynamic Convergence", variable=enable_dynamic_convergence)
-    dynamic_check.grid(row=3, column=2, padx=10)
-
+    # Slider replacing the Entry
+    convergence_slider = tk.Scale(
+        feather_frame,
+        from_=0.0,
+        to=1.0,
+        resolution=0.01,
+        orient="horizontal",
+        label=None,  
+        variable=convergence_strength,
+        length=200,
+        command=lambda _: update_preview_debounced()  
+    )
+    convergence_slider.grid(row=2, column=1, padx=10)
+    
     def update_convergence_strength(*_):
         try:
             val = float(convergence_slider.get())
