@@ -1,4 +1,4 @@
-# VisionDepth3D Method Specification
+# The VisionDepth3D Method 
 
 An advanced, real-time stereo rendering engine for 2D-to-3D conversion in VR and stereoscopic displays.
 
