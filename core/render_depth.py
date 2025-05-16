@@ -12,6 +12,7 @@ import matplotlib.cm as cm
 import onnxruntime as ort
 import subprocess
 import diffusers
+import transformers
 
 from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
 
