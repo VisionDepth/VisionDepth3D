@@ -123,26 +123,33 @@ def depth_to_tensor(depth_frame):
 
 def estimate_subject_depth(depth_tensor):
     """
-    More robust subject depth estimator using center-weighted and histogram analysis.
+    Robust subject depth estimator using saliency-weighted center crop with histogram smoothing.
+    Returns a scalar tensor with estimated subject depth.
     """
     _, H, W = depth_tensor.shape
-    center_crop = depth_tensor[
-        :, H // 4 : H * 3 // 4, W // 4 : W * 3 // 4
-    ]  # Focus on center 50%
+    device = depth_tensor.device
 
-    flat = center_crop.flatten()
-    filtered = flat[(flat > 0.1) & (flat < 0.85)]
+    # Focus on center-weighted region (more of 60–80% central view)
+    crop = depth_tensor[:, H//5:H*4//5, W//5:W*4//5]
 
-    if filtered.numel() < 1:
-        return torch.tensor(0.5, device=depth_tensor.device)
+    # Apply bounds to exclude floor/walls/extremes
+    valid = crop[(crop > 0.05) & (crop < 0.95)]
 
-    # Histogram-based mode estimation (most frequent depth)
-    hist = torch.histc(filtered, bins=64, min=0.0, max=1.0)
+    if valid.numel() < 20:
+        return torch.tensor(0.5, device=device)  # fallback if invalid
+
+    # Histogram: Find dominant depth bin
+    hist = torch.histc(valid, bins=64, min=0.0, max=1.0)
     peak_bin = torch.argmax(hist)
     bin_width = 1.0 / 64
     subject_depth = (peak_bin.float() + 0.5) * bin_width
 
-    return subject_depth
+    # Optional: Blend with median for stability
+    median_depth = torch.median(valid)
+    smoothed_depth = (0.7 * subject_depth + 0.3 * median_depth).clamp(0.0, 1.0)
+
+    return smoothed_depth
+
 
 def enhance_curvature(depth_tensor, strength=0.15):
     """
@@ -325,23 +332,21 @@ def shift_mask(mask_tensor, shift_vals, width):
 
 def compute_dynamic_parallax_scale(depth_tensor, min_scale=0.6, max_scale=1.0):
     """
-    Dynamically adjusts parallax strength based on scene depth.
-    - Closer shots get full parallax.
-    - Wider, flatter shots get reduced parallax to avoid warping.
+    Adaptive parallax control based on normalized depth variance in center view.
+    Returns a scalar float.
     """
-    center_crop = depth_tensor[:, depth_tensor.shape[1]//4:3*depth_tensor.shape[1]//4,
-                                  depth_tensor.shape[2]//4:3*depth_tensor.shape[2]//4]
-    depth_variance = torch.var(center_crop)
+    _, H, W = depth_tensor.shape
+    center_crop = depth_tensor[:, H//4:H*3//4, W//4:W*3//4]
 
-    # Heuristic: less variance = flatter scene = reduce parallax
-    if depth_variance < 0.001:
-        scale = min_scale
-    elif depth_variance > 0.01:
-        scale = max_scale
-    else:
-        scale = min_scale + (depth_variance - 0.001) / (0.01 - 0.001) * (max_scale - min_scale)
-        scale = torch.clamp(scale, min_scale, max_scale)
+    # Normalize variance by mean to handle different scene scales
+    mean_depth = torch.mean(center_crop)
+    variance = torch.var(center_crop)
+    norm_var = (variance / (mean_depth + 1e-5)).clamp(0.0, 1.0)
+
+    # Map normalized variance to a smooth parallax scale
+    scale = min_scale + (norm_var * (max_scale - min_scale))
     return scale.item()
+
 
 # --- Enhanced Healing of Warped Areas ---
 def heal_missing_pixels(warped_frame, warped_depth, original_frame, edge_mask, heal_strength=0.5):
@@ -438,13 +443,15 @@ def pixel_shift_cuda(
     feather_strength=10.0,
     max_pixel_shift_percent=0.02,
     parallax_balance=0.8,
-    convergence_offset=0.0,
+    zero_parallax_strength=0.0,
     use_subject_tracking=True,
     enable_floating_window=True,
     return_shift_map=True,
     enable_feathering=True,
     enable_edge_masking=True,
     dof_strength=2.0,
+    convergence_strength=0.0,
+    enable_dynamic_convergence=True,
 ):
     width = int(width)
     height = int(height)
@@ -464,14 +471,9 @@ def pixel_shift_cuda(
 
     half_width = width / 2.0
 
-    #raw_shift = (-depth_tensor * fg_weight * fg_shift +
-    #             -depth_tensor * mg_weight * mg_shift +
-    #             depth_tensor * bg_weight * bg_shift)
-                  
     raw_shift = (fg_weight * fg_shift +
-             mg_weight * mg_shift +
-             bg_weight * bg_shift)
-             
+                 mg_weight * mg_shift +
+                 bg_weight * bg_shift)
 
     total_shift = (raw_shift * parallax_balance) / half_width
 
@@ -479,19 +481,11 @@ def pixel_shift_cuda(
         subject_depth = estimate_subject_depth(depth_tensor)
         adjusted_depth = subject_depth * parallax_balance
 
-        #depth_flat = depth_tensor.view(-1)
-        #depth_std = torch.std(depth_flat)
-        #scaling_factor = torch.clamp(depth_std * 5.0, 0.5, 1.5).item()
-        #fg_shift *= scaling_factor
-        #mg_shift *= scaling_factor
-        #bg_shift *= scaling_factor
-
         zero_parallax_offset = (
             (-adjusted_depth * fg_shift) +
             (-adjusted_depth * mg_shift) +
             (adjusted_depth * bg_shift)
-        ) / half_width - convergence_offset
-
+        ) / half_width - zero_parallax_strength
 
         if enable_floating_window:
             subject_weight = torch.clamp(1.0 - subject_depth * 2.5, 0.25, 1.0)
@@ -501,18 +495,26 @@ def pixel_shift_cuda(
 
         total_shift -= zero_parallax_offset
 
-    warped_depth = depth_tensor
-
-    # --- From this point onwards, ONLY use warped_depth ---
-
     max_shift_px = width * max_pixel_shift_percent
     max_shift_norm = max_shift_px / half_width
     total_shift = torch.clamp(total_shift, -max_shift_norm, max_shift_norm)
 
+    if convergence_strength != 0.0:
+        if enable_dynamic_convergence:
+            subject_depth = estimate_subject_depth(depth_tensor)
+            convergence_bias = subject_depth * convergence_strength
+        else:
+            convergence_bias = convergence_strength
+
+        convergence_norm = convergence_bias.item() if isinstance(convergence_bias, torch.Tensor) else convergence_bias
+        convergence_norm = convergence_norm / half_width
+
+        total_shift -= convergence_norm
+
     mask_strength = np.clip(feather_strength / 10.0, 0.05, 0.3)
 
     if enable_edge_masking:
-        edge_suppressed = suppress_artifacts_with_edge_mask(warped_depth, total_shift, feather_strength)
+        edge_suppressed = suppress_artifacts_with_edge_mask(depth_tensor, total_shift, feather_strength)
         final_shift = (1.0 - mask_strength) * total_shift + mask_strength * edge_suppressed
     else:
         final_shift = total_shift
@@ -532,24 +534,25 @@ def pixel_shift_cuda(
     grid_left[..., 0] += shift_vals
     grid_right[..., 0] -= shift_vals
 
-    left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
-    right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+
+    warped_depth_left = F.grid_sample(depth_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_depth_right = F.grid_sample(depth_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+
+    focal_depth_left = estimate_subject_depth(warped_depth_left)
+    focal_depth_right = estimate_subject_depth(warped_depth_right)
+
+    left_dof = apply_dof_cuda(warped_left, warped_depth_left, focal_depth_left, max_sigma=dof_strength)
+    right_dof = apply_dof_cuda(warped_right, warped_depth_right, focal_depth_right, max_sigma=dof_strength)
 
     if enable_feathering:
-        left_blended = feather_shift_edges(left, frame_tensor, warped_depth, blur_ksize, feather_strength, enable_feathering)
-        right_blended = feather_shift_edges(right, frame_tensor, warped_depth, blur_ksize, feather_strength, enable_feathering)
+        left_blended = feather_shift_edges(left_dof, warped_left, warped_depth_left, blur_ksize, feather_strength, enable_feathering)
+        right_blended = feather_shift_edges(right_dof, warped_right, warped_depth_right, blur_ksize, feather_strength, enable_feathering)
     else:
-        left_blended = left
-        right_blended = right
-    
-    # === Depth of Field Simulation ===
-    focal_depth = estimate_subject_depth(warped_depth)
+        left_blended = left_dof
+        right_blended = right_dof
 
-    left_blended = apply_dof_cuda(left_blended, warped_depth, focal_depth, max_sigma=dof_strength)
-    right_blended = apply_dof_cuda(right_blended, warped_depth, focal_depth, max_sigma=dof_strength)
-
-
-    
     if return_shift_map:
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
     else:
@@ -723,12 +726,16 @@ def render_sbs_3d(
     auto_crop_black_bars=False,
     parallax_balance=0.8,
     preserve_original_aspect=False,
-    convergence_offset=0.0,
+    zero_parallax_strength=0.0,
     enable_edge_masking=True,
     enable_feathering=True,
     skip_blank_frames=False,
     original_video_width=None,
     original_video_height=None,
+    convergence_strength=0.0,
+    enable_dynamic_convergence=True,
+
+    
 ):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
@@ -966,12 +973,14 @@ def render_sbs_3d(
                 enable_floating_window=use_floating_window,
                 return_shift_map=False,
                 max_pixel_shift_percent=max_pixel_shift_percent,
-                convergence_offset=convergence_offset,
+                zero_parallax_strength=zero_parallax_strength,
                 enable_edge_masking=enable_edge_masking,
                 enable_feathering=enable_feathering,
                 dof_strength=dof_strength,
-
+                convergence_strength=convergence_strength,
+                enable_dynamic_convergence=enable_dynamic_convergence,
             )
+
 
         subject_depth = estimate_subject_depth(depth_tensor)
         zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
@@ -1108,11 +1117,13 @@ def start_processing_thread():
             auto_crop_black_bars,
             parallax_balance,
             preserve_original_aspect,
-            convergence_offset,
+            zero_parallax_strength,
             enable_edge_masking,
             enable_feathering,
             skip_blank_frames,
-            dof_strength
+            dof_strength,
+            convergence_strength,
+            enable_dynamic_convergence,
         ),
         daemon=True
     )
@@ -1233,11 +1244,13 @@ def process_video(
     auto_crop_black_bars,
     parallax_balance,
     preserve_original_aspect,
-    convergence_offset,
+    zero_parallax_strength,
     enable_edge_masking,
     enable_feathering,
     skip_blank_frames,
-    dof_strength,    
+    dof_strength,  
+    convergence_strength,
+    enable_dynamic_convergence    
 ):
 
     global original_video_width, original_video_height
@@ -1326,12 +1339,14 @@ def process_video(
             auto_crop_black_bars=auto_crop_black_bars.get(),
             parallax_balance=parallax_balance.get(),
             preserve_original_aspect=preserve_original_aspect.get(),
-            convergence_offset=convergence_offset.get(),
+            zero_parallax_strength=zero_parallax_strength.get(),
             enable_edge_masking=enable_edge_masking.get(),
             enable_feathering=enable_feathering.get(),
             skip_blank_frames=skip_blank_frames.get(),
             dof_strength=dof_strength.get(),
-        )
+            convergence_strength=convergence_strength.get(),
+            enable_dynamic_convergence=enable_dynamic_convergence.get(),
+        )   
 
 
 # Define SETTINGS_FILE at the top of the script
