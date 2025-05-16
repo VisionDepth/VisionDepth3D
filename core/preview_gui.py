@@ -278,7 +278,7 @@ def open_3d_preview_window(
 
 
     zero_parallax_strength_slider = tk.Scale(
-        feather_frame, from_=0.05, to=0.05,
+        feather_frame, from_=-0.05, to=0.05,
         resolution=0.001, orient="horizontal",
         label="Zero Parallax Strength", variable=zero_parallax_strength,
         length=200
