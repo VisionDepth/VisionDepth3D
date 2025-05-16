@@ -53,7 +53,7 @@ def attach_audio(video_path, audio_path, output_path):
 def launch_audio_gui():
     root = tk.Toplevel()
     root.title("🎵 Audio Ripper & Attacher")
-    root.geometry("500x400")
+    root.geometry("500x500")
 
     # Paths
     source_video = tk.StringVar()
