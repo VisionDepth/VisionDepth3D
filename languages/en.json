@@ -38,9 +38,11 @@
   "Midground Shift": "Midground Shift",
   "Background Shift": "Background Shift",
   "Sharpness Factor": "Sharpness Factor",
-  "Convergence Offset": "Convergence Offset",
+  "Zero Parallax Strength": "Zero Parallax Strength",
   "parallax_balance": "Parallax Balance",
   "Max Pixel Shift %": "Max Pixel Shift %",
+  "Convergence Strength": "Convergence Strength",
+  "Enable Dynamic Convergence": "Enable Dynamic Convergence",
 
   "Preserve Original Aspect Ratio": "Preserve Original Aspect Ratio",
   "Auto Crop Black Bars": "Auto Crop Black Bars",
@@ -137,12 +139,13 @@
   "Tooltip.MGShift": "Adjust the parallax for midground layers. Helps balance 3D across the scene depth.",
   "Tooltip.BGShift": "Sets depth offset for background regions. Negative values increase perceived distance.",
   "Tooltip.Sharpness": "Controls image sharpening after 3D warping. Negative values sharpen the image.",
-  "Tooltip.ConvergenceOffset": "Adjusts the convergence plane (screen depth). Helps reduce eye strain.",
+  "Tooltip.ZeroParallaxStrength": "Controls the strength of zero-parallax alignment. Shifts the main subject toward screen depth to reduce eye strain and enhance stereo comfort.",
   "Tooltip.ParallaxBalance": "Balances screen depth between foreground and background emphasis.",
   "Tooltip.MaxPixelShift": "Limits maximum disparity between left and right images. Reduces ghosting in 3D.",
   "Tooltip.DOFStrength": "Controls the intensity of Depth of Field blur. Higher values simulate stronger focus falloff from the center depth plane.",
 
-  
+  "Tooltip.ConvergenceStrength": "Adds a stereo convergence offset to control the perceived screen-depth of the main subject. Higher values pull the left and right views inward, creating stronger pop-out effects.",
+  "Tooltip.EnableDynConvergence": "Dynamically adjusts convergence strength based on subject depth. Helps maintain comfortable 3D viewing by aligning convergence to key focus areas automatically.",
 
   "Tooltip.PreserveAspect": "Keep the source video’s original aspect ratio in the final 3D output.",
   "Tooltip.AutoCrop": "Automatically removes black bars before 3D transformation to avoid artifacts.",

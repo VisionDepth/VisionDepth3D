@@ -1,5 +1,4 @@
 accelerate
-onnxruntime
 onnxruntime-gpu
 numpy
 opencv-contrib-python
@@ -9,3 +8,5 @@ matplotlib
 transformers
 ffmpeg-python
 scipy
+diffusers[torch]
+safetensors

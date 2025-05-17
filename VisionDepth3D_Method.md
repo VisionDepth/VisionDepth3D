@@ -1,69 +1,126 @@
-# The VisionDepth3D Method
+# The VisionDepth3D Method 
 
-An original real-time stereo rendering framework for VR-ready 2D-to-3D conversion
+An advanced, real-time stereo rendering engine for 2D-to-3D conversion in VR and stereoscopic displays.
 
-## Overview
+## ✅ Core Innovations (Proprietary to VisionDepth3D)
 
-The VisionDepth3D Method is a novel algorithmic approach to generating stereoscopic 3D from 2D
-video using AI depth estimation. It was developed independently as part of the VisionDepth3D
-project and is specifically designed to produce natural, comfortable depth for VR and stereoscopic
-displays - without requiring segmentation masks, inpainting, or warping.
+### 1. Depth-Weighted Continuous Parallax Shifting
 
-## Core Innovations
+* Avoids depth slicing or zone segmentation.
+* Uses soft weights from the depth map to mix foreground, midground, and background contributions:
 
-1. **Depth-Weighted Parallax Shifting**
-Rather than segmenting a frame into discrete depth zones, this method uses continuous depth
-blending to determine pixel shift:
+```python
+raw_shift = (fg_weight * fg_shift +
+             mg_weight * mg_shift +
+             bg_weight * bg_shift)
+```
 
-    `raw_shift = fg_weight * fg_shift + mg_weight * mg_shift + bg_weight * bg_shift`
+* This enables smooth and natural parallax gradients across the image with no seams or pop-ins.
 
-- Each weight is derived dynamically from the normalized depth map.
-- This creates smooth parallax transitions across the entire frame.
-- Prevents visible seams or pop artifacts at depth boundaries.
+---
 
-2. **Subject-Aware Zero-Parallax Tracking**
-The method dynamically calculates the convergence plane using the histogram mode of the depth
-map's center region. This provides a subject-centered stereo anchor, reducing eye strain:
+### 2. Subject-Aware Zero-Parallax Plane Tracking
 
-    `zero_parallax_offset = (-adjusted_depth * fg_shift + -adjusted_depth * mg_shift + adjusted_depth * bg_shift) / width - convergence_offset`
+* Calculates the convergence plane dynamically by analyzing the mode of a center-weighted histogram from the depth map:
 
-This allows dynamic parallax tuning that responds to scene motion.
+```python
+subject_depth = estimate_subject_depth(depth_tensor)
+```
 
-3. **Edge-Aware Shift Masking (No Inpainting Required)**
+* Produces a subject-anchored stereo window to keep the scene's focus point at screen depth.
 
-To suppress stereo artifacts near depth discontinuities (e.g., hair, edges), the method uses a
-gradient-based edge mask derived from the depth map:
+* Final zero-parallax shift is calculated as:
 
-    `edge_mask = sigmoid(gradient_magnitude - threshold)`
+```python
+zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
+```
 
-This mask blends between shifted and original pixels, preserving clean outlines without the need for
-warping, segmentation, or generative fill.
+* Replaces the original convergence formula, improving tracking accuracy.
 
-4. **Scene-Aware Parallax Dampening**
+---
 
-The system calculates the variance of the scene's center-depth to modulate stereo intensity. Flat
-scenes automatically receive lower parallax values to prevent false depth amplification:
+### 3. Edge-Aware Shift Masking (No Inpainting Required)
 
-    `parallax_scale = min(1.0, depth_variance * sensitivity)`
+* Uses gradient-based masking to suppress parallax near high-contrast edges:
 
-This provides a more consistent experience across shot types and lighting conditions.
+```python
+edge_mask = torch.sigmoid((grad_mag - edge_threshold) * feather_strength * 5)
+smooth_mask = 1.0 - edge_mask
+total_shift = total_shift * smooth_mask
+```
 
-## Summary
+* Prevents hard ghosting or edge bleed with no pre-processing.
 
-The VisionDepth3D Method combines:
-Component                         | Function
-----------------------------------|-----------------------------------------------------------
-`Depth-Weighted Pixel Shift`       | Smooth, gradient-based 3D parallax
-`Subject-Based Convergence`        | Dynamic, zero-parallax plane adjustment
-`Gradient Edge Masking`            | Stereo cleanup without external masks or AI inpainting
-`Parallax Scaling via Depth Stats` | Adaptive stereo strength per shot
+---
 
-- The VisionDepth3D Method is original to the VisionDepth3D project.
-- Designed and optimized for real-time VR stereo authoring.
-- No external segmentation, warping, or masking required.
+### 4. Floating Window Stabilization
 
-For inquiries or citations, please reference:
-https://github.com/VisionDepth/VisionDepth3D
+* Smooths convergence shifts over time with adaptive momentum tracking:
+
+```python
+zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset)
+```
+
+* Clamps offset within bounds and applies side masking for viewer comfort.
+
+---
+
+### 5. Scene-Aware Parallax Dampening
+
+* Dynamically adjusts stereo strength based on scene flatness:
+
+```python
+parallax_scale = compute_dynamic_parallax_scale(depth_tensor)
+```
+
+* Ensures stable 3D across both action scenes and low-contrast shots.
+
+---
+
+### 6. Real-Time GPU-Optimized Pixel Warping
+
+* CUDA-accelerated `grid_sample` warping of the frame based on shift values:
+
+```python
+grid_left[..., 0] += shift_vals
+grid_right[..., 0] -= shift_vals
+```
+
+* Full left/right stereo generation without latency using PyTorch tensor operations.
+
+---
+
+### 7. Depth-Based DOF and Healing
+
+* Adaptive DOF: Multiple Gaussian blurred versions composited using per-pixel depth weight:
+
+```python
+blur_idx = blur_weights * (len(levels) - 1)
+```
+
+* Pixel Healing: Smart fill of stereo occlusion zones using gradient-based mask blending.
+
+---
+
+## ✅ Summary Table
+
+| Component                       | Description                                         |
+| ------------------------------- | --------------------------------------------------- |
+| Depth-Weighted Shift            | Smooth pixel displacement without discrete zones    |
+| Subject-Aware Parallax Tracking | Dynamically centers stereo plane on dominant object |
+| Edge-Aware Feathering           | Prevents ghosting without segmentation              |
+| Floating Window Tracker         | Stabilizes convergence across frames                |
+| Scene-Aware Parallax Dampening  | Auto-tunes 3D intensity by depth stats              |
+| DOF + Healing                   | Simulated depth of field with gap healing           |
+| GPU Tensor Grid Warping         | High-performance stereo image warping               |
+
+---
+
+* All features above are **original** to VisionDepth3D.
+* Designed and optimized in-house for real-time VR stereo authoring.
+* No external segmentation, warping, or AI fill-inpainting required.
+
+For citations or inquiries:
+[https://github.com/VisionDepth/VisionDepth3D](https://github.com/VisionDepth/VisionDepth3D)
 
 📄 Licensed under: VisionDepth3D Custom Use License (No Derivatives)
-

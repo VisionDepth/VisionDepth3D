@@ -33,10 +33,12 @@
   "Midground Shift": "Desplazamiento de plano medio",
   "Background Shift": "Desplazamiento de fondo",
   "Sharpness Factor": "Factor de nitidez",
-  "Convergence Offset": "Desplazamiento de convergencia",
+  "Zero Parallax Strength": "Fuerza de Paralaje Cero",
   "parallax_balance": "Equilibrio de paralaje",
   "Max Pixel Shift %": "Desplazamiento máximo de píxeles %",
   "DOF Strength": "Intensidad de profundidad de campo",
+  "Convergence Strength": "Intensidad de Convergencia",
+  "Enable Dynamic Convergence": "Activar Convergencia Dinámica",
 
 
   "Preserve Original Aspect Ratio": "Conservar relación de aspecto original",
@@ -138,7 +140,7 @@
   "Tooltip.MGShift": "Ajusta la paralaje para las capas de plano medio. Ayuda a equilibrar la 3D en la profundidad de la escena.",
   "Tooltip.BGShift": "Establece el desplazamiento de profundidad para regiones de fondo. Los valores negativos aumentan la distancia percibida.",
   "Tooltip.Sharpness": "Controla el enfoque de la imagen después de la deformación 3D. Valores negativos afinan la imagen.",
-  "Tooltip.ConvergenceOffset": "Ajusta el plano de convergencia (profundidad de la pantalla). Ayuda a reducir la fatiga visual.",
+  "Tooltip.ZeroParallaxStrength": "Ajusta cuán firmemente el sujeto se mantiene en la profundidad de pantalla (cero paralaje). Valores altos centran más el enfoque.",
   "Tooltip.ParallaxBalance": "Equilibra la profundidad de pantalla entre énfasis en primer plano y fondo.",
   "Tooltip.MaxPixelShift": "Limita la disparidad máxima entre las imágenes izquierda y derecha. Reduce el efecto fantasma en 3D.",
   "Tooltip.PreserveAspect": "Mantiene la relación de aspecto original del video fuente en la salida 3D final.",
@@ -164,4 +166,7 @@
   "Tooltip.InputResPct": "Reduce la escala de entrada antes de aumentar la escala para ahorrar memoria o mejorar la velocidad. 100% = resolución completa.",
   "Tooltip.ModelSelect": "Selecciona un modelo ONNX ESRGAN. x2 = más rápido, x4 = más nítido pero más lento.",
   "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central."
+  "Tooltip.ConvergenceStrength": "Agrega un desplazamiento de convergencia estéreo para controlar la profundidad aparente del sujeto principal. Valores más altos acercan las vistas izquierda y derecha, generando un efecto de sobresaliente más intenso.",
+  "Tooltip.EnableDynConvergence": "Ajusta dinámicamente la intensidad de la convergencia según la profundidad del sujeto. Mejora la comodidad visual alineando automáticamente la convergencia con las áreas clave de la escena.",
+
 }
