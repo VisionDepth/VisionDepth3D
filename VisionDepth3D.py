@@ -449,14 +449,14 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
-        "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
-        "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
+        #"Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
+        #"Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
+        #"Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
-        "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
+        #"Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -471,9 +471,8 @@ def load_supported_models():
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
         "DPT-Large": "Intel/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
-        "security_model": "nagayama0706/security_model",
     }
-
+    
     # ✅ Add local models from weights directory
     for folder_name in os.listdir(local_model_dir):
         folder_path = os.path.join(local_model_dir, folder_name)
