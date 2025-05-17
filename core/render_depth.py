@@ -23,9 +23,6 @@ cancel_flag = threading.Event()
 cancel_requested = threading.Event()
 global_session_start_time = None
 
-previous_depth = None
-alpha = 0.6  # smoothing factor
-
 # === Setup: Local weights directory ===
 local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "weights"))
 os.makedirs(local_model_dir, exist_ok=True)
@@ -37,14 +34,14 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
-        "Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
-        "Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
+        #"Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
+        #"Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
+        #"Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
-        "Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
+        #"Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -59,7 +56,6 @@ def load_supported_models():
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
         "DPT-Large": "Intel/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
-        "security_model": "nagayama0706/security_model",
     }
 
     # Add local folders that look like model directories
@@ -109,7 +105,7 @@ def ensure_model_downloaded(checkpoint):
                 cache_dir=local_model_dir  # ✅ Force download to your custom weights folder
             ).to("cuda" if torch.cuda.is_available() else "cpu")
 
-            def diffusion_pipe(images):
+            def diffusion_pipe(images, inference_size=None):
                 if not isinstance(images, list):
                     images = [images]
                 results = []
@@ -152,37 +148,53 @@ def load_onnx_model(model_dir):
     )
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
-    input_shape = session.get_inputs()[0].shape
-    input_rank = len(input_shape)
+    raw_shape = session.get_inputs()[0].shape
+    input_rank = len(raw_shape)
+
+    # Sanitize input shape
+    input_shape = [
+        int(dim) if isinstance(dim, str) and dim.isdigit() else dim
+        for dim in raw_shape
+    ]
+
+    # Extract static input resolution
+    height = input_shape[3] if input_rank == 5 and isinstance(input_shape[3], int) else (
+             input_shape[2] if input_rank == 4 and isinstance(input_shape[2], int) else None)
+    width  = input_shape[4] if input_rank == 5 and isinstance(input_shape[4], int) else (
+             input_shape[3] if input_rank == 4 and isinstance(input_shape[3], int) else None)
+    enforced_resolution = (width, height) if width and height else None
 
     print(f"🔍 ONNX input shape: {input_shape} (Rank {input_rank})")
+    if enforced_resolution:
+        print(f"📏 Static input resolution detected: {enforced_resolution}")
 
-    def onnx_pipe(images):
+    def onnx_pipe(images, inference_size=None):
         preds = []
 
+        if enforced_resolution:
+            if inference_size is not None and inference_size != enforced_resolution:
+                print(f"⚠️ Overriding inference resolution: model requires {enforced_resolution}, got {inference_size}")
+            inference_size = enforced_resolution
+
         if input_rank == 5:
-            # === Temporal model: expects (1, 32, 3, H, W)
             if len(images) != 32:
                 if len(images) > 32:
                     raise ValueError("ONNX model requires exactly 32 frames per inference.")
                 print(f"⚠️ Padding {len(images)} to 32 frames.")
                 images += [images[-1]] * (32 - len(images))
 
-            img_batch = [np.array(img.resize((518, 518))).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
-            input_tensor = np.stack(img_batch)[None, ...]  # (1, 32, 3, H, W)
-
-            result = session.run([output_name], {input_name: input_tensor})[0]  # (1, 32, H, W)
+            img_batch = [np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
+            input_tensor = np.stack(img_batch)[None, ...]
+            result = session.run([output_name], {input_name: input_tensor})[0]
             result = result.squeeze(0)
 
             for i in range(32):
                 preds.append({"predicted_depth": torch.tensor(result[i])})
 
         elif input_rank == 4:
-            # === Spatial model: expects (N, 3, H, W)
-            img_batch = [np.array(img.resize((518, 518))).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
-            input_tensor = np.stack(img_batch)  # (N, 3, H, W)
-
-            result = session.run([output_name], {input_name: input_tensor})[0]  # (N, H, W)
+            img_batch = [np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
+            input_tensor = np.stack(img_batch)
+            result = session.run([output_name], {input_name: input_tensor})[0]
 
             for i in range(len(images)):
                 preds.append({"predicted_depth": torch.tensor(result[i])})
@@ -190,8 +202,15 @@ def load_onnx_model(model_dir):
             raise ValueError(f"❌ Unsupported input rank: {input_rank}")
 
         return preds
-    onnx_pipe._is_marigold = False  # ✅ Prevents false detection
-    return onnx_pipe, {"is_onnx": True, "input_rank": input_rank}
+
+    onnx_pipe._is_marigold = False
+    return onnx_pipe, {
+        "is_onnx": True,
+        "input_rank": input_rank,
+        "input_shape": input_shape,
+        "session": session
+    }
+
 
 
 
@@ -217,26 +236,43 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
         is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
         is_diffusion = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_diffusion", False)
 
+        # === ONNX MODELS ===
         if is_onnx:
-            # ✅ ONNX: model is already batch-safe
             pipe = model
-            status_label_widget.config(text=f"✅ ONNX model loaded: {selected_checkpoint}")
+            status_label_widget.config(text=f"🔄 Warming up ONNX model...")
+            status_label_widget.update_idletasks()
 
-            # 🔥 ONNX Warm-up
             try:
-                dummy_size = (518, 518)  # Safe default for ONNX, especially Video Depth Anything
-                dummy = Image.new("RGB", dummy_size, (127, 127, 127))
                 input_rank = processor_or_metadata.get("input_rank", 4)
-                dummy_batch = [dummy] * (32 if input_rank == 5 else 1)
-                _ = pipe(dummy_batch)
+                input_shape = processor_or_metadata.get("input_shape", [])
+                dummy_size = (518, 518)  # Fallback if dynamic
+
+                # 🔍 Detect static input shape correctly based on input rank
+                if isinstance(input_shape, list):
+                    if input_rank == 5:
+                        if isinstance(input_shape[3], int) and isinstance(input_shape[4], int):
+                            dummy_size = (input_shape[4], input_shape[3])  # (W, H)
+                    elif input_rank == 4:
+                        if isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
+                            dummy_size = (input_shape[3], input_shape[2])  # (W, H)
+
+                dummy = Image.new("RGB", (518, 518), (127, 127, 127))
+                dummy_batch = [dummy] * 32
+                _ = pipe(dummy_batch, inference_size=(518, 518))
+
 
                 print("🔥 ONNX model warmed up with dummy input")
             except Exception as e:
                 print(f"⚠️ ONNX warm-up failed: {e}")
-            
+
+            status_label_widget.config(text=f"✅ ONNX model loaded: {selected_checkpoint}")
+
+
+        # === DIFFUSION MODELS ===
         elif is_diffusion:
-            pipe = model  # Already a callable
-            status_label_widget.config(text=f"✅ Diffusion model loaded: {selected_checkpoint}")
+            pipe = model
+            status_label_widget.config(text=f"🔄 Warming up diffusion model...")
+            status_label_widget.update_idletasks()
 
             try:
                 dummy = Image.new("RGB", (512, 512), (127, 127, 127))
@@ -245,11 +281,11 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
             except Exception as e:
                 print(f"⚠️ Diffusion warm-up failed: {e}")
 
-            
-        else:
-            processor = processor_or_metadata  # ✅ Fix: properly unpack processor
+            status_label_widget.config(text=f"✅ Diffusion model loaded: {selected_checkpoint}")
 
-            # ✅ Hugging Face: wrap pipeline to ensure batch-safety
+        # === HF Transformers Models ===
+        else:
+            processor = processor_or_metadata
             raw_pipe = pipeline(
                 "depth-estimation",
                 model=model,
@@ -257,26 +293,25 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
                 device=device
             )
 
-            def hf_batch_safe_pipe(images):
+            def hf_batch_safe_pipe(images, **kwargs):
                 if isinstance(images, list):
                     return raw_pipe(images)
                 return [raw_pipe(images)]
 
             pipe = hf_batch_safe_pipe
+            status_label_widget.config(text=f"🔄 Warming up Hugging Face model...")
+            status_label_widget.update_idletasks()
+
+            try:
+                dummy = Image.new("RGB", (384, 384), (127, 127, 127))
+                _ = pipe([dummy])
+                print("🔥 Hugging Face pipeline warmed up with dummy frame")
+            except Exception as e:
+                print(f"⚠️ Hugging Face warm-up failed: {e}")
+
             status_label_widget.config(
                 text=f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
             )
-
-            # 🔥 HF Warm-up: Run dummy frame to reduce first-frame latency
-            try:
-                dummy_size = (384, 384)
-                dummy = Image.new("RGB", dummy_size, (127, 127, 127))
-                _ = pipe([dummy])
-                print("🔥 HF pipeline warmed up with dummy frame")
-            except Exception as e:
-                print(f"⚠️ HF warm-up failed: {e}")
-
-        status_label_widget.update_idletasks()
 
     except Exception as e:
         status_label_widget.config(text=f"❌ Model loading failed: {str(e)}")
@@ -385,7 +420,7 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
                 images.append(img)
 
         print(f"🚀 Running batch of {len(images)} images at {inference_size}")
-        predictions = pipe(images)
+        predictions = pipe([image], inference_size=inference_size)
 
         for j, prediction in enumerate(predictions):
             if cancel_requested.is_set():
@@ -468,7 +503,7 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
     inference_size = parse_inference_resolution(inference_res_var.get())
     image_resized = image.resize(inference_size, Image.BICUBIC) if inference_size else image.copy()
 
-    predictions = pipe(image_resized)
+    predictions = pipe([image], inference_size=inference_size)
     if not (isinstance(predictions, list) and "predicted_depth" in predictions[0]):
         raise ValueError("❌ Unexpected prediction format from depth model.")
 
@@ -483,7 +518,10 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
 
             if invert_var.get():
                 print("🌀 Inverting 16-bit depth for single image")
-                depth_image = ImageOps.invert(depth_image.convert("I")).convert("I;16")
+                depth_array = np.array(depth_image, dtype=np.uint16)
+                depth_array = 65535 - depth_array  # Manual inversion for 16-bit
+                depth_image = Image.fromarray(depth_array, mode="I;16")
+
 
         else:
             # === Fallback for other models ===
@@ -531,8 +569,9 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
     if not folder:
         image_disp = image.copy()
         image_disp.thumbnail((480, 270))
-        input_label.config(image=ImageTk.PhotoImage(image_disp))
-        input_label.image = ImageTk.PhotoImage(image_disp)
+        input_img_tk = ImageTk.PhotoImage(image_disp)
+        input_label.config(image=input_img_tk)
+        input_label.image = input_img_tk  # ✅ Prevent garbage collection
 
         depth_disp = depth_image.copy()
 
@@ -550,8 +589,10 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
             depth_disp = Image.fromarray(preview_array, mode="L").convert("RGB")
 
         depth_disp.thumbnail((480, 270))
-        output_label.config(image=ImageTk.PhotoImage(depth_disp))
-        output_label.image = ImageTk.PhotoImage(depth_disp)
+        depth_img_tk = ImageTk.PhotoImage(depth_disp)
+        output_label.config(image=depth_img_tk)
+        output_label.image = depth_img_tk  # ✅ Prevent garbage collection
+
 
     image_name = os.path.splitext(os.path.basename(file_path))[0]
     output_filename = f"{image_name}_depth.png"
@@ -823,10 +864,6 @@ def process_video2(
                     raw_depth = prediction["predicted_depth"]
                     depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze()
 
-                    if previous_depth is not None:
-                        depth_tensor = alpha * previous_depth + (1 - alpha) * depth_tensor
-                    previous_depth = depth_tensor
-
                     if invert_var.get():
                         depth_tensor = 1.0 - depth_tensor
 
@@ -949,5 +986,3 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             args=(file_path, total_frames_all, 0, batch_size, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested, invert_var),
             daemon=True
         ).start()
-
-
