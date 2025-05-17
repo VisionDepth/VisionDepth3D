@@ -169,34 +169,56 @@ def open_3d_preview_window(
     bg_slider = tk.Scale(shift_frame, from_=-20, to=0, resolution=0.5, orient="horizontal", label="BG Shift", variable=bg_shift, length=200)
     bg_slider.grid(row=0, column=2, padx=10)
 
-    feather_frame = tk.LabelFrame(control_container, text="Feathering / Sharpening", padx=10, pady=5)
+    feather_frame = tk.LabelFrame(control_container, text="Parallax Control", padx=10, pady=5)
     feather_frame.pack(pady=(0, 10), anchor="center")
 
-    tk.Label(feather_frame, text="Feather Strength").grid(row=0, column=0, padx=10)
-    feather_strength_slider = tk.Entry(feather_frame, width=8)
-    feather_strength_slider.insert(0, str(feather_strength.get()))
-    feather_strength_slider.grid(row=0, column=1, padx=10)
-    
-    tk.Label(feather_frame, text="Blur Size").grid(row=0, column=2, padx=10)
-    blur_ksize_slider = tk.Entry(feather_frame, width=8)
-    blur_ksize_slider.insert(0, str(blur_ksize.get()))
-    blur_ksize_slider.grid(row=0, column=3, padx=10)
-    
-    tk.Label(feather_frame, text="Sharpen").grid(row=0, column=4, padx=10)
-    sharpening_slider = tk.Entry(feather_frame, width=8)
-    sharpening_slider.insert(0, str(sharpness_factor.get()))
-    sharpening_slider.grid(row=0, column=5, padx=10)
-    
+    feather_frame.columnconfigure((0, 1, 2, 3), weight=1, pad=10)
+    feather_frame.columnconfigure((4, 5, 6, 7), weight=1, pad=10)
 
-    tk.Label(feather_frame, text="Max Pixel Shift (%)").grid(row=0, column=6, padx=10)
-    max_shift_slider= tk.Entry(feather_frame, width=8)
+    # Row 0
+    tk.Label(feather_frame, text="Sharpen").grid(row=0, column=0, sticky="w")
+    sharpness_slider = tk.Scale(
+        feather_frame, from_=-1, to=1, resolution=0.1, orient="horizontal",
+        variable=sharpness_factor, length=150, showvalue=True,
+        command=lambda _: update_preview_debounced()
+    )
+    sharpness_slider.grid(row=0, column=1, sticky="w")
+
+    tk.Label(feather_frame, text="Max Pixel Shift (%)").grid(row=0, column=2, sticky="w")
+    max_shift_slider = tk.Entry(feather_frame, width=8)
     max_shift_slider.insert(0, str(max_pixel_shift.get()))
-    max_shift_slider.grid(row=0, column=7, padx=10)
-    
-    tk.Label(feather_frame, text="DoF Strength").grid(row=1, column=4, padx=10)
+    max_shift_slider.grid(row=0, column=3, sticky="w")
+
+    # Row 1
+    tk.Label(feather_frame, text="DoF Strength").grid(row=1, column=0, sticky="w")
     dof_strength_slider = tk.Entry(feather_frame, width=8)
     dof_strength_slider.insert(0, str(dof_strength.get()))
-    dof_strength_slider.grid(row=1, column=5, padx=10)
+    dof_strength_slider.grid(row=1, column=1, sticky="w")
+
+    tk.Label(feather_frame, text="Convergence Strength").grid(row=1, column=2, sticky="w")
+    convergence_slider = tk.Scale(
+        feather_frame, from_=-0.05, to=0.05, resolution=0.001, orient="horizontal",
+        variable=convergence_strength, length=150, showvalue=True,
+        command=lambda _: update_preview_debounced()
+    )
+    convergence_slider.grid(row=1, column=3, sticky="w")
+
+    # Row 2
+    zero_parallax_strength_slider = tk.Scale(
+        feather_frame, from_=-0.05, to=0.05,
+        resolution=0.001, orient="horizontal",
+        label="Zero Parallax Strength", variable=zero_parallax_strength,
+        length=200, command=lambda _: update_preview_debounced()
+    )
+    zero_parallax_strength_slider.grid(row=2, column=0, columnspan=2, sticky="w")
+
+    parallax_balance_slider = tk.Scale(
+        feather_frame, from_=0.0, to=1.0, resolution=0.05, orient="horizontal",
+        label="Parallax Balance", variable=parallax_balance, length=200,
+        command=lambda _: update_preview_debounced()
+    )
+    parallax_balance_slider.grid(row=2, column=2, columnspan=2, sticky="w")
+
 
     def update_max_shift(*_):
         try:
@@ -271,40 +293,9 @@ def open_3d_preview_window(
     dof_strength_slider.bind("<KeyRelease>", update_dof_strength)
 
 
-    feather_strength_slider.bind("<KeyRelease>", update_feather_strength)
-    blur_ksize_slider.bind("<KeyRelease>", update_blur_ksize)
-    sharpening_slider.bind("<KeyRelease>", update_sharpness)
+    sharpness_slider.bind("<KeyRelease>", update_sharpness)
     max_shift_slider.bind("<KeyRelease>", update_max_shift)
 
-
-    zero_parallax_strength_slider = tk.Scale(
-        feather_frame, from_=-0.05, to=0.05,
-        resolution=0.001, orient="horizontal",
-        label="Zero Parallax Strength", variable=zero_parallax_strength,
-        length=200
-    )
-    zero_parallax_strength_slider.grid(row=1, column=0, padx=10)
-
-    parallax_balance_slider = tk.Scale(feather_frame, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", label="Parallax Balance", variable=parallax_balance, length=200)
-    parallax_balance_slider.grid(row=1, column=2, padx=10)
-    
-    # Label for the slider
-    tk.Label(feather_frame, text="Convergence Strength").grid(row=2, column=0, padx=10)
-
-    # Slider replacing the Entry
-    convergence_slider = tk.Scale(
-        feather_frame,
-        from_=-0.05,
-        to=0.05,
-        resolution=0.001,
-        orient="horizontal",
-        label=None,  
-        variable=convergence_strength,
-        length=200,
-        command=lambda _: update_preview_debounced()  
-    )
-    convergence_slider.grid(row=2, column=1, padx=10)
-    
     def update_convergence_strength(*_):
         try:
             val = float(convergence_slider.get())
@@ -342,13 +333,13 @@ def open_3d_preview_window(
         depth_tensor = F.interpolate(depth_to_tensor(depth).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
 
         try:
-            blur_ksize_val = int(blur_ksize_slider.get())
-            feather_strength_val = float(feather_strength_slider.get())
+            #blur_ksize_val = int(blur_ksize_slider.get())
+            #feather_strength_val = float(feather_strength_slider.get())
             max_pixel_shift_val = float(max_shift_slider.get())
             zero_parallax_strength_val = float(zero_parallax_strength.get())
             parallax_balance_val = float(parallax_balance.get())
             dof_strength_val = float(dof_strength_slider.get())
-            sharpness_val = float(sharpening_slider.get())
+            sharpness_val = float(sharpness_factor.get())
             convergence_strength_val = float(convergence_strength.get())
             dynamic_convergence_enabled = enable_dynamic_convergence.get()
         except ValueError:
@@ -359,8 +350,6 @@ def open_3d_preview_window(
         left_tensor, right_tensor, shift_map = pixel_shift_cuda(
             frame_tensor, depth_tensor, w, h,
             fg_shift.get(), mg_shift.get(), bg_shift.get(),
-            blur_ksize=blur_ksize_val,
-            feather_strength=feather_strength_val,
             return_shift_map=True,
             use_subject_tracking=use_subject_tracking.get(),
             enable_floating_window=use_floating_window.get(),
@@ -445,4 +434,5 @@ def open_3d_preview_window(
     enable_edge_masking.trace_add("write", lambda *_: update_preview_debounced())
     enable_feathering.trace_add("write", lambda *_: update_preview_debounced())
     enable_dynamic_convergence.trace_add("write", lambda *_: update_preview_debounced())
+    sharpness_factor.trace_add("write", lambda *_: update_preview_debounced())
 
