@@ -37,37 +37,54 @@
 
 # Key Features – VisionDepth3D All-in-One 3D Suite
 
+# VisionDepth3D Real-Time 3D Stereo Composer
+
+- CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate, per-pixel)
+- Based on the proprietary [**VisionDepth3D Method**](VisionDepth3D_Method.md):
+  - Depth-weighted continuous parallax (FG/MG/BG zones blended via soft masks)
+  - Subject-aware zero parallax tracking (histogram mode-based convergence)
+  - Edge-aware shift suppression (gradient-based feather masking)
+  - Floating window stabilization (momentum-smoothed convergence)
+  - Scene-adaptive parallax dampening (variance-based intensity control)
+  - Real-time CUDA `grid_sample` stereo warping (left/right in one pass)
+  - Depth-of-field simulation + occlusion healing (multi-pass Gaussian blending)
+- Export formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
+- Live preview overlays: **shift heatmaps, edge masks, stereo diff tools**
+- Fully interactive: **dynamic sliders**, **real-time 3D preview**, and **batch-ready pipeline**
 
 # AI-Powered Depth Estimation (GPU Accelerated)
-- Supports 20+ transformer-based models: **ZoeDepth, Depth Anything, MiDaS, DPT, DepthPro, DINOv2**, etc.
-- One-click model selection with **automatic downloads** – zero CLI/config required
-- **PyTorch GPU-accelerated inference** (no OpenCV recompile needed)
-- Batch-ready: process **image folders or video sequences**
-- Includes **temporal smoothing** and scene-adaptive normalization
-- Built-in **color inversion** and customizable **colormaps** (Viridis, Inferno, Magma)
-- Real-time GUI: **progress bar, FPS meter, ETA tracker**
-- Handles large resolutions via **auto-resizing + smart batching**
-- Full GPU task control: **pause/resume/cancel**
-- Optional local **ONNX model + TensorRT** for max performance
 
-# Real-Time 3D Stereo Composer
-- CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate)
-- Fine-tuned control: **foreground pop / midground balance / background pull**
-- Export formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
-- Floating window engine with **cinema-style dynamic masking**
-- Supports **feathered masking, edge-aware smoothing, sharpening**
-- **Convergence tracking** based on subject movement
-- Live performance stats: **FPS, elapsed time, percent complete**
+- **Supports 25+ models** including: `ZoeDepth`, `Depth Anything V1/V2`, `MiDaS`, `DPT (BEiT)`, `DepthPro`, `DINOv2`, `Distill-Any-Depth`, and **Marigold Diffusion**.
+-  One-click model switching with **auto-downloading and local caching** — no CLI or manual configs required.
+-  **GPU-accelerated inference** via:
+  - `PyTorch` (Transformers)
+  - `ONNXRuntime + CUDA/TensorRT`
+  - `Diffusers (FP16)` for Stable Diffusion-based depth like `Marigold`
+-  **Batch-ready pipeline** for:
+  - Image folders
+  - Video files (frame-extract + depth + encode)
+-  New **16-bit depth export path** for Diffusers (Marigold) — supports inversion and FFmpeg-encoded MKV output.
+-  Optional **temporal smoothing toggle** with controllable alpha blending.
+-  Built-in **colormaps** (e.g., Viridis, Inferno, Magma, Plasma) + grayscale preview modes.
+-  Fully interactive **Preview GUI**:
+  - Adjustable width/height
+  - Slider-driven 3D parallax controls (FG/MG/BG)
+  - Real-time preview modes: **HSBS**, **Anaglyph**, **Interlaced**, **Feather Mask**, **Shift Maps**, etc.
+-  Smart batching with `get_dynamic_batch_size()` — adapts to your **GPU VRAM automatically**.
+-  Runtime task controls: **pause / resume / cancel** without interrupting the UI.
+-  **Resolution-safe ONNX engine**:
+  - Auto detects static input shapes (e.g. `518x518`)
+  - Patches dummy warm-up tensors to avoid shape mismatch crashes.
+-  Supports **video frame interpolation (RIFE)** for smoother previews and export.
+-  AV1 safeguard: auto-detects unsupported codecs with **ffprobe fallback warning**.
 
-# RIFE Frame Interpolation (ONNX)
+# AI Upscaling Functions
 - Integrated **RIFE ONNX model** – PyTorch-free, real-time frame doubling
 - Supports **2x, 4x, 8x FPS interpolation**
 - Processes raw image folders + **auto video reassembly**
 - Maintains **frame count, resolution, audio sync**, and aspect ratio
 - Preview and export using **FFmpeg codecs** (GUI-integrated)
 - Real-time **progress, FPS, ETA** feedback
-
-# 4x Super Resolution (Real-ESRGAN – ONNX GPU)
 - Uses **Real-ESRGAN x4**, exported to ONNX with full CUDA acceleration
 - Intelligent **VRAM-aware batching** for 1–8 frames
 - Upscaling: **720p → 1080p**, **1080p → 4K**, or custom targets
@@ -75,13 +92,6 @@
 - Uses **fp16 inference** for clean, artifact-free output
 - Fully integrated into pipeline with **FFmpeg NVENC export**
 - GUI includes **progress bar, FPS, ETA tracking**
-
-# Smart Depth-Aware Effects
-- **Edge-aware artifact suppression** (e.g., hair, limbs)
-- Feathered transition masks to eliminate **ghosting/pop artifacts**
-- Adaptive **depth sharpening + blending** for polished output
-- Floating window masking with **cinematic easing**
-- Per-frame **zero parallax estimation + smoothing**
 
 # Audio & Video Sync
 - Extract + reattach source audio using **FFmpeg** (GUI-based)
