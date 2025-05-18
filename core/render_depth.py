@@ -23,7 +23,7 @@ cancel_requested = threading.Event()
 global_session_start_time = None
 
 # === Setup: Local weights directory ===
-local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "weights"))
+local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".", "weights"))
 os.makedirs(local_model_dir, exist_ok=True)
 
 # === Suppress Hugging Face symlink warnings (esp. on Windows) ===
