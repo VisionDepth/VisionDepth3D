@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 import threading
 import tkinter as tk
@@ -12,6 +13,7 @@ import matplotlib.cm as cm
 import onnxruntime as ort
 import subprocess
 import diffusers
+import diffusers
 import transformers
 
 from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
@@ -23,8 +25,20 @@ cancel_requested = threading.Event()
 global_session_start_time = None
 
 # === Setup: Local weights directory ===
-local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".", "weights"))
+def get_weights_dir():
+    if getattr(sys, 'frozen', False):
+        # PyInstaller bundle: use dir of the .exe
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # Source run: use the parent of the current file (core/ -> project root)
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    return os.path.join(base_path, "weights")
+
+
+local_model_dir = get_weights_dir()
 os.makedirs(local_model_dir, exist_ok=True)
+
 
 # === Suppress Hugging Face symlink warnings (esp. on Windows) ===
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -211,110 +225,119 @@ def load_onnx_model(model_dir):
     }
 
 
+spinner_states = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
+def start_spinner(widget, message="Warming up model..."):
+    def spin(index=0):
+        if not getattr(widget, "_spinner_running", False):
+            return
+        state = spinner_states[index % len(spinner_states)]
+        widget.config(text=f"{state} {message}")
+        widget.after(200, spin, index + 1)
 
+    widget._spinner_running = True
+    spin()
 
+def stop_spinner(widget, final_text):
+    widget._spinner_running = False
+    widget.config(text=final_text)
 
 def update_pipeline(selected_model_var, status_label_widget, *args):
     global pipe
 
     selected_checkpoint = selected_model_var.get()
     checkpoint = supported_models.get(selected_checkpoint, None)
-
+    
     if checkpoint is None:
         status_label_widget.config(text=f"⚠️ Error: Model '{selected_checkpoint}' not found.")
         return
 
-    try:
-        model, processor_or_metadata = ensure_model_downloaded(checkpoint)
-        if not model:
-            status_label_widget.config(text=f"❌ Failed to load model: {selected_checkpoint}")
-            return
+    def warmup_thread():
+        try:
+            model, processor_or_metadata = ensure_model_downloaded(checkpoint)
+            if not model:
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget, f"❌ Failed to load model: {selected_checkpoint}"))
+                return
 
-        device = 0 if torch.cuda.is_available() else -1
+            device = 0 if torch.cuda.is_available() else -1
+            is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
+            is_diffusion = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_diffusion", False)
 
-        is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
-        is_diffusion = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_diffusion", False)
+            if is_onnx:
+                pipe = model
+                status_label_widget.after(0, lambda: start_spinner(
+                    status_label_widget, "🔄 Warming up ONNX model..."))
 
-        # === ONNX MODELS ===
-        if is_onnx:
-            pipe = model
-            status_label_widget.config(text=f"🔄 Warming up ONNX model...")
-            status_label_widget.update_idletasks()
+                try:
+                    input_rank = processor_or_metadata.get("input_rank", 4)
+                    input_shape = processor_or_metadata.get("input_shape", [])
+                    dummy_size = (518, 518)
 
-            try:
-                input_rank = processor_or_metadata.get("input_rank", 4)
-                input_shape = processor_or_metadata.get("input_shape", [])
-                dummy_size = (518, 518)  # Fallback if dynamic
+                    if isinstance(input_shape, list):
+                        if input_rank == 5 and isinstance(input_shape[3], int) and isinstance(input_shape[4], int):
+                            dummy_size = (input_shape[4], input_shape[3])
+                        elif input_rank == 4 and isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
+                            dummy_size = (input_shape[3], input_shape[2])
 
-                # 🔍 Detect static input shape correctly based on input rank
-                if isinstance(input_shape, list):
-                    if input_rank == 5:
-                        if isinstance(input_shape[3], int) and isinstance(input_shape[4], int):
-                            dummy_size = (input_shape[4], input_shape[3])  # (W, H)
-                    elif input_rank == 4:
-                        if isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
-                            dummy_size = (input_shape[3], input_shape[2])  # (W, H)
+                    dummy = Image.new("RGB", dummy_size, (127, 127, 127))
+                    dummy_batch = [dummy] * 32
+                    _ = pipe(dummy_batch, inference_size=dummy_size)
+                    print("🔥 ONNX model warmed up with dummy input")
+                except Exception as e:
+                    print(f"⚠️ ONNX warm-up failed: {e}")
 
-                dummy = Image.new("RGB", (518, 518), (127, 127, 127))
-                dummy_batch = [dummy] * 32
-                _ = pipe(dummy_batch, inference_size=(518, 518))
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
+
+            elif is_diffusion:
+                pipe = model
+                status_label_widget.after(0, lambda: start_spinner(
+                    status_label_widget, "🔄 Warming up diffusion model..."))
+
+                try:
+                    dummy = Image.new("RGB", (512, 512), (127, 127, 127))
+                    _ = pipe(dummy)
+                    print("🔥 Diffusion model warmed up with dummy frame")
+                except Exception as e:
+                    print(f"⚠️ Diffusion warm-up failed: {e}")
+
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget, f"✅ Diffusion model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
+
+            else:
+                processor = processor_or_metadata
+                raw_pipe = pipeline(
+                    "depth-estimation",
+                    model=model,
+                    image_processor=processor,
+                    device=device
+                )
+
+                def hf_batch_safe_pipe(images, **kwargs):
+                    return raw_pipe(images) if isinstance(images, list) else [raw_pipe(images)]
+
+                pipe = hf_batch_safe_pipe
+                status_label_widget.after(0, lambda: start_spinner(
+                    status_label_widget, "🔄 Warming up Hugging Face model..."))
+
+                try:
+                    dummy = Image.new("RGB", (384, 384), (127, 127, 127))
+                    _ = pipe([dummy])
+                    print("🔥 Hugging Face pipeline warmed up with dummy frame")
+                except Exception as e:
+                    print(f"⚠️ Hugging Face warm-up failed: {e}")
+
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget, f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
+
+        except Exception as e:
+            print(f"❌ Model loading failed: {e}")
+            status_label_widget.after(0, lambda: stop_spinner(
+                status_label_widget, f"❌ Model loading failed: {e}"))
 
 
-                print("🔥 ONNX model warmed up with dummy input")
-            except Exception as e:
-                print(f"⚠️ ONNX warm-up failed: {e}")
+    threading.Thread(target=warmup_thread, daemon=True).start()
 
-            status_label_widget.config(text=f"✅ ONNX model loaded: {selected_checkpoint}")
-
-
-        # === DIFFUSION MODELS ===
-        elif is_diffusion:
-            pipe = model
-            status_label_widget.config(text=f"🔄 Warming up diffusion model...")
-            status_label_widget.update_idletasks()
-
-            try:
-                dummy = Image.new("RGB", (512, 512), (127, 127, 127))
-                _ = pipe(dummy)
-                print("🔥 Diffusion model warmed up with dummy frame")
-            except Exception as e:
-                print(f"⚠️ Diffusion warm-up failed: {e}")
-
-            status_label_widget.config(text=f"✅ Diffusion model loaded: {selected_checkpoint}")
-
-        # === HF Transformers Models ===
-        else:
-            processor = processor_or_metadata
-            raw_pipe = pipeline(
-                "depth-estimation",
-                model=model,
-                image_processor=processor,
-                device=device
-            )
-
-            def hf_batch_safe_pipe(images, **kwargs):
-                if isinstance(images, list):
-                    return raw_pipe(images)
-                return [raw_pipe(images)]
-
-            pipe = hf_batch_safe_pipe
-            status_label_widget.config(text=f"🔄 Warming up Hugging Face model...")
-            status_label_widget.update_idletasks()
-
-            try:
-                dummy = Image.new("RGB", (384, 384), (127, 127, 127))
-                _ = pipe([dummy])
-                print("🔥 Hugging Face pipeline warmed up with dummy frame")
-            except Exception as e:
-                print(f"⚠️ Hugging Face warm-up failed: {e}")
-
-            status_label_widget.config(
-                text=f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
-            )
-
-    except Exception as e:
-        status_label_widget.config(text=f"❌ Model loading failed: {str(e)}")
-        status_label_widget.update_idletasks()
 
 
 def parse_inference_resolution(res_string, fallback=(384, 384)):
@@ -985,3 +1008,5 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             args=(file_path, total_frames_all, 0, batch_size, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested, invert_var),
             daemon=True
         ).start()
+
+
