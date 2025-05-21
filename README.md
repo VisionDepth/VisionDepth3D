@@ -27,7 +27,7 @@
 ---
 
 ## Table of Contents
-- [Key Features](#key-features--visiondepth3d-all-in-one-3d-suite)
+- [Key Features](#all-in-one-3d-suite)
 - [Guide Sheet: Install](#guide-sheet-install)
 - [Guide Sheet: GUI Inputs](#guide-sheet-gui-inputs)
 - [Troubleshooting](#troubleshooting)
@@ -35,9 +35,16 @@
 - [Acknowledgments & Credits](#acknowledgments--credits)
 
 
-# Key Features – VisionDepth3D All-in-One 3D Suite
+<h2 align="center">All-in-One 3D Suite</h2>
 
-# VisionDepth3D Real-Time 3D Stereo Composer
+<h3 align="center">Real-Time 3D Stereo Composer</h2>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/affb8075-2066-4eb9-a668-164cb6b2ec66" alt="VisionDepth3D - 3D Tab" width="400"/>
+  <br>
+  <em>(3D Tab)</em>
+</p>
+
 
 - CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate, per-pixel)
 - Based on the proprietary [**VisionDepth3D Method**](VisionDepth3D_Method.md):
@@ -54,6 +61,13 @@
 
 # AI-Powered Depth Estimation (GPU Accelerated)
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/04c180bb-d90d-4ff4-b6c1-5b7a548d54eb" alt="Depth Estimation Tab" width="400"/>
+  <br>
+  <em>(Depth Estimation Tab)</em>
+</p>
+
+
 - **Supports 25+ models** including: `ZoeDepth`, `Depth Anything V1/V2`, `MiDaS`, `DPT (BEiT)`, `DepthPro`, `DINOv2`, `Distill-Any-Depth`, and **Marigold Diffusion**.
 -  One-click model switching with **auto-downloading and local caching** — no CLI or manual configs required.
 -  **GPU-accelerated inference** via:
@@ -64,14 +78,8 @@
   - Image folders
   - Video files (frame-extract + depth + encode)
 -  New **16-bit depth export path** for Diffusers (Marigold) — supports inversion and FFmpeg-encoded MKV output.
--  Optional **temporal smoothing toggle** with controllable alpha blending.
 -  Built-in **colormaps** (e.g., Viridis, Inferno, Magma, Plasma) + grayscale preview modes.
--  Fully interactive **Preview GUI**:
-  - Adjustable width/height
-  - Slider-driven 3D parallax controls (FG/MG/BG)
-  - Real-time preview modes: **HSBS**, **Anaglyph**, **Interlaced**, **Feather Mask**, **Shift Maps**, etc.
 -  Smart batching with `get_dynamic_batch_size()` — adapts to your **GPU VRAM automatically**.
--  Runtime task controls: **pause / resume / cancel** without interrupting the UI.
 -  **Resolution-safe ONNX engine**:
   - Auto detects static input shapes (e.g. `518x518`)
   - Patches dummy warm-up tensors to avoid shape mismatch crashes.
@@ -79,6 +87,13 @@
 -  AV1 safeguard: auto-detects unsupported codecs with **ffprobe fallback warning**.
 
 # AI Upscaling Functions
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/95b755c8-7d7c-4254-b6fb-fae5ac9cb200" alt="Frame Tools Tab" width="400"/>
+  <br>
+  <em>(Frame Tools Tab)</em>
+</p>
+
 - Integrated **RIFE ONNX model** – PyTorch-free, real-time frame doubling
 - Supports **2x, 4x, 8x FPS interpolation**
 - Processes raw image folders + **auto video reassembly**
@@ -94,6 +109,13 @@
 - GUI includes **progress bar, FPS, ETA tracking**
 
 # Audio & Video Sync
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/01424ad3-2737-41c0-a93a-92394f3bc4bb" alt="Audio Tool" width="400"/>
+  <br>
+  <em>(Audio Tool)</em>
+</p>
+
 - Extract + reattach source audio using **FFmpeg** (GUI-based)
 - Format options: **AAC, MP3, WAV** (bitrate adjustable)
 - No shell access needed – fully built into GUI
