@@ -102,26 +102,6 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-#---- Inno Installer Bundling ----- 
-
-# ✅ Force include core/ into path
-#core_dir = resource_path("core")
-#if core_dir not in sys.path:
-#    sys.path.insert(0, core_dir)
-
-    
-# ✅ Inject DLL directory into PATH
-#def inject_dll_directory():
-#    dll_dir = resource_path("dlls")
-#    if os.path.isdir(dll_dir):
-#        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
-#    else:
-#        print(f"[Warning] DLL folder not found: {dll_dir}")
-
-# 🟢 Call this before any ONNX/TensorRT/CUDA init
-#inject_dll_directory()
-
-
 def save_settings():
     settings = {name: var.get() for name, var in gui_variables.items()}
 
@@ -367,7 +347,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.1.9")
+root.title("VisionDepth3D v3.2.4")
 root.geometry("885x860")
 
 # --- Menu Bar Setup ---
@@ -415,7 +395,7 @@ depth_content_frame = tk.Frame(depth_estimation_frame, highlightthickness=0, bd=
 depth_content_frame.pack(fill="both", expand=True)
 
 # Sidebar Frame inside depth_content_frame
-sidebar = tk.Frame(depth_content_frame, bg="#1c1c1c", width=250)
+sidebar = tk.Frame(depth_content_frame, bg="#1c1c1c", width=320)
 sidebar.pack(side="left", fill="y")
 
 # Main Content Frame inside depth_content_frame
@@ -449,14 +429,11 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        #"Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
-        #"Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
-        #"Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
+        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
-        #"Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -472,7 +449,7 @@ def load_supported_models():
         "DPT-Large": "Intel/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
     }
-    
+
     # ✅ Add local models from weights directory
     for folder_name in os.listdir(local_model_dir):
         folder_path = os.path.join(local_model_dir, folder_name)
@@ -497,6 +474,7 @@ save_frames_var = tk.BooleanVar(value=False)
 output_dir = tk.StringVar(value="")
 
 
+
 selected_model_label = tk.Label(
     sidebar, text=t("Model"), bg="#1c1c1c",
     fg="white", font=("Arial", 11)
@@ -515,7 +493,7 @@ model_dropdown = ttk.Combobox(
     textvariable=selected_model,
     values=list(supported_models.keys()),
     state="readonly",
-    width=22,
+    width=30,
 )
 model_dropdown.pack(pady=5)
 
@@ -525,7 +503,7 @@ model_dropdown.bind("<Button-1>", lambda event: refresh_model_dropdown())
 # Bind event for when user selects a model
 model_dropdown.bind(
     "<<ComboboxSelected>>",
-    lambda event: update_pipeline(selected_model, status_label)
+    lambda event: update_pipeline(selected_model, status_label, inference_res_var, offload_mode_dropdown,  progress_bar )
 )
 
 
@@ -566,9 +544,36 @@ save_frames_checkbox = tk.Checkbutton(
 )
 save_frames_checkbox.pack(pady=5)
 
+inference_steps_label = tk.Label(
+    sidebar, text=t("Inference Steps:"),
+    bg="#1c1c1c",
+    fg="white",
+    font=("Arial", 11)
+)
+
+inference_steps_label.pack(pady=5)
+
+inference_steps_entry = tk.Entry(sidebar, width=22)
+inference_steps_entry.insert(0, "5")  # Default value
+inference_steps_entry.pack(pady=5)
+
+def update_inference_steps(*args):
+    try:
+        steps = int(inference_steps_entry.get().strip())
+        if steps <= 0:
+            raise ValueError
+        status_label.config(text=t(f"🔄 Inference Steps Updated: {steps}"))
+    except ValueError:
+        status_label.config(text=t("⚠️ Invalid step count. Using default (5)."))
+
+inference_steps_entry.bind("<Return>", update_inference_steps)
+inference_steps_entry.bind("<FocusOut>", update_inference_steps)
+
 batch_size_label = tk.Label(
     sidebar, text=t("Batch Size (Frames):"),
-    bg="#1c1c1c", fg="white"
+    bg="#1c1c1c",
+    fg="white",
+    font=("Arial", 11)
 )
 
 batch_size_label.pack(pady=5)
@@ -576,7 +581,6 @@ batch_size_label.pack(pady=5)
 batch_size_entry = tk.Entry(sidebar, width=22)
 batch_size_entry.insert(0, "8")  # Default value
 batch_size_entry.pack(pady=5)
-
 
 # ✅ Add event listener to update batch size dynamically
 def update_batch_size(*args):
@@ -587,7 +591,6 @@ def update_batch_size(*args):
         status_label.config(text=t(f"🔄 Batch Size Updated: {batch_size}"))
     except ValueError:
         status_label.config(text=t("⚠️ Invalid batch size. Using default (8)."))
-
 
 batch_size_entry.bind("<Return>", update_batch_size)  # Update on "Enter" key press
 batch_size_entry.bind("<FocusOut>", update_batch_size)  # Update when user clicks away
@@ -606,11 +609,43 @@ inference_res_var = tk.StringVar(value="Original")  # default value
 inference_res_dropdown = tk.OptionMenu(
     sidebar,
     inference_res_var,
-    "Original", "256x256", "384x384", "448x448", "512x512", "518x518", "912x912", "1024x1024", "920x1080"
+    "Original",
+    "256x256",
+    "384x384",
+    "448x448",
+    "512x256 (DC-Fastest)",
+    "512x512 (VDA)", 
+    "518x518 ([Local] Distill Large)",
+    "704x384 (DC-Balanced)",
+    "768x768", 
+    "912x912",
+    "960x540 (DC-Good Quality)",
+    "1024x576 (DC-Max Quality)",
+    "1024x1024",
+    "920x1080"
 )
 inference_res_dropdown.config(bg="#2e2e2e", fg="white", highlightthickness=0, font=("Arial", 10))
 inference_res_dropdown.pack(pady=5)
 
+
+offload_mode_label = tk.Label(
+    sidebar,
+    text="CPU Offload Mode",
+    bg="#1c1c1c",
+    fg="white",
+    font=("Arial", 11)
+)
+offload_mode_label.pack(pady=5)
+
+offload_mode_dropdown = ttk.Combobox(
+    sidebar,
+    values=["none", "model", "vae", "unet", "sequential"],
+    state="readonly",
+    width=20
+)
+
+offload_mode_dropdown.set("none")
+offload_mode_dropdown.pack()
 
 progress_bar = ttk.Progressbar(sidebar, mode="determinate", length=180)
 progress_bar.pack(pady=10)
@@ -618,6 +653,11 @@ status_label = tk.Label(
     sidebar, text=t("Ready"), bg="#1c1c1c", fg="white", width=30, wraplength=200
 )
 status_label.pack(pady=5)
+
+cancel_button = tk.Button(
+    sidebar, text=t("Cancel"), command=cancel_processing, bg="red", fg="white"
+)
+cancel_button.pack(pady=5)
 
 # --- Depth Content: Image previews ---
 # --- Top Frame: For the original image ---
@@ -649,7 +689,6 @@ process_image_button = tk.Button(
     fg="white",
 )
 process_image_button.pack(pady=2)
-
 
 process_image_folder_button = tk.Button(
     button_frame,
@@ -712,7 +751,6 @@ bottom_frame.pack(pady=10)
 
 output_label = tk.Label(bottom_frame, text=t("Depth Map"), bg="#2b2b2b", fg="white")
 output_label.pack()
-
 
 # 🧠 Variables
 ft3d_frames_folder = tk.StringVar()
@@ -1706,7 +1744,9 @@ tooltip_refs["InvertCheckbox"] = CreateToolTip(invert_checkbox, t("Tooltip.Inver
 tooltip_refs["SaveFramesCheckbox"] = CreateToolTip(save_frames_checkbox, t("Tooltip.SaveFramesCheckbox"))
 tooltip_refs["BatchSizeEntry"] = CreateToolTip(batch_size_entry, t("Tooltip.BatchSizeEntry"))
 tooltip_refs["InputLabel"] = CreateToolTip(input_label, t("Tooltip.InputLabel"))
+tooltip_refs["InferenceSteps"] = CreateToolTip(inference_steps_label, t("Tooltip.InferenceSteps"))
 tooltip_refs["DepthLabel"] = CreateToolTip(output_label, t("Tooltip.DepthLabel"))
+tooltip_refs["CPUMode"] = CreateToolTip(offload_mode_label, t("Tooltip.CPUMode"))
 tooltip_refs["ProcessImage"] = CreateToolTip(process_image_button, t("Tooltip.ProcessImage"))
 tooltip_refs["ProcessImageFolder"] = CreateToolTip(process_image_folder_button, t("Tooltip.ProcessImageFolder"))
 tooltip_refs["ProcessVideo"] = CreateToolTip(process_video_button, t("Tooltip.ProcessVideo"))
@@ -1780,7 +1820,9 @@ def refresh_ui_labels():
     save_frames_checkbox.config(text=t("Save Frames"))
     batch_size_label.config(text=t("Batch Size (Frames):"))
     inference_res_label.config(text=t("Inference Resolution:"))
+    inference_steps_label.config(text=t("Inference Steps:"))
     status_label.config(text=t("Ready"))
+    offload_mode_label.config(text=t("CPU Offload Mode"))
     input_label.config(text=t("Input Image"))
     output_label.config(text=t("Depth Map"))
     process_image_button.config(text=t("Process Image"))
