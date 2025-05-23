@@ -12,7 +12,10 @@
     <img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="GitHub Downloads">
   </a>
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python Version">
+  <img src="https://img.shields.io/github/stars/VisionDepth/VisionDepth3D?style=social" alt="GitHub Stars">
+  <img src="https://img.shields.io/github/last-commit/VisionDepth/VisionDepth3D" alt="Last Commit">
 </h3>
+
 
 <p align="center">
   <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
