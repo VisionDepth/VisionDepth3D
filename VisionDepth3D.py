@@ -60,7 +60,7 @@ from core.merged_pipeline import (
 from core.preview_gui import open_3d_preview_window
 # At the top of GUI.py
 cancel_requested = threading.Event()
-
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 process_thread = None 
 suspend_flag = Event()
 cancel_flag = Event()
@@ -101,6 +101,24 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
+
+# ✅ Force include core/ into path
+core_dir = resource_path("core")
+if core_dir not in sys.path:
+    sys.path.insert(0, core_dir)
+
+    
+# ✅ Inject DLL directory into PATH
+def inject_dll_directory():
+    dll_dir = resource_path("dlls")
+    if os.path.isdir(dll_dir):
+        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+    else:
+        print(f"[Warning] DLL folder not found: {dll_dir}")
+
+# 🟢 Call this before any ONNX/TensorRT/CUDA init
+inject_dll_directory()
+
 
 def save_settings():
     settings = {name: var.get() for name, var in gui_variables.items()}
@@ -464,6 +482,7 @@ def load_supported_models():
 
     return models
 
+
 # Load models at start
 supported_models = load_supported_models()
 
@@ -472,6 +491,43 @@ colormap_var = tk.StringVar(root, value="Default")
 invert_var = tk.BooleanVar(root, value=False)
 save_frames_var = tk.BooleanVar(value=False)
 output_dir = tk.StringVar(value="")
+
+INFERENCE_RESOLUTIONS = {
+    "Original": None,
+
+    # General square resolutions
+    "256x256": (256, 256),
+    "384x384": (384, 384),
+    "448x448": (448, 448),
+    "512x512 (VDA)": (512, 512),
+    "576x576": (576, 576),
+    "640x640": (640, 640),
+    "704x704": (704, 704),
+    "768x768": (768, 768),
+    "832x832": (832, 832),
+    "896x896": (896, 896),
+    "960x960": (960, 960),
+    "1024x1024": (1024, 1024),
+
+    # ViT/DINOV2-safe resolutions (multiples of 14)
+    "518x518 ([Local] Distill Base)": (518, 518),
+    "896x896 (ViT-safe near 900)": (896, 896),
+    "1008x1008 (ViT-safe)": (1008, 1008),
+
+    # Widescreen & cinematic
+    "512x256 (DC-Fastest)": (512, 256),
+    "704x384 (DC-Balanced)": (704, 384),
+    "960x540 (DC-Good Quality)": (960, 540),
+    "1024x576 (DC-Max Quality)": (1024, 576),
+
+    # Portrait / vertical or special use
+    "912x912": (912, 912),
+    "920x1080": (920, 1080),  # vertical
+
+    # Experimental 16:9 upscales
+    "1280x720 (720p HD)": (1280, 720),
+    "1920x1080 (1080p HD)": (1920, 1080),
+}
 
 
 
@@ -609,20 +665,7 @@ inference_res_var = tk.StringVar(value="Original")  # default value
 inference_res_dropdown = tk.OptionMenu(
     sidebar,
     inference_res_var,
-    "Original",
-    "256x256",
-    "384x384",
-    "448x448",
-    "512x256 (DC-Fastest)",
-    "512x512 (VDA)", 
-    "518x518 ([Local] Distill Large)",
-    "704x384 (DC-Balanced)",
-    "768x768", 
-    "912x912",
-    "960x540 (DC-Good Quality)",
-    "1024x576 (DC-Max Quality)",
-    "1024x1024",
-    "920x1080"
+    *INFERENCE_RESOLUTIONS.keys()
 )
 inference_res_dropdown.config(bg="#2e2e2e", fg="white", highlightthickness=0, font=("Arial", 10))
 inference_res_dropdown.pack(pady=5)
@@ -717,7 +760,9 @@ process_video_button = tk.Button(
         batch_size_entry,
         output_dir,
         inference_res_var,
-        invert_var
+        invert_var,
+        inference_steps_entry,
+        offload_mode_dropdown,
     ),
     width=25,
     bg="#4a4a4a",
