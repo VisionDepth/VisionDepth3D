@@ -24,18 +24,20 @@ from safetensors.torch import load_file
 
 # Custom modules
 from core.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
-from core.depth_crafter_ppl import DepthCrafterPipeline
 from diffusers.configuration_utils import ConfigMixin
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
+from core.depthcrafter_adapter import load_depthcrafter_adapter, run_depthcrafter_inference
+
 
 global pipe
 pipe = None
-pipe_type = None  # Add this
+pipe_type = None 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 cancel_requested = threading.Event()
 global_session_start_time = None
 current_warmup_session = {"id": None}
+torch.set_grad_enabled(False)
 
 
 # === Setup: Local weights directory ===
@@ -54,6 +56,44 @@ os.makedirs(local_model_dir, exist_ok=True)
 
 # === Suppress Hugging Face symlink warnings (esp. on Windows) ===
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+INFERENCE_RESOLUTIONS = {
+    "Original": None,
+
+    # General square resolutions
+    "256x256": (256, 256),
+    "384x384": (384, 384),
+    "448x448": (448, 448),
+    "512x512 (VDA)": (512, 512),
+    "576x576": (576, 576),
+    "640x640": (640, 640),
+    "704x704": (704, 704),
+    "768x768": (768, 768),
+    "832x832": (832, 832),
+    "896x896": (896, 896),
+    "960x960": (960, 960),
+    "1024x1024": (1024, 1024),
+
+    # ViT/DINOV2-safe resolutions (multiples of 14)
+    "518x518 ([Local] Distill Base)": (518, 518),
+    "896x896 (ViT-safe near 900)": (896, 896),
+    "1008x1008 (ViT-safe)": (1008, 1008),
+
+    # Widescreen & cinematic
+    "512x256 (DC-Fastest)": (512, 256),
+    "704x384 (DC-Balanced)": (704, 384),
+    "960x540 (DC-Good Quality)": (960, 540),
+    "1024x576 (DC-Max Quality)": (1024, 576),
+
+    # Portrait / vertical or special use
+    "912x912": (912, 912),
+    "920x1080": (920, 1080),  # vertical
+
+    # Experimental 16:9 upscales
+    "1280x720 (720p HD)": (1280, 720),
+    "1920x1080 (1080p HD)": (1920, 1080),
+}
+
 
 def load_supported_models():
     models = {
@@ -124,7 +164,7 @@ def ensure_model_downloaded(checkpoint):
                 model_id,
                 variant="fp16",
                 torch_dtype=torch.float16,
-                cache_dir=local_model_dir  # ✅ Force download to your custom weights folder
+                cache_dir=local_model_dir 
             ).to("cuda" if torch.cuda.is_available() else "cpu")
 
             def diffusion_pipe(images, inference_size=None):
@@ -132,6 +172,8 @@ def ensure_model_downloaded(checkpoint):
                     images = [images]
                 results = []
                 for img in images:
+                    if inference_size:
+                        img = img.resize(inference_size, Image.BICUBIC)
                     result = pipe(img, num_inference_steps=4, ensemble_size=5)
                     results.append({"predicted_depth": result.prediction[0]})
 
@@ -148,7 +190,7 @@ def ensure_model_downloaded(checkpoint):
     
     if checkpoint.startswith("depthcrafter:"):
         model_id = checkpoint.replace("depthcrafter:", "")
-        return load_depthcrafter_pipeline(model_id, inference_steps=5, offload_mode="none")
+        return load_depthcrafter_adapter(model_id)
 
 
     
@@ -164,154 +206,6 @@ def ensure_model_downloaded(checkpoint):
         print(f"❌ Failed to load Hugging Face model: {e}")
         return None, None
 
-def get_required_frames_from_unet(unet):
-    try:
-        sample_size = unet.config.get("sample_size", [16, 64, 64])
-        if isinstance(sample_size, (list, tuple)) and len(sample_size) >= 1:
-            return sample_size[0]  # temporal size
-    except Exception as e:
-        print(f"⚠️ Could not determine required frame count: {e}")
-    return 16  # fallback
-
-
-def load_depthcrafter_pipeline(weights_dir, inference_size=(512, 256), inference_steps=5, offload_mode="none"):
-    unet_config_path = os.path.join(weights_dir, "unet_config.json")
-    with open(unet_config_path, "r") as f:
-        config_dict = json.load(f)
-
-    unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_config(config_dict)
-    state_dict = load_file(os.path.join(weights_dir, "diffusion_pytorch_model.safetensors"))
-    unet.load_state_dict(state_dict)
-
-    scheduler_config_path = os.path.join(weights_dir, "scheduler_config.json")
-
-    with open(scheduler_config_path, "r") as f:
-        scheduler_config = json.load(f)
-
-    scheduler = EulerDiscreteScheduler.from_config(scheduler_config)
-
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
-    
-    if torch.cuda.is_available():
-        vae = vae.to(dtype=torch.float16)
-
-
-    # 🔥 REQUIRED: load image encoder + feature extractor
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-    feature_extractor = CLIPImageProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-
-    # ✅ Move all modules to CUDA
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if offload_mode == "model":
-        unet.to("cpu")
-        vae.to("cpu")
-        image_encoder.to("cpu")
-    elif offload_mode == "unet":
-        unet.to("cpu")
-        vae.to(device)
-        image_encoder.to(device)
-    elif offload_mode == "vae":
-        vae.to("cpu")
-        unet.to(device)
-        image_encoder.to(device)
-    elif offload_mode == "sequential":
-        # All on GPU, but assume user will call modules one-by-one
-        unet.to("cuda")
-        vae.to("cuda")
-        image_encoder.to("cuda")
-    else:  # offload_mode == "none"
-        unet.to(device)
-        vae.to(device)
-        image_encoder.to(device)
-
-    pipe = DepthCrafterPipeline(
-        unet=unet,
-        scheduler=scheduler,
-        vae=vae,
-        image_encoder=image_encoder,
-        feature_extractor=feature_extractor,
-)
-    pipe.offload_mode = offload_mode
-    
-    # 🔍 Determine required number of frames dynamically
-    required_frames = get_required_frames_from_unet(unet)
-
-
-    def run_depthcrafter(images, inference_size=(512, 256), inference_steps=inference_steps):
-        # Resize to force multiple of 64
-        width = max(64, round(inference_size[0] / 64) * 64)
-        height = max(64, round(inference_size[1] / 64) * 64)
-
-        # Convert PIL images → torch tensors (B, C, H, W)
-        frames = [
-            torch.from_numpy(np.array(img.resize((width, height), Image.BICUBIC))).permute(2, 0, 1).float() / 255.0
-            for img in images
-        ]
-
-        # Stack into a video tensor [T, C, H, W]
-        video_tensor = torch.stack(frames).half().to("cuda")
-
-        # Pad/crop for required number of frames
-        if len(video_tensor) < required_frames:
-            pad_count = required_frames - len(video_tensor)
-            video_tensor = torch.cat([video_tensor] + [video_tensor[-1:].clone()] * pad_count, dim=0)
-        elif len(video_tensor) > required_frames:
-            video_tensor = video_tensor[:required_frames]
-
-        # Run the model
-        with torch.no_grad():
-            result = pipe(
-                video=video_tensor,
-                height=height,
-                width=width,
-                output_type="latent",  # 🧠 GET LATENT instead of np
-                num_inference_steps=inference_steps,
-                guidance_scale=1.0,
-                window_size=4,
-                overlap=1,
-                track_time=False
-            )
-
-
-        frames_out = result.frames[0]  # [T, C, H, W] or [T, H, W, C] → still latent
-
-        # Stack to tensor
-        frames_out_cpu = [f.detach().cpu() if isinstance(f, torch.Tensor) else torch.from_numpy(f) for f in frames_out]
-        latents_tensor = torch.stack(frames_out_cpu).to(pipe.vae.device).half()
-
-        if latents_tensor.ndim == 4 and latents_tensor.shape[1] == 3:
-            pass  # already [T, 3, H, W]
-        elif latents_tensor.ndim == 4 and latents_tensor.shape[-1] == 3:
-            latents_tensor = latents_tensor.permute(0, 3, 1, 2)  # [T, H, W, C] → [T, C, H, W]
-        else:
-            print(f"⚠️ Unexpected latent shape: {latents_tensor.shape}")
-
-        # Decode via VAE
-        decoded_tensor = pipe.vae.decode(latents_tensor).sample  # [T, 3, H, W]
-        del latents_tensor
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        decoded_np = decoded_tensor.detach().cpu().numpy()
-
-        depth_frames = []
-        for i in range(decoded_np.shape[0]):
-            d = decoded_np[i]  # [3, H, W]
-            if d.shape[0] == 3:
-                d = d.mean(axis=0)  # Collapse channels → [H, W]
-            norm = (d - d.min()) / (d.max() - d.min() + 1e-6)
-            depth_frames.append(torch.from_numpy(norm).float())
-
-            print(f"🧪 Decoded Frame {i}: min={d.min():.4f}, max={d.max():.4f}, shape={d.shape}")
-
-        return [{"predicted_depth": depth_frames[i], "latent_depth": frames_out[i]} for i in range(len(depth_frames))]
-
-
-    run_depthcrafter.original_pipe = pipe
-    run_depthcrafter._is_marigold = False
-    return run_depthcrafter, {"is_diffusion": True}
-
 
 def load_onnx_model(model_dir):
     model_path = os.path.join(model_dir, "model.onnx")
@@ -321,7 +215,7 @@ def load_onnx_model(model_dir):
 
     session = ort.InferenceSession(
         model_path,
-        providers=["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
     )
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
@@ -388,9 +282,10 @@ def stop_spinner(widget, final_text):
     widget._spinner_running = False
     widget.config(text=final_text)
 
+
 def update_pipeline(selected_model_var, status_label_widget, inference_res_var, offload_mode_dropdown, *args):
     global pipe
-
+    
     selected_checkpoint = selected_model_var.get()
     checkpoint = supported_models.get(selected_checkpoint, None)
 
@@ -438,7 +333,6 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
             elif is_diffusion:
                 if hasattr(model_callable, "__call__") and hasattr(model_callable, "original_pipe"):
                     status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up DepthCrafter model..."))
-                    # ✅ DepthCrafter — special constructor required
                     print("📦 Loading DepthCrafter model with custom params...")
 
                     try:
@@ -447,7 +341,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         inference_steps = 5
 
                     try:
-                        res_str = inference_res_var.get().split(" ")[0]  # "512x256 (DC-Fastest)" → "512x256"
+                        res_str = inference_res_var.get().split(" ")[0]
                         w, h = [int(x) for x in res_str.split("x")]
                         inference_size = (w, h)
                     except Exception:
@@ -455,14 +349,11 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
                     offload_mode = offload_mode_dropdown.get()
 
-                    # Reload the pipeline with GUI options
-                    pipe, _ = load_depthcrafter_pipeline(
-                        checkpoint.replace("depthcrafter:", ""),
-                        inference_steps=inference_steps,
-                        offload_mode=offload_mode,
-                        inference_size=inference_size
-                    )
+                    pipe = load_depthcrafter_adapter(weights_dir)
                     pipe_type = "diffusion"
+
+                    # ✅ Skip real inference to avoid PIL shape issues
+                    print("🔥 DepthCrafter model loaded (inference will run during actual processing)")
 
                     status_label_widget.after(0, lambda: stop_spinner(
                         status_label_widget,
@@ -479,11 +370,11 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         status_label_widget, "🔄 Warming up diffusion model..."))
 
                     try:
-                        dummy = Image.new("RGB", (512, 512), (127, 127, 127))
+                        dummy = Image.new("RGB", (518, 518), (127, 127, 127))
                         _ = pipe(dummy)
                         print("🔥 Diffusion model warmed up with dummy image")
                     except Exception as e:
-                        print(f"⚠️ Diffusion warm-up failed: {e}")
+                        print(f" Diffusion warm-up skipped: Silent Fail{e}")
 
                     status_label_widget.after(0, lambda: stop_spinner(
                         status_label_widget,
@@ -499,7 +390,9 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     device=device
                 )
 
-                def hf_batch_safe_pipe(images, **kwargs):
+                def hf_batch_safe_pipe(images, inference_size=None):
+                    if inference_size:
+                        images = [img.resize(inference_size, Image.BICUBIC) for img in images]
                     return raw_pipe(images) if isinstance(images, list) else [raw_pipe(images)]
 
                 pipe = hf_batch_safe_pipe
@@ -526,26 +419,58 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
     threading.Thread(target=warmup_thread, daemon=True).start()
 
+#def convert_depthcrafter_tensor_to_gray_sequence(predictions):
+    # predictions: Tensor [T, 3, H, W] (after .frames[0])
+#    if isinstance(predictions, torch.Tensor):
+#        predictions = predictions.detach().cpu().float().numpy()
+
+#    if predictions.ndim == 4 and predictions.shape[1] == 3:
+#        print(f"📦 DepthCrafter output: shape={predictions.shape}")
+#       res = predictions.mean(1)  # Convert to [T, H, W]
+#    elif predictions.ndim == 3:
+#        res = predictions
+#    else:
+#        raise ValueError(f"❌ Unexpected shape for depthcrafter output: {predictions.shape}")
+
+#    d_min, d_max = np.min(res), np.max(res)
+#    res = (res - d_min) / (d_max - d_min + 1e-6)
+#    res = (res * 255).astype(np.uint8)
+#    return res  # shape [T, H, W]
+
+
+def save_depthcrafter_outputs(depth: np.ndarray, out_path: str, fps: int = 24):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    out_video_path = f"{out_path}_depth.mkv"
+    h, w = depth.shape[1], depth.shape[2]
+
+    # Convert to 8-bit grayscale
+    depth_normalized = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
+    depth_8bit = (depth_normalized * 255.0).clip(0, 255).astype(np.uint8)
+
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v") if out_video_path.endswith(".mp4") else cv2.VideoWriter_fourcc(*"XVID")
+    writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w, h), isColor=False)
+
+    print(f"📁 Saving video to: {out_video_path} with shape {depth.shape} @ {fps} FPS")
+
+    for frame in depth_8bit:
+        writer.write(frame)
+
+    writer.release()
+    print("✅ Depth video saved.")
+
+    # Optionally save raw .npz
+    np.savez_compressed(out_path + ".npz", depth=depth)
+
+
+
 def round_to_multiple_of_8(x):
     return (x + 7) // 8 * 8
 
 
 def parse_inference_resolution(res_string, fallback=(384, 384)):
-    if not res_string or not isinstance(res_string, str):
-        return fallback
-
-    res_string = res_string.strip().lower()
-    if "original" in res_string or res_string in {"--", "none", "auto"}:
-        return None
-
-    try:
-        parts = res_string.replace("×", "x").split("x")
-        if len(parts) == 2:
-            return tuple(int(p) for p in parts)
-    except Exception:
-        pass
-
-    return fallback
+    return INFERENCE_RESOLUTIONS.get(res_string.strip(), fallback)
 
 
 def choose_output_directory(output_label_widget, output_dir_var):
@@ -721,7 +646,8 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
 
     inference_size = parse_inference_resolution(inference_res_var.get())
     image_resized = image.resize(inference_size, Image.BICUBIC) if inference_size else image.copy()
-
+    
+    print("📏 Using inference size:", inference_size)
     predictions = pipe([image], inference_size)
     
     if not (isinstance(predictions, list) and "predicted_depth" in predictions[0]):
@@ -839,6 +765,8 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
         cancel_requested.clear()
         status_label.config(text=f"✅ Image saved: {file_save_path}")
         progress_bar.config(value=100)
+        progress_bar.stop()  
+
 
 
 def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_var, output_dir_var, inference_res_var, input_label_widget, output_label_widget):
@@ -869,7 +797,7 @@ def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_va
 
 
 
-def process_video_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested):
+def process_video_folder(folder_path, batch_size_widget, inference_steps_entry, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested):
     """Opens a folder dialog and processes all video files inside it in a background thread."""
     folder_path = filedialog.askdirectory(title="Select Folder Containing Videos")
 
@@ -903,6 +831,7 @@ def process_videos_in_folder(
     progress_bar,
     cancel_requested,
     invert_var,
+    inference_steps_entry,
     save_frames=False,
 ):
     """Processes all video files in the selected folder in the correct numerical order."""
@@ -950,6 +879,7 @@ def process_videos_in_folder(
             progress_bar,
             cancel_requested,
             invert_var,
+            inference_steps_entry,
             save_frames
         )
 
@@ -974,7 +904,15 @@ def process_video2(
     progress_bar,
     cancel_requested,
     invert_var,
-    save_frames=False
+    inference_steps_entry=None,
+    window_size=24,
+    overlap=25,
+    generator=None,
+    offload_mode_dropdown=None,
+    save_frames=False,
+    target_fps=15
+    
+      
 ):
     global pipe, pipe_type
     global global_session_start_time
@@ -1047,6 +985,7 @@ def process_video2(
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     print(f"📁 Saving video to: {output_path}")
+
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
     if not out.isOpened():
@@ -1062,15 +1001,31 @@ def process_video2(
     total_processed_frames = 0
     
     inference_size = parse_inference_resolution(inference_res_var.get())
-    if inference_size is not None:
-        inference_size = (
-            round_to_multiple_of_8(inference_size[0]),
-            round_to_multiple_of_8(inference_size[1])
-        )
+#    if inference_size is not None:
+#        inference_size = (
+#            round_to_multiple_of_8(inference_size[0]),
+#            round_to_multiple_of_8(inference_size[1])
+#        )
 
-    if inference_size is None:
-        inference_size = (512, 512)  # or whatever your ONNX default is
+    resize_required = inference_size is not None
+    
+    try:
+        inference_steps = int(inference_steps_entry.get().strip())
+    except:
+        inference_steps = 2       
+    try:
+        offload_mode = offload_mode_dropdown.get().strip()
+    except Exception:
+        offload_mode = "sequential" 
 
+        
+    window_size = 24
+    overlap = 25
+    
+    if generator is None:
+        seed = 42
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)        
+    
     global_session_start_time = time.time()
     previous_depth = None
 
@@ -1087,7 +1042,7 @@ def process_video2(
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(frame_rgb)
 
-        if inference_size:
+        if resize_required:
             pil_image = pil_image.resize(inference_size, Image.BICUBIC)
         frames_batch.append(pil_image)
 
@@ -1095,9 +1050,80 @@ def process_video2(
             if cancel_requested.is_set():
                 print("🛑 Cancel requested before inference.")
                 break
-
-            predictions = pipe(frames_batch, inference_size=inference_size)
             
+                
+            if pipe_type == "diffusion":
+                # Frame stride (optional)
+                if target_fps != -1 and fps > target_fps:
+                    stride = round(fps / target_fps)
+                    stride = max(stride, 1)
+                    print(f"🎚️ Frame stride enabled: {stride}")
+                    frames_input = input_frames[::stride]
+                else:
+                    frames_input = input_frames
+
+                print("Running DepthCrafter inference with:")
+                print(f"    input frames: {len(frames_input)}")
+
+                if len(frames_input) < window_size:
+                    print(f"⚠️ Adjusting window_size to {len(frames_input)} due to short clip")
+                    window_size = len(frames_input)
+
+                print(f"    steps={inference_steps}")
+                print(f"    resolution={inference_size}")
+                print(f"    seed={seed}")
+                print(f"    window_size={window_size}")
+                print(f"    overlap={overlap}")
+                print(f"    offload_mode={offload_mode}")
+                print(f"    [VRAM] Allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
+                print(f"    [VRAM] Reserved : {torch.cuda.memory_reserved() / 1e6:.1f} MB")
+
+                predictions = run_depthcrafter_inference(
+                    pipe,
+                    frames_input,
+                    inference_size=inference_size,
+                    steps=inference_steps,
+                    window_size=window_size,
+                    overlap=overlap,
+                    offload_mode=offload_mode
+                )
+
+                if predictions is None or len(predictions) == 0:
+                    print("❌ Inference failed. No depth frames collected.")
+                    return frame_count
+
+                if cancel_requested.is_set():
+                    print("🛑 Cancelled before saving.")
+                    return frame_count
+
+                # Save + progress
+                name, _ = os.path.splitext(os.path.basename(file_path))
+                save_depthcrafter_outputs(predictions, os.path.join(output_dir, name), target_fps if target_fps > 0 else int(fps))
+
+                for i in range(predictions.shape[0]):
+                    progress = int(((frames_processed_all + total_processed_frames + i + 1) / total_frames_all) * 100)
+                    progress_bar["value"] = progress
+                    progress_bar.update_idletasks()
+
+                    elapsed = time.time() - global_session_start_time
+                    avg_fps = (frames_processed_all + total_processed_frames + i + 1) / elapsed
+                    eta = (total_frames_all - (frames_processed_all + total_processed_frames + i + 1)) / avg_fps if avg_fps > 0 else 0
+
+                    status_label.config(
+                        text=f"🎬 {frames_processed_all + total_processed_frames + i + 1}/{total_frames_all} frames | "
+                             f"FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%H:%M:%S', time.gmtime(elapsed))} | "
+                             f"ETA: {time.strftime('%H:%M:%S', time.gmtime(eta))} | Processing: {name}"
+                    )
+                    status_label.update_idletasks()
+
+                total_processed_frames += predictions.shape[0]
+                continue
+
+
+            else:
+                predictions = pipe(frames_batch, inference_size=inference_size)
+
+
             assert isinstance(predictions, list), "Expected list of predictions from pipeline"
             
             for i, prediction in enumerate(predictions):
@@ -1169,10 +1195,8 @@ def process_video2(
 
                 except Exception as e:
                     print(f"⚠️ Depth processing error: {e}")
-
-
-                    
-            if frame_count % 20 == 0:
+            
+            if frame_count % 100 == 0:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
                 gc.collect()
@@ -1181,7 +1205,7 @@ def process_video2(
 
         elapsed = time.time() - global_session_start_time
         avg_fps = total_processed_frames / elapsed if elapsed > 0 else 0
-        remaining_frames = total_frames_all - (frames_processed_all + total_processed_frames)
+        remaining_frames = total_frames - total_processed_frames
         eta = remaining_frames / avg_fps if avg_fps > 0 else 0
 
         progress = int(((frames_processed_all + total_processed_frames) / total_frames_all) * 100)
@@ -1197,15 +1221,17 @@ def process_video2(
 
     cap.release()
     out.release()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    gc.collect()
+
 
     if cancel_requested.is_set():
         print("🛑 Cancelled: Video not fully processed.")
     else:
         print(f"✅ Video saved: {output_path}")
-
+        
     return frame_count
-
-
 
 def is_av1_encoded(file_path):
     try:
@@ -1227,8 +1253,7 @@ def is_av1_encoded(file_path):
         print(f"⚠️ Failed to check codec with ffprobe: {e}")
         return False
 
-
-def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var):
+def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var, inference_steps_entry, offload_mode_dropdown, ):
     file_path = filedialog.askopenfilename(
         filetypes=[
             ("All Supported Video Files", "*.mp4;*.avi;*.mov;*.mkv;*.flv;*.wmv;*.webm;*.mpeg;*.mpg"),
@@ -1258,6 +1283,8 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             )
             status_label.config(text="❌ AV1 input not supported. Re-encode to H.264.")
             return
+            
+        offload_mode = offload_mode_dropdown.get() if offload_mode_dropdown else "none"
 
         cancel_requested.clear()
         status_label.config(text="🔄 Processing video...")
@@ -1266,7 +1293,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         cap = cv2.VideoCapture(file_path)
         total_frames_all = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-
+        
         try:
             user_value = batch_size_widget.get().strip()
             batch_size = int(user_value) if user_value else get_dynamic_batch_size()
@@ -1276,10 +1303,21 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             batch_size = get_dynamic_batch_size()
             status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
-        threading.Thread(
-            target=process_video2,
-            args=(file_path, total_frames_all, 0, batch_size, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested, invert_var),
-            daemon=True
-        ).start()
-
-
+        threading.Thread(target=process_video2, args=(
+            file_path,
+            total_frames_all,
+            0,
+            batch_size,
+            output_dir_var,
+            inference_res_var,
+            status_label,
+            progress_bar,
+            cancel_requested,
+            invert_var,
+            inference_steps_entry,
+        ),
+        kwargs={
+            "offload_mode_dropdown": offload_mode_dropdown,
+            "target_fps": 15
+        }
+    ).start()
