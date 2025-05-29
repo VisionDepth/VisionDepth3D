@@ -112,7 +112,7 @@
 - Fully integrated into pipeline with **FFmpeg NVENC export**
 - GUI includes **progress bar, FPS, ETA tracking**
 
-# Audio & Video Sync
+# Audio to Video Sync
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/01424ad3-2737-41c0-a93a-92394f3bc4bb" alt="Audio Tool" width="400"/>
@@ -125,11 +125,23 @@
 - No shell access needed – fully built into GUI
 
 # Preview + Format Testing
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/f62a1f79-7a7e-49de-a733-650fdc3be197" alt="3D Preview UI" width="600"/>
+  <br>
+  <em>(Live 3D Preview with Anaglyph and Parallax Controls)</em>
+</p>
+
 - Real-time preview: **Interlaced, HSBS, Depth Heatmap**
 - On-frame previews with **convergence + parallax tuning**
 - Preview exports as images – no temp videos needed
+- Save Preview Frames to show off effects with different settings
+
 
 # Smart GUI + Workflow
+
+![image](https://github.com/user-attachments/assets/b8967b58-fc5d-4511-88cc-0dc08e29d995)
+
 - Language support: **EN, FR, ES, DE**
 - Responsive **multi-tab Tkinter interface** with persistent settings
 - Full GPU render control: **pause, resume, cancel**
