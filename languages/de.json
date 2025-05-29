@@ -114,7 +114,14 @@
   "Codec": "Codec",
   "Waiting to start...": "Warten auf Start...",
 
+  "Inference Steps:": "Inference-Schritte:",
+  "CPU Offload Mode": "CPU-Auslagerungsmodus",
+
+
   "_Tooltips": "",
+  "Tooltip.InferenceSteps": "Legt fest, wie viele Schritte das Diffusionsmodell zur Tiefenschätzung verwendet. Höhere Werte können die Qualität verbessern, erhöhen aber die Verarbeitungszeit.",
+  "Tooltip.CPUMode": "Bestimmt, welche Teile des Modells auf die CPU ausgelagert werden. 'Sequential' eignet sich für Systeme mit wenig VRAM, um GPU-Speicher zu sparen – auf Kosten der Geschwindigkeit.",
+
   "Tooltip.Model": "Wähle ein Tiefenschätzungsmodell von Hugging Face. Größere Modelle bieten höhere Genauigkeit, benötigen aber mehr VRAM und Zeit.",
   "Tooltip.OutputDirLabel": "Zeigt den aktuell ausgewählten Ausgabeordner an, in dem alle generierten Tiefenkarten und Videos gespeichert werden.",
   "Tooltip.OutputDirButton": "Öffnet ein Dialogfeld zur Auswahl des Ordners, in dem alle verarbeiteten Ergebnisse gespeichert werden.",
@@ -166,7 +173,7 @@
   "Tooltip.AIBlend": "Steuert, wie stark das KI-Ergebnis mit dem Original vermischt wird. Hohe Werte bewahren mehr ursprüngliche Textur.",
   "Tooltip.InputResPct": "Skaliert die Eingabe vor dem Hochskalieren herunter, um Speicher zu sparen oder Geschwindigkeit zu erhöhen. 100 % = volle Auflösung.",
   "Tooltip.ModelSelect": "Wähle ein ESRGAN-ONNX-Modell. x2 = schneller, x4 = schärfer, aber langsamer.",
-  "Tooltip.DOFStrength": "Steuert die Intensität der Tiefenschärfenunschärfe. Höhere Werte simulieren einen stärkeren Schärfeabfall von der zentralen Tiefenebene."
+  "Tooltip.DOFStrength": "Steuert die Intensität der Tiefenschärfenunschärfe. Höhere Werte simulieren einen stärkeren Schärfeabfall von der zentralen Tiefenebene.",
   "Tooltip.ConvergenceStrength": "Fügt einen stereoskopischen Konvergenzversatz hinzu, um die wahrgenommene Bildtiefe des Hauptmotivs zu steuern. Höhere Werte ziehen das linke und rechte Bild zusammen und erzeugen stärkere Pop-out-Effekte.",
   "Tooltip.EnableDynConvergence": "Passt die Konvergenzstärke dynamisch basierend auf der Tiefe des Hauptmotivs an. Hilft dabei, ein angenehmes 3D-Erlebnis zu bewahren, indem die Konvergenz automatisch auf wichtige Bildbereiche abgestimmt wird.",
 

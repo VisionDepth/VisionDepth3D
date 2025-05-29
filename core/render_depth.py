@@ -2,27 +2,43 @@ import os
 import re
 import sys
 import time
+import uuid
+import json
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk, ImageOps
+import gc
+
 import numpy as np
 import torch
 import cv2
-import matplotlib.cm as cm
 import onnxruntime as ort
-import subprocess
-import diffusers
-import diffusers
-import transformers
+import matplotlib.cm as cm
+from PIL import Image, ImageTk, ImageOps
 
 from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
+from diffusers import EulerDiscreteScheduler, AutoencoderKL
+
+from safetensors.torch import load_file
+
+# Custom modules
+from core.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
+from diffusers.configuration_utils import ConfigMixin
+from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
+from core.depthcrafter_adapter import load_depthcrafter_adapter, run_depthcrafter_inference
+
 
 global pipe
+pipe = None
+pipe_type = None 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 cancel_requested = threading.Event()
 global_session_start_time = None
+current_warmup_session = {"id": None}
+torch.set_grad_enabled(False)
+
 
 # === Setup: Local weights directory ===
 def get_weights_dir():
@@ -35,26 +51,59 @@ def get_weights_dir():
 
     return os.path.join(base_path, "weights")
 
-
 local_model_dir = get_weights_dir()
 os.makedirs(local_model_dir, exist_ok=True)
 
-
 # === Suppress Hugging Face symlink warnings (esp. on Windows) ===
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+INFERENCE_RESOLUTIONS = {
+    "Original": None,
+
+    # General square resolutions
+    "256x256": (256, 256),
+    "384x384": (384, 384),
+    "448x448": (448, 448),
+    "512x512 (VDA)": (512, 512),
+    "576x576": (576, 576),
+    "640x640": (640, 640),
+    "704x704": (704, 704),
+    "768x768": (768, 768),
+    "832x832": (832, 832),
+    "896x896": (896, 896),
+    "960x960": (960, 960),
+    "1024x1024": (1024, 1024),
+
+    # ViT/DINOV2-safe resolutions (multiples of 14)
+    "518x518 ([Local] Distill Base)": (518, 518),
+    "896x896 (ViT-safe near 900)": (896, 896),
+    "1008x1008 (ViT-safe)": (1008, 1008),
+
+    # Widescreen & cinematic
+    "512x256 (DC-Fastest)": (512, 256),
+    "704x384 (DC-Balanced)": (704, 384),
+    "960x540 (DC-Good Quality)": (960, 540),
+    "1024x576 (DC-Max Quality)": (1024, 576),
+
+    # Portrait / vertical or special use
+    "912x912": (912, 912),
+    "920x1080": (920, 1080),  # vertical
+
+    # Experimental 16:9 upscales
+    "1280x720 (720p HD)": (1280, 720),
+    "1920x1080 (1080p HD)": (1920, 1080),
+}
+
 
 def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        #"Distill Any Depth Large": os.path.join(local_model_dir, "Distill Any Depth Large"),
-        #"Distill Any Depth Base": os.path.join(local_model_dir, "Distill Any Depth Base"),
-        #"Distill Any Depth Small": os.path.join(local_model_dir, "Distill Any Depth Small"),
+        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
         "keetrap-Distil-Any-Depth-Small": "keetrap/Distill-Any-Depth-Small-hf",
-        #"Video Depth Anything": os.path.join(local_model_dir, "Video Depth Anything"),
         "Depth Anything V2 Large": "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything V2 Base": "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything V2 Small": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -115,7 +164,7 @@ def ensure_model_downloaded(checkpoint):
                 model_id,
                 variant="fp16",
                 torch_dtype=torch.float16,
-                cache_dir=local_model_dir  # ✅ Force download to your custom weights folder
+                cache_dir=local_model_dir 
             ).to("cuda" if torch.cuda.is_available() else "cpu")
 
             def diffusion_pipe(images, inference_size=None):
@@ -123,8 +172,11 @@ def ensure_model_downloaded(checkpoint):
                     images = [images]
                 results = []
                 for img in images:
-                    result = pipe(img)
+                    if inference_size:
+                        img = img.resize(inference_size, Image.BICUBIC)
+                    result = pipe(img, num_inference_steps=4, ensemble_size=5)
                     results.append({"predicted_depth": result.prediction[0]})
+
                 return results
 
             print(f"🌀 Diffusion depth model loaded: {model_id}")
@@ -135,6 +187,11 @@ def ensure_model_downloaded(checkpoint):
         except Exception as e:
             print(f"❌ Failed to load diffusion depth model: {e}")
             return None, None
+    
+    if checkpoint.startswith("depthcrafter:"):
+        model_id = checkpoint.replace("depthcrafter:", "")
+        return load_depthcrafter_adapter(model_id)
+
 
     
     # Hugging Face online model
@@ -149,6 +206,7 @@ def ensure_model_downloaded(checkpoint):
         print(f"❌ Failed to load Hugging Face model: {e}")
         return None, None
 
+
 def load_onnx_model(model_dir):
     model_path = os.path.join(model_dir, "model.onnx")
     if not os.path.exists(model_path):
@@ -157,37 +215,20 @@ def load_onnx_model(model_dir):
 
     session = ort.InferenceSession(
         model_path,
-        providers=["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
     )
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
-    raw_shape = session.get_inputs()[0].shape
-    input_rank = len(raw_shape)
-
-    # Sanitize input shape
-    input_shape = [
-        int(dim) if isinstance(dim, str) and dim.isdigit() else dim
-        for dim in raw_shape
-    ]
-
-    # Extract static input resolution
-    height = input_shape[3] if input_rank == 5 and isinstance(input_shape[3], int) else (
-             input_shape[2] if input_rank == 4 and isinstance(input_shape[2], int) else None)
-    width  = input_shape[4] if input_rank == 5 and isinstance(input_shape[4], int) else (
-             input_shape[3] if input_rank == 4 and isinstance(input_shape[3], int) else None)
-    enforced_resolution = (width, height) if width and height else None
+    input_shape = session.get_inputs()[0].shape
+    input_rank = len(input_shape)
 
     print(f"🔍 ONNX input shape: {input_shape} (Rank {input_rank})")
-    if enforced_resolution:
-        print(f"📏 Static input resolution detected: {enforced_resolution}")
-
+    
     def onnx_pipe(images, inference_size=None):
-        preds = []
+        if inference_size is None:
+            raise ValueError("❌ ONNX model requires explicit inference_size.")
 
-        if enforced_resolution:
-            if inference_size is not None and inference_size != enforced_resolution:
-                print(f"⚠️ Overriding inference resolution: model requires {enforced_resolution}, got {inference_size}")
-            inference_size = enforced_resolution
+        preds = []
 
         if input_rank == 5:
             if len(images) != 32:
@@ -220,9 +261,9 @@ def load_onnx_model(model_dir):
     return onnx_pipe, {
         "is_onnx": True,
         "input_rank": input_rank,
-        "input_shape": input_shape,
         "session": session
     }
+
 
 
 spinner_states = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
@@ -241,20 +282,18 @@ def stop_spinner(widget, final_text):
     widget._spinner_running = False
     widget.config(text=final_text)
 
-def update_pipeline(selected_model_var, status_label_widget, *args):
-    global pipe
 
+def update_pipeline(selected_model_var, status_label_widget, inference_res_var, offload_mode_dropdown, *args):
+    global pipe
+    
     selected_checkpoint = selected_model_var.get()
     checkpoint = supported_models.get(selected_checkpoint, None)
-    
-    if checkpoint is None:
-        status_label_widget.config(text=f"⚠️ Error: Model '{selected_checkpoint}' not found.")
-        return
+
 
     def warmup_thread():
         try:
-            model, processor_or_metadata = ensure_model_downloaded(checkpoint)
-            if not model:
+            model_callable, processor_or_metadata = ensure_model_downloaded(checkpoint)
+            if not model_callable:
                 status_label_widget.after(0, lambda: stop_spinner(
                     status_label_widget, f"❌ Failed to load model: {selected_checkpoint}"))
                 return
@@ -263,60 +302,101 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
             is_onnx = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_onnx", False)
             is_diffusion = isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_diffusion", False)
 
+            global pipe, pipe_type
+
             if is_onnx:
-                pipe = model
-                status_label_widget.after(0, lambda: start_spinner(
-                    status_label_widget, "🔄 Warming up ONNX model..."))
+                pipe = model_callable
+                pipe_type = "onnx"
+
+                status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up ONNX model..."))
 
                 try:
                     input_rank = processor_or_metadata.get("input_rank", 4)
-                    input_shape = processor_or_metadata.get("input_shape", [])
-                    dummy_size = (518, 518)
+                    dummy_res = parse_inference_resolution(inference_res_var.get(), fallback=(518, 518))
 
-                    if isinstance(input_shape, list):
-                        if input_rank == 5 and isinstance(input_shape[3], int) and isinstance(input_shape[4], int):
-                            dummy_size = (input_shape[4], input_shape[3])
-                        elif input_rank == 4 and isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
-                            dummy_size = (input_shape[3], input_shape[2])
+                    if dummy_res is None:
+                        dummy_res = (518, 518)  # fallback if user selected "Original" or invalid value
 
-                    dummy = Image.new("RGB", dummy_size, (127, 127, 127))
-                    dummy_batch = [dummy] * 32
-                    _ = pipe(dummy_batch, inference_size=dummy_size)
-                    print("🔥 ONNX model warmed up with dummy input")
+                    dummy_res = tuple(round_to_multiple_of_8(x) for x in dummy_res)
+
+                    dummy_batch = [Image.new("RGB", dummy_res, (127, 127, 127))] * (32 if input_rank == 5 else 1)
+
+                    _ = pipe(dummy_batch, inference_size=dummy_res)
+                    print("🔥 ONNX model warmed up.")
                 except Exception as e:
                     print(f"⚠️ ONNX warm-up failed: {e}")
 
                 status_label_widget.after(0, lambda: stop_spinner(
-                    status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
+                    status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (on {'CUDA' if device == 0 else 'CPU'})"))
+
 
             elif is_diffusion:
-                pipe = model
-                status_label_widget.after(0, lambda: start_spinner(
-                    status_label_widget, "🔄 Warming up diffusion model..."))
+                if hasattr(model_callable, "__call__") and hasattr(model_callable, "original_pipe"):
+                    status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up DepthCrafter model..."))
+                    print("📦 Loading DepthCrafter model with custom params...")
 
-                try:
-                    dummy = Image.new("RGB", (512, 512), (127, 127, 127))
-                    _ = pipe(dummy)
-                    print("🔥 Diffusion model warmed up with dummy frame")
-                except Exception as e:
-                    print(f"⚠️ Diffusion warm-up failed: {e}")
+                    try:
+                        inference_steps = int(inference_steps_entry.get().strip())
+                    except:
+                        inference_steps = 5
 
-                status_label_widget.after(0, lambda: stop_spinner(
-                    status_label_widget, f"✅ Diffusion model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
+                    try:
+                        res_str = inference_res_var.get().split(" ")[0]
+                        w, h = [int(x) for x in res_str.split("x")]
+                        inference_size = (w, h)
+                    except Exception:
+                        inference_size = (512, 256)
+
+                    offload_mode = offload_mode_dropdown.get()
+
+                    pipe = load_depthcrafter_adapter(weights_dir)
+                    pipe_type = "diffusion"
+
+                    # ✅ Skip real inference to avoid PIL shape issues
+                    print("🔥 DepthCrafter model loaded (inference will run during actual processing)")
+
+                    status_label_widget.after(0, lambda: stop_spinner(
+                        status_label_widget,
+                        f"✅ DepthCrafter model loaded: {selected_checkpoint} (inference steps: {inference_steps}, {inference_size}, offload: {offload_mode})"
+                    ))
+                    return
+
+                else:
+                    # ✅ Other diffusion model (e.g. Marigold)
+                    pipe = model_callable
+                    pipe_type = "diffusion"
+
+                    status_label_widget.after(0, lambda: start_spinner(
+                        status_label_widget, "🔄 Warming up diffusion model..."))
+
+                    try:
+                        dummy = Image.new("RGB", (518, 518), (127, 127, 127))
+                        _ = pipe(dummy)
+                        print("🔥 Diffusion model warmed up with dummy image")
+                    except Exception as e:
+                        print(f" Diffusion warm-up skipped: Silent Fail{e}")
+
+                    status_label_widget.after(0, lambda: stop_spinner(
+                        status_label_widget,
+                        f"✅ Diffusion model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
+                    ))
 
             else:
                 processor = processor_or_metadata
                 raw_pipe = pipeline(
                     "depth-estimation",
-                    model=model,
+                    model=model_callable,
                     image_processor=processor,
                     device=device
                 )
 
-                def hf_batch_safe_pipe(images, **kwargs):
+                def hf_batch_safe_pipe(images, inference_size=None):
+                    if inference_size:
+                        images = [img.resize(inference_size, Image.BICUBIC) for img in images]
                     return raw_pipe(images) if isinstance(images, list) else [raw_pipe(images)]
 
                 pipe = hf_batch_safe_pipe
+                pipe_type = "hf"
                 status_label_widget.after(0, lambda: start_spinner(
                     status_label_widget, "🔄 Warming up Hugging Face model..."))
 
@@ -331,23 +411,66 @@ def update_pipeline(selected_model_var, status_label_widget, *args):
                     status_label_widget, f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
 
         except Exception as e:
+            err_msg = str(e)
             print(f"❌ Model loading failed: {e}")
             status_label_widget.after(0, lambda: stop_spinner(
-                status_label_widget, f"❌ Model loading failed: {e}"))
+                status_label_widget, f"❌ Model loading failed: {err_msg}"))
 
 
     threading.Thread(target=warmup_thread, daemon=True).start()
 
+#def convert_depthcrafter_tensor_to_gray_sequence(predictions):
+    # predictions: Tensor [T, 3, H, W] (after .frames[0])
+#    if isinstance(predictions, torch.Tensor):
+#        predictions = predictions.detach().cpu().float().numpy()
+
+#    if predictions.ndim == 4 and predictions.shape[1] == 3:
+#        print(f"📦 DepthCrafter output: shape={predictions.shape}")
+#       res = predictions.mean(1)  # Convert to [T, H, W]
+#    elif predictions.ndim == 3:
+#        res = predictions
+#    else:
+#        raise ValueError(f"❌ Unexpected shape for depthcrafter output: {predictions.shape}")
+
+#    d_min, d_max = np.min(res), np.max(res)
+#    res = (res - d_min) / (d_max - d_min + 1e-6)
+#    res = (res * 255).astype(np.uint8)
+#    return res  # shape [T, H, W]
+
+
+def save_depthcrafter_outputs(depth: np.ndarray, out_path: str, fps: int = 24):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    out_video_path = f"{out_path}_depth.mkv"
+    h, w = depth.shape[1], depth.shape[2]
+
+    # Convert to 8-bit grayscale
+    depth_normalized = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
+    depth_8bit = (depth_normalized * 255.0).clip(0, 255).astype(np.uint8)
+
+    # Create video writer
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v") if out_video_path.endswith(".mp4") else cv2.VideoWriter_fourcc(*"XVID")
+    writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w, h), isColor=False)
+
+    print(f"📁 Saving video to: {out_video_path} with shape {depth.shape} @ {fps} FPS")
+
+    for frame in depth_8bit:
+        writer.write(frame)
+
+    writer.release()
+    print("✅ Depth video saved.")
+
+    # Optionally save raw .npz
+    np.savez_compressed(out_path + ".npz", depth=depth)
+
+
+
+def round_to_multiple_of_8(x):
+    return (x + 7) // 8 * 8
 
 
 def parse_inference_resolution(res_string, fallback=(384, 384)):
-    res_string = res_string.strip().lower()
-    if "original" in res_string or res_string == "--":
-        return None
-    try:
-        return tuple(map(int, res_string.split("x")))
-    except Exception:
-        return fallback
+    return INFERENCE_RESOLUTIONS.get(res_string.strip(), fallback)
 
 
 def choose_output_directory(output_label_widget, output_dir_var):
@@ -381,6 +504,7 @@ def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, s
 
 def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, invert_var):
     output_dir = output_dir_var.get().strip()
+    global pipe, pipe_type
     global global_session_start_time
     global_session_start_time = time.time()
 
@@ -442,7 +566,8 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
                 images.append(img)
 
         print(f"🚀 Running batch of {len(images)} images at {inference_size}")
-        predictions = pipe([image], inference_size=inference_size)
+        predictions = pipe(images, inference_size)
+
 
         for j, prediction in enumerate(predictions):
             if cancel_requested.is_set():
@@ -483,9 +608,6 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
                     depth_np = cv2.resize(depth_np, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
                     depth_image = Image.fromarray(depth_np)
 
-
-
-
                 # 💾 Save
                 image_name = os.path.splitext(os.path.basename(file_path))[0]
                 output_filename = f"{image_name}_depth.png"
@@ -518,32 +640,47 @@ def update_progress(processed, total, fps, eta, progress_bar, status_label):
 
 
 def process_image(file_path, colormap_var, invert_var, output_dir_var, inference_res_var, input_label, output_label, status_label, progress_bar, folder=False):
-    global pipe
+    global pipe, pipe_type
     image = Image.open(file_path).convert("RGB")
     original_size = image.size
 
     inference_size = parse_inference_resolution(inference_res_var.get())
     image_resized = image.resize(inference_size, Image.BICUBIC) if inference_size else image.copy()
-
-    predictions = pipe([image], inference_size=inference_size)
+    
+    print("📏 Using inference size:", inference_size)
+    predictions = pipe([image], inference_size)
+    
     if not (isinstance(predictions, list) and "predicted_depth" in predictions[0]):
         raise ValueError("❌ Unexpected prediction format from depth model.")
 
     depth_tensor = predictions[0]["predicted_depth"]
 
     try:
-        # === Marigold 16-bit path ===
+        colormap_name = colormap_var.get().strip().lower()
+
         if getattr(pipe, "_is_marigold", False):
-            # === Marigold 16-bit path ===
-            depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
+            if colormap_name == "default":
+                # Export raw 16-bit grayscale
+                depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
+            else:
+                # Export colorized RGB image
+                try:
+                    depth_image = pipe.image_processor.visualize_depth(depth_tensor, color_map=colormap_name)[0]
+                except Exception as e:
+                    print(f"⚠️ Failed to apply colormap '{colormap_name}', using default colormap. Error: {e}")
+                    depth_image = pipe.image_processor.visualize_depth(depth_tensor)[0]
+
             depth_image = depth_image.resize(original_size, Image.BICUBIC)
 
             if invert_var.get():
-                print("🌀 Inverting 16-bit depth for single image")
-                depth_array = np.array(depth_image, dtype=np.uint16)
-                depth_array = 65535 - depth_array  # Manual inversion for 16-bit
-                depth_image = Image.fromarray(depth_array, mode="I;16")
-
+                print("🌀 Inverting Marigold depth image")
+                depth_array = np.array(depth_image)
+                if depth_image.mode == "I;16":
+                    depth_array = 65535 - depth_array
+                    depth_image = Image.fromarray(depth_array, mode="I;16")
+                else:
+                    depth_array = 255 - depth_array
+                    depth_image = Image.fromarray(depth_array.astype(np.uint8))
 
         else:
             # === Fallback for other models ===
@@ -561,14 +698,17 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
 
             depth_np = cv2.resize(depth_np, original_size, interpolation=cv2.INTER_CUBIC)
 
-            if colormap_var.get() == "Default":
+            if colormap_name == "default":
                 depth_image = Image.fromarray(depth_np)
             else:
-                cmap = cm.get_cmap(colormap_var.get().lower())
-                colored = cmap(depth_np.astype(np.float32) / 255.0)
-                colored = (colored[:, :, :3] * 255).astype(np.uint8)
-                depth_image = Image.fromarray(colored)
-
+                try:
+                    cmap = cm.get_cmap(colormap_name)
+                    colored = cmap(depth_np.astype(np.float32) / 255.0)
+                    colored = (colored[:, :, :3] * 255).astype(np.uint8)
+                    depth_image = Image.fromarray(colored)
+                except ValueError:
+                    print(f"⚠️ Unknown colormap: {colormap_name}, defaulting to grayscale.")
+                    depth_image = Image.fromarray(depth_np)
 
     except Exception as e:
         print(f"❌ Error extracting depth: {e}")
@@ -625,6 +765,8 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
         cancel_requested.clear()
         status_label.config(text=f"✅ Image saved: {file_save_path}")
         progress_bar.config(value=100)
+        progress_bar.stop()  
+
 
 
 def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_var, output_dir_var, inference_res_var, input_label_widget, output_label_widget):
@@ -655,7 +797,7 @@ def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_va
 
 
 
-def process_video_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested):
+def process_video_folder(folder_path, batch_size_widget, inference_steps_entry, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested):
     """Opens a folder dialog and processes all video files inside it in a background thread."""
     folder_path = filedialog.askdirectory(title="Select Folder Containing Videos")
 
@@ -689,6 +831,7 @@ def process_videos_in_folder(
     progress_bar,
     cancel_requested,
     invert_var,
+    inference_steps_entry,
     save_frames=False,
 ):
     """Processes all video files in the selected folder in the correct numerical order."""
@@ -736,6 +879,7 @@ def process_videos_in_folder(
             progress_bar,
             cancel_requested,
             invert_var,
+            inference_steps_entry,
             save_frames
         )
 
@@ -760,9 +904,17 @@ def process_video2(
     progress_bar,
     cancel_requested,
     invert_var,
-    save_frames=False
+    inference_steps_entry=None,
+    window_size=24,
+    overlap=25,
+    generator=None,
+    offload_mode_dropdown=None,
+    save_frames=False,
+    target_fps=15
+    
+      
 ):
-    global pipe
+    global pipe, pipe_type
     global global_session_start_time
 
     # Detect output directory from UI
@@ -833,6 +985,7 @@ def process_video2(
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     print(f"📁 Saving video to: {output_path}")
+
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, fps, (original_width, original_height))
     if not out.isOpened():
@@ -845,10 +998,36 @@ def process_video2(
 
     frame_count = 0
     frames_batch = []
+    total_processed_frames = 0
+    
     inference_size = parse_inference_resolution(inference_res_var.get())
+#    if inference_size is not None:
+#        inference_size = (
+#            round_to_multiple_of_8(inference_size[0]),
+#            round_to_multiple_of_8(inference_size[1])
+#        )
+
+    resize_required = inference_size is not None
+    
+    try:
+        inference_steps = int(inference_steps_entry.get().strip())
+    except:
+        inference_steps = 2       
+    try:
+        offload_mode = offload_mode_dropdown.get().strip()
+    except Exception:
+        offload_mode = "sequential" 
+
+        
+    window_size = 24
+    overlap = 25
+    
+    if generator is None:
+        seed = 42
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)        
+    
     global_session_start_time = time.time()
     previous_depth = None
-    alpha = 0.9
 
     while True:
         if cancel_requested.is_set():
@@ -863,7 +1042,7 @@ def process_video2(
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(frame_rgb)
 
-        if inference_size:
+        if resize_required:
             pil_image = pil_image.resize(inference_size, Image.BICUBIC)
         frames_batch.append(pil_image)
 
@@ -871,9 +1050,82 @@ def process_video2(
             if cancel_requested.is_set():
                 print("🛑 Cancel requested before inference.")
                 break
+            
+                
+            if pipe_type == "diffusion":
+                # Frame stride (optional)
+                if target_fps != -1 and fps > target_fps:
+                    stride = round(fps / target_fps)
+                    stride = max(stride, 1)
+                    print(f"🎚️ Frame stride enabled: {stride}")
+                    frames_input = input_frames[::stride]
+                else:
+                    frames_input = input_frames
 
-            predictions = pipe(frames_batch)
+                print("Running DepthCrafter inference with:")
+                print(f"    input frames: {len(frames_input)}")
 
+                if len(frames_input) < window_size:
+                    print(f"⚠️ Adjusting window_size to {len(frames_input)} due to short clip")
+                    window_size = len(frames_input)
+
+                print(f"    steps={inference_steps}")
+                print(f"    resolution={inference_size}")
+                print(f"    seed={seed}")
+                print(f"    window_size={window_size}")
+                print(f"    overlap={overlap}")
+                print(f"    offload_mode={offload_mode}")
+                print(f"    [VRAM] Allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
+                print(f"    [VRAM] Reserved : {torch.cuda.memory_reserved() / 1e6:.1f} MB")
+
+                predictions = run_depthcrafter_inference(
+                    pipe,
+                    frames_input,
+                    inference_size=inference_size,
+                    steps=inference_steps,
+                    window_size=window_size,
+                    overlap=overlap,
+                    offload_mode=offload_mode
+                )
+
+                if predictions is None or len(predictions) == 0:
+                    print("❌ Inference failed. No depth frames collected.")
+                    return frame_count
+
+                if cancel_requested.is_set():
+                    print("🛑 Cancelled before saving.")
+                    return frame_count
+
+                # Save + progress
+                name, _ = os.path.splitext(os.path.basename(file_path))
+                save_depthcrafter_outputs(predictions, os.path.join(output_dir, name), target_fps if target_fps > 0 else int(fps))
+
+                for i in range(predictions.shape[0]):
+                    progress = int(((frames_processed_all + total_processed_frames + i + 1) / total_frames_all) * 100)
+                    progress_bar["value"] = progress
+                    progress_bar.update_idletasks()
+
+                    elapsed = time.time() - global_session_start_time
+                    avg_fps = (frames_processed_all + total_processed_frames + i + 1) / elapsed
+                    eta = (total_frames_all - (frames_processed_all + total_processed_frames + i + 1)) / avg_fps if avg_fps > 0 else 0
+
+                    status_label.config(
+                        text=f"🎬 {frames_processed_all + total_processed_frames + i + 1}/{total_frames_all} frames | "
+                             f"FPS: {avg_fps:.2f} | Elapsed: {time.strftime('%H:%M:%S', time.gmtime(elapsed))} | "
+                             f"ETA: {time.strftime('%H:%M:%S', time.gmtime(eta))} | Processing: {name}"
+                    )
+                    status_label.update_idletasks()
+
+                total_processed_frames += predictions.shape[0]
+                continue
+
+
+            else:
+                predictions = pipe(frames_batch, inference_size=inference_size)
+
+
+            assert isinstance(predictions, list), "Expected list of predictions from pipeline"
+            
             for i, prediction in enumerate(predictions):
                 if cancel_requested.is_set():
                     print("🛑 Cancelled during batch write.")
@@ -884,55 +1136,102 @@ def process_video2(
 
                 try:
                     raw_depth = prediction["predicted_depth"]
-                    depth_tensor = ((raw_depth - raw_depth.min()) / (raw_depth.max() - raw_depth.min())).squeeze()
 
-                    if invert_var.get():
-                        depth_tensor = 1.0 - depth_tensor
+                    def convert_depth_to_grayscale(depth):
+                        if isinstance(depth, Image.Image):
+                            depth = np.array(depth).astype(np.float32)
 
-                    depth_tensor = depth_tensor.mul(255).byte()
-                    depth_np = depth_tensor.cpu().numpy().astype("uint8")
+                        elif isinstance(depth, torch.Tensor):
+                            depth = depth.detach().cpu().float().numpy()
 
-                    depth_frame = cv2.cvtColor(depth_np, cv2.COLOR_GRAY2BGR)
-                    depth_frame = cv2.resize(depth_frame, (original_width, original_height))
-                    out.write(depth_frame)
+                        elif isinstance(depth, np.ndarray):
+                            depth = depth.astype(np.float32)
+                        else:
+                            raise TypeError(f"Unsupported depth type: {type(depth)}")
 
-                    if save_frames:
-                        frame_idx = frame_count - len(predictions) + i + 1
-                        frame_filename = os.path.join(frame_output_dir, f"frame_{frame_idx}.png")
-                        cv2.imwrite(frame_filename, depth_frame)
+                        # Handle [C, H, W] or [H, W, C]
+                        if depth.ndim == 3:
+                            if depth.shape[0] in {1, 3}:  # [C, H, W]
+                                depth = depth[0] if depth.shape[0] == 1 else depth.mean(axis=0)
+                            elif depth.shape[2] in {1, 3}:  # [H, W, C]
+                                depth = depth[..., 0] if depth.shape[2] == 1 else depth.mean(axis=-1)
+
+                        elif depth.ndim != 2:
+                            raise ValueError(f"Unexpected depth shape: {depth.shape}")
+
+                        # Normalize safely to [0, 255]
+                        depth_min, depth_max = np.min(depth), np.max(depth)
+                        if np.isnan(depth_min) or np.isnan(depth_max) or depth_max - depth_min < 1e-6:
+                            print("⚠️ Skipping frame with invalid depth values.")
+                            return np.zeros_like(depth, dtype=np.uint8)
+
+                        norm = (depth - depth_min) / (depth_max - depth_min + 1e-6)
+                        return (norm * 255).astype(np.uint8)
+
+                    # Process list of frames or single frame
+                    if isinstance(raw_depth, list):
+                        for depth_frame_tensor in raw_depth:
+                            gray = convert_depth_to_grayscale(depth_frame_tensor)
+                            bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                            bgr = cv2.resize(bgr, (original_width, original_height))
+                            out.write(bgr)
+
+                            if save_frames:
+                                frame_filename = os.path.join(frame_output_dir, f"frame_{frame_count:05d}.png")
+                                cv2.imwrite(frame_filename, gray)
+
+                            total_processed_frames += 1
+                    else:
+                        gray = convert_depth_to_grayscale(raw_depth)
+                        bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                        bgr = cv2.resize(bgr, (original_width, original_height))
+                        out.write(bgr)
+
+                        if save_frames:
+                            frame_filename = os.path.join(frame_output_dir, f"frame_{frame_count:05d}.png")
+                            cv2.imwrite(frame_filename, gray)
+
+                        total_processed_frames += 1
 
                 except Exception as e:
                     print(f"⚠️ Depth processing error: {e}")
+            
+            if frame_count % 100 == 0:
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                gc.collect()
 
             frames_batch.clear()
 
         elapsed = time.time() - global_session_start_time
-        avg_fps = frame_count / elapsed if elapsed > 0 else 0
-        remaining_frames = total_frames_all - (frames_processed_all + frame_count)
+        avg_fps = total_processed_frames / elapsed if elapsed > 0 else 0
+        remaining_frames = total_frames - total_processed_frames
         eta = remaining_frames / avg_fps if avg_fps > 0 else 0
 
-        progress = int(((frames_processed_all + frame_count) / total_frames_all) * 100)
-        progress_bar.config(value=progress)
+        progress = int(((frames_processed_all + total_processed_frames) / total_frames_all) * 100)
         elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
         eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
 
         status_label.config(
-            text=f"🎬 {frame_count}/{total_frames} frames | FPS: {avg_fps:.2f} | "
-                 f"Elapsed: {elapsed_str} | ETA: {eta_str} | Processing: {name}"
+            text=f"🎬 {frames_processed_all + total_processed_frames}/{total_frames_all} frames | "
+                 f"FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} | Processing: {name}"
         )
+
         status_label.update_idletasks()
 
     cap.release()
     out.release()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    gc.collect()
+
 
     if cancel_requested.is_set():
         print("🛑 Cancelled: Video not fully processed.")
     else:
         print(f"✅ Video saved: {output_path}")
-
+        
     return frame_count
-
-
 
 def is_av1_encoded(file_path):
     try:
@@ -954,8 +1253,7 @@ def is_av1_encoded(file_path):
         print(f"⚠️ Failed to check codec with ffprobe: {e}")
         return False
 
-
-def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var):
+def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var, inference_steps_entry, offload_mode_dropdown, ):
     file_path = filedialog.askopenfilename(
         filetypes=[
             ("All Supported Video Files", "*.mp4;*.avi;*.mov;*.mkv;*.flv;*.wmv;*.webm;*.mpeg;*.mpg"),
@@ -985,6 +1283,8 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             )
             status_label.config(text="❌ AV1 input not supported. Re-encode to H.264.")
             return
+            
+        offload_mode = offload_mode_dropdown.get() if offload_mode_dropdown else "none"
 
         cancel_requested.clear()
         status_label.config(text="🔄 Processing video...")
@@ -993,7 +1293,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         cap = cv2.VideoCapture(file_path)
         total_frames_all = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-
+        
         try:
             user_value = batch_size_widget.get().strip()
             batch_size = int(user_value) if user_value else get_dynamic_batch_size()
@@ -1003,10 +1303,21 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             batch_size = get_dynamic_batch_size()
             status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
-        threading.Thread(
-            target=process_video2,
-            args=(file_path, total_frames_all, 0, batch_size, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested, invert_var),
-            daemon=True
-        ).start()
-
-
+        threading.Thread(target=process_video2, args=(
+            file_path,
+            total_frames_all,
+            0,
+            batch_size,
+            output_dir_var,
+            inference_res_var,
+            status_label,
+            progress_bar,
+            cancel_requested,
+            invert_var,
+            inference_steps_entry,
+        ),
+        kwargs={
+            "offload_mode_dropdown": offload_mode_dropdown,
+            "target_fps": 15
+        }
+    ).start()

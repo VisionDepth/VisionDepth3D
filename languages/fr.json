@@ -113,6 +113,10 @@
   "FrameTools": "Outils d’Images",
   "VDPlayer": "Lecteur VD",
 
+  "Inference Steps:": "Étapes d'inférence :",
+  "CPU Offload Mode": "Mode de délestage CPU",
+  "Tooltip.InferenceSteps": "Contrôle le nombre d'étapes utilisées par le modèle de diffusion pour estimer la profondeur. Une valeur plus élevée peut améliorer la qualité mais augmente le temps de traitement.",
+  "Tooltip.CPUMode": "Détermine quelles parties du modèle sont transférées vers le CPU. Utilisez 'sequential' sur les systèmes avec peu de VRAM pour économiser de la mémoire GPU au détriment de la vitesse.",
 
   "Tooltip.Model": "Sélectionnez un modèle d'estimation de profondeur depuis Hugging Face. Les modèles plus grands offrent une meilleure précision mais nécessitent plus de VRAM et de temps.",
   "Tooltip.OutputDirLabel": "Affiche le dossier de sortie actuellement sélectionné où toutes les cartes de profondeur et vidéos générées seront enregistrées.",

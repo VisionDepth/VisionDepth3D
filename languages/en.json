@@ -8,6 +8,7 @@
   "Save Frames": "Save Frames",
   "Batch Size (Frames):": "Batch Size (Frames):",
   "Inference Resolution:": "Inference Resolution:",
+  "Inference Steps:": "Inference Steps:",
   "Ready": "Ready",
   "Input Image": "Input Image",
   "Process Image": "Process Image",
@@ -15,6 +16,8 @@
   "Process Video": "Process Video",
   "Process Video Folder": "Process Video Folder",
   "Depth Map": "Depth Map",
+  "CPU Offload Mode": "CPU Offload Mode",
+
 
   "_3DRenderTab": "",
   "Video Info": "Video Info",
@@ -38,11 +41,11 @@
   "Midground Shift": "Midground Shift",
   "Background Shift": "Background Shift",
   "Sharpness Factor": "Sharpness Factor",
-  "Zero Parallax Strength": "Zero Parallax Strength",
-  "parallax_balance": "Parallax Balance",
+  "Parallax Balance": "Parallax Balance",
   "Max Pixel Shift %": "Max Pixel Shift %",
   "Convergence Strength": "Convergence Strength",
   "Enable Dynamic Convergence": "Enable Dynamic Convergence",
+  "Zero Parallax Strength": "Zero Parallax Strength",
 
   "Preserve Original Aspect Ratio": "Preserve Original Aspect Ratio",
   "Auto Crop Black Bars": "Auto Crop Black Bars",
@@ -124,6 +127,10 @@
   "Tooltip.ProcessImageFolder": "Processes all images in a selected folder using current depth settings.",
   "Tooltip.ProcessVideo": "Processes a video file to generate a full-depth map video.",
   "Tooltip.ProcessVideoFolder": "Processes all video files in a folder for batch depth generation.",
+  "Tooltip.InferenceSteps": "Controls the number of steps the diffusion model uses to estimate depth. Higher values may improve quality but increase processing time.",
+  "Tooltip.CPUMode": "Determines which parts of the model to offload to the CPU. Use 'sequential' for low VRAM systems to reduce GPU memory usage at the cost of speed.",
+
+
 
   "Tooltip.StartButton": "Begin generating a 3D side-by-side (SBS) or other formats using all current parameters.",
   "Tooltip.PreviewButton": "Preview the 3D output frame-by-frame to verify depth before and test settings before rendering.",
