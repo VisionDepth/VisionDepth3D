@@ -157,7 +157,7 @@
   "Tooltip.UseFFmpeg": "Active le rendu",
   "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central.",
   "Tooltip.ConvergenceStrength": "Ajoute un décalage de convergence stéréo pour contrôler la profondeur perçue à l'écran du sujet principal. Des valeurs plus élevées rapprochent les vues gauche et droite, créant un effet de jaillissement plus fort.",
-  "Tooltip.EnableDynConvergence": "Ajuste dynamiquement la force de convergence en fonction de la profondeur du sujet. Améliore le confort visuel en alignant automatiquement la convergence sur les zones clés de la scène.",
+  "Tooltip.EnableDynConvergence": "Ajuste dynamiquement la force de convergence en fonction de la profondeur du sujet. Améliore le confort visuel en alignant automatiquement la convergence sur les zones clés de la scène."
 
 }
  
