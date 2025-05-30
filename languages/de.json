@@ -175,6 +175,6 @@
   "Tooltip.ModelSelect": "Wähle ein ESRGAN-ONNX-Modell. x2 = schneller, x4 = schärfer, aber langsamer.",
   "Tooltip.DOFStrength": "Steuert die Intensität der Tiefenschärfenunschärfe. Höhere Werte simulieren einen stärkeren Schärfeabfall von der zentralen Tiefenebene.",
   "Tooltip.ConvergenceStrength": "Fügt einen stereoskopischen Konvergenzversatz hinzu, um die wahrgenommene Bildtiefe des Hauptmotivs zu steuern. Höhere Werte ziehen das linke und rechte Bild zusammen und erzeugen stärkere Pop-out-Effekte.",
-  "Tooltip.EnableDynConvergence": "Passt die Konvergenzstärke dynamisch basierend auf der Tiefe des Hauptmotivs an. Hilft dabei, ein angenehmes 3D-Erlebnis zu bewahren, indem die Konvergenz automatisch auf wichtige Bildbereiche abgestimmt wird.",
+  "Tooltip.EnableDynConvergence": "Passt die Konvergenzstärke dynamisch basierend auf der Tiefe des Hauptmotivs an. Hilft dabei, ein angenehmes 3D-Erlebnis zu bewahren, indem die Konvergenz automatisch auf wichtige Bildbereiche abgestimmt wird."
 
 }
