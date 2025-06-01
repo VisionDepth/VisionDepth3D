@@ -111,6 +111,7 @@
   "3D Video Generator": "3D Video Generator",
   "FrameTools": "FrameTools",
   "VDPlayer": "VDPlayer",
+  "Depth Estimation": "Depth Estimation",
 
   "_Tooltips": "",
   "Tooltip.Model": "Select a depth estimation model from Hugging Face. Larger models offer higher accuracy but require more VRAM and time.",
