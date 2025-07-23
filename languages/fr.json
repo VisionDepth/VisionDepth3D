@@ -39,6 +39,7 @@
   "DOF Strength": "Intensité de la profondeur de champ",
   "Convergence Strength": "Intensité de Convergence",
   "Enable Dynamic Convergence": "Activer la Convergence Dynamique",
+  "Parallax Balance": "Équilibre de parallaxe",
 
 
   "Preserve Original Aspect Ratio": "Préserver le rapport d'aspect original",
@@ -101,7 +102,7 @@
   "NVENC CQ": "NVENC CQ",
   "Codec": "Codec",
   "Waiting to start...": "En attente de démarrage...",
-  
+
   "Video Info": "Infos vidéo",
   "No Thumbnail": "Pas de vignette",
   "Resolution: N/A\nFPS: N/A": "Résolution : N/D\nFPS : N/D",
@@ -112,12 +113,15 @@
   "3D Video Generator": "Générateur de Vidéo 3D",
   "FrameTools": "Outils d’Images",
   "VDPlayer": "Lecteur VD",
+  "Depth Estimation": "Estimation de profondeur",
+
 
   "Inference Steps:": "Étapes d'inférence :",
   "CPU Offload Mode": "Mode de délestage CPU",
+
+
   "Tooltip.InferenceSteps": "Contrôle le nombre d'étapes utilisées par le modèle de diffusion pour estimer la profondeur. Une valeur plus élevée peut améliorer la qualité mais augmente le temps de traitement.",
   "Tooltip.CPUMode": "Détermine quelles parties du modèle sont transférées vers le CPU. Utilisez 'sequential' sur les systèmes avec peu de VRAM pour économiser de la mémoire GPU au détriment de la vitesse.",
-
   "Tooltip.Model": "Sélectionnez un modèle d'estimation de profondeur depuis Hugging Face. Les modèles plus grands offrent une meilleure précision mais nécessitent plus de VRAM et de temps.",
   "Tooltip.OutputDirLabel": "Affiche le dossier de sortie actuellement sélectionné où toutes les cartes de profondeur et vidéos générées seront enregistrées.",
   "Tooltip.OutputDirButton": "Ouvre une boîte de dialogue pour sélectionner le dossier où tous les résultats traités seront stockés.",
@@ -157,7 +161,21 @@
   "Tooltip.UseFFmpeg": "Active le rendu",
   "Tooltip.DOFStrength": "Controla la intensidad del desenfoque de profundidad de campo. Valores más altos simulan una mayor pérdida de enfoque desde el plano de profundidad central.",
   "Tooltip.ConvergenceStrength": "Ajoute un décalage de convergence stéréo pour contrôler la profondeur perçue à l'écran du sujet principal. Des valeurs plus élevées rapprochent les vues gauche et droite, créant un effet de jaillissement plus fort.",
-  "Tooltip.EnableDynConvergence": "Ajuste dynamiquement la force de convergence en fonction de la profondeur du sujet. Améliore le confort visuel en alignant automatiquement la convergence sur les zones clés de la scène."
+  "Tooltip.EnableDynConvergence": "Ajuste dynamiquement la force de convergence en fonction de la profondeur du sujet. Améliore le confort visuel en alignant automatiquement la convergence sur les zones clés de la scène.",
+  "Tooltip.CRF": "Le CRF contrôle la qualité vidéo CPU : plus la valeur est basse, meilleure est la qualité. 18–23 est visuellement sans perte.",
+  "Tooltip.NVENCCQ": "Contrôle de qualité NVENC de NVIDIA. Semblable au CRF mais optimisé pour l'encodage GPU.",
+  "Tooltip.SelectedCodec": "Codec standard utilisé pour l'exportation vidéo basée sur le CPU.",
+  "Tooltip.FFmpegCodec": "Encodeur avancé pour l'exportation avec FFmpeg. NVENC est optimal pour les GPU NVIDIA.",
+  "Tooltip.AspectRatio": "Choisissez le rapport d'aspect final pour correspondre à votre affichage ou plateforme cible.",
+  "Tooltip.ExtractFrames": "Extrait les images brutes d'une vidéo pour une utilisation avec RIFE ou ESRGAN.",
+  "Tooltip.RIFE": "Active l'interpolation IA pour multiplier le nombre d'images pour un ralenti fluide ou une mise à l’échelle en temps réel.",
+  "Tooltip.AIBlend": "Contrôle la quantité de sortie IA fusionnée avec l’original. Des valeurs élevées préservent plus de texture source.",
+  "Tooltip.ESRGAN": "Utilise Real-ESRGAN IA pour agrandir les images basse résolution avec des détails améliorés.",
+  "Tooltip.FPSMultiplier": "Contrôle combien d’images supplémentaires sont générées entre les originales (ex. : 2x, 4x, 8x FPS).",
+  "Tooltip.InputResPct": "Réduit la résolution d'entrée avant l'agrandissement pour économiser de la mémoire ou accélérer le traitement. 100 % = pleine résolution.",
+  "Tooltip.ModelSelect": "Choisissez un modèle ESRGAN ONNX. x2 = plus rapide, x4 = plus net mais plus lent.",
+  "Tooltip.OriginalFPS": "Indique la fréquence d’images native de la vidéo source pour une interpolation précise.",
+  "Tooltip.Resolution": "Spécifie la résolution de sortie pour la vidéo finale rendue (ex. : 1920x1080)."
 
 }
  

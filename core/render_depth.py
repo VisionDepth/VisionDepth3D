@@ -207,63 +207,60 @@ def ensure_model_downloaded(checkpoint):
         return None, None
 
 
-def load_onnx_model(model_dir):
+def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
     model_path = os.path.join(model_dir, "model.onnx")
     if not os.path.exists(model_path):
-        print(f"❌ ONNX model file not found in {model_dir}")
+        print(f"❌ ONNX model not found: {model_path}")
         return None, None
 
-    session = ort.InferenceSession(
-        model_path,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-    )
-    input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
-    input_shape = session.get_inputs()[0].shape
+    print(f"🧠 Loading ONNX model from: {model_path}")
+    session = ort.InferenceSession(model_path, providers=[device, "CPUExecutionProvider"])
+
+    input_info = session.get_inputs()[0]
+    output_info = session.get_outputs()[0]
+
+    input_name = input_info.name
+    output_name = output_info.name
+    input_shape = input_info.shape
     input_rank = len(input_shape)
 
-    print(f"🔍 ONNX input shape: {input_shape} (Rank {input_rank})")
-    
-    def onnx_pipe(images, inference_size=None):
+    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank}")
+
+    def run_onnx(images, inference_size=None):
         if inference_size is None:
-            raise ValueError("❌ ONNX model requires explicit inference_size.")
+            raise ValueError("❌ Must provide inference_size for ONNX.")
 
-        preds = []
+        img_batch = [
+            np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0
+            for img in images
+        ]
 
+        # Support Rank 5 input (e.g. [1, 32, 3, H, W])
         if input_rank == 5:
-            if len(images) != 32:
-                if len(images) > 32:
-                    raise ValueError("ONNX model requires exactly 32 frames per inference.")
-                print(f"⚠️ Padding {len(images)} to 32 frames.")
-                images += [images[-1]] * (32 - len(images))
+            if len(img_batch) != 32:
+                print(f"⚠️ Padding to 32 frames (got {len(img_batch)})")
+                img_batch += [img_batch[-1]] * (32 - len(img_batch))
+            input_tensor = np.stack(img_batch)[None, ...]  # Shape: [1, 32, 3, H, W]
 
-            img_batch = [np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
-            input_tensor = np.stack(img_batch)[None, ...]
-            result = session.run([output_name], {input_name: input_tensor})[0]
-            result = result.squeeze(0)
-
-            for i in range(32):
-                preds.append({"predicted_depth": torch.tensor(result[i])})
-
+        # Support Rank 4 input (e.g. [B, 3, H, W])
         elif input_rank == 4:
-            img_batch = [np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0 for img in images]
-            input_tensor = np.stack(img_batch)
-            result = session.run([output_name], {input_name: input_tensor})[0]
+            input_tensor = np.stack(img_batch)  # Shape: [B, 3, H, W]
 
-            for i in range(len(images)):
-                preds.append({"predicted_depth": torch.tensor(result[i])})
         else:
-            raise ValueError(f"❌ Unsupported input rank: {input_rank}")
+            raise ValueError(f"❌ Unsupported ONNX input rank: {input_rank}")
 
-        return preds
+        output = session.run([output_name], {input_name: input_tensor})[0]
 
-    onnx_pipe._is_marigold = False
-    return onnx_pipe, {
-        "is_onnx": True,
+        # Convert to tensor list
+        output = output.squeeze(0) if input_rank == 5 else output
+        return [{"predicted_depth": torch.tensor(depth)} for depth in output]
+
+    run_onnx._is_marigold = False
+    return run_onnx, {
         "input_rank": input_rank,
-        "session": session
+        "session": session,
+        "provider": device
     }
-
 
 
 spinner_states = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
@@ -797,23 +794,53 @@ def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_va
 
 
 
-def process_video_folder(folder_path, batch_size_widget, inference_steps_entry, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested):
-    """Opens a folder dialog and processes all video files inside it in a background thread."""
-    folder_path = filedialog.askdirectory(title="Select Folder Containing Videos")
+def process_video_folder(
+    folder_path,
+    batch_size_widget,
+    inference_steps_entry,
+    output_dir_var,
+    inference_res_var,
+    status_label,
+    progress_bar,
+    cancel_requested,
+    invert_var
+):
+    """Runs folder selection in main thread and launches processing in background."""
 
-    if not folder_path:
-        cancel_requested.clear()  # ✅ Reset before starting
+    selected_folder = filedialog.askdirectory(title="Select Folder Containing Videos")
+    if not selected_folder:
+        cancel_requested.clear()
         status_label.config(text="⚠️ No folder selected.")
         return
 
-    # ✅ Run processing in a separate thread with resolution
+    # Get batch size on the main thread
+    try:
+        user_value = batch_size_widget.get().strip()
+        batch_size = int(user_value) if user_value else get_dynamic_batch_size()
+        if batch_size <= 0:
+            raise ValueError
+    except Exception:
+        batch_size = get_dynamic_batch_size()
+        status_label.config(
+            text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}"
+        )
+
+    # Launch the actual processing in background thread
     threading.Thread(
         target=process_videos_in_folder,
-        args=(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, cancel_requested),
-        daemon=True,
+        args=(
+            selected_folder,
+            batch_size,
+            output_dir_var,
+            inference_res_var,
+            status_label,
+            progress_bar,
+            cancel_requested,
+            invert_var,
+            inference_steps_entry,
+        ),
+        daemon=True
     ).start()
-
-
 
 def natural_sort_key(filename):
     """Extract numbers from filenames for natural sorting."""
@@ -824,7 +851,7 @@ def natural_sort_key(filename):
 
 def process_videos_in_folder(
     folder_path,
-    batch_size_widget,
+    batch_size,
     output_dir_var,
     inference_res_var,
     status_label,
@@ -834,6 +861,7 @@ def process_videos_in_folder(
     inference_steps_entry,
     save_frames=False,
 ):
+
     """Processes all video files in the selected folder in the correct numerical order."""
     video_files = [
         f for f in os.listdir(folder_path)
@@ -856,15 +884,6 @@ def process_videos_in_folder(
         for f in video_files
     )
     frames_processed_all = 0
-
-    try:
-        user_value = batch_size_widget.get().strip()
-        batch_size = int(user_value) if user_value else get_dynamic_batch_size()
-        if batch_size <= 0:
-            raise ValueError
-    except Exception:
-        batch_size = get_dynamic_batch_size()
-        status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
     for video_file in video_files:
         video_path = os.path.join(folder_path, video_file)
