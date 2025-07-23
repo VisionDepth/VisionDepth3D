@@ -115,16 +115,17 @@ languages_dir = resource_path("languages")
 if languages_dir not in sys.path:
     sys.path.insert(0, languages_dir)
 
+# Inno Setup 
 #Inject DLL directory into PATH
-def inject_dll_directory():
-    dll_dir = resource_path("dlls")
-    if os.path.isdir(dll_dir):
-        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
-    else:
-        print(f"[Warning] DLL folder not found: {dll_dir}")
+#def inject_dll_directory():
+#   dll_dir = resource_path("dlls")
+#    if os.path.isdir(dll_dir):
+#        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+#    else:
+#        print(f"[Warning] DLL folder not found: {dll_dir}")
 
 # 🟢 Call this before any ONNX/TensorRT/CUDA init
-inject_dll_directory()
+#inject_dll_directory()
 
 
 def save_settings():
