@@ -16,6 +16,9 @@ import numpy as np
 import re
 import webbrowser
 import glob
+from scenedetect import VideoManager, SceneManager
+from scenedetect.detectors import ContentDetector
+
 
 # ── VisionDepth3D Custom Modules ────────────────
 # 3D Rendering
@@ -90,10 +93,10 @@ def load_language(lang_code):
 def t(key):
     return translations.get(key, key)
 
-# ✅ Load default language before building GUI
+# Load default language before building GUI
 load_language("en")
 
-# ✅ Get absolute path to resource (for PyInstaller compatibility)
+# Get absolute path to resource (for PyInstaller compatibility)
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -102,22 +105,26 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-# ✅ Force include core/ into path
+#Force include core/ into path
 core_dir = resource_path("core")
 if core_dir not in sys.path:
     sys.path.insert(0, core_dir)
 
-# --INNO SETUP STUFF -- 
-# ✅ Inject DLL directory into PATH
-#def inject_dll_directory():
-#   dll_dir = resource_path("dlls")
- #   if os.path.isdir(dll_dir):
- #       os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
- #   else:
- #       print(f"[Warning] DLL folder not found: {dll_dir}")
+#Force include languages/ into path
+languages_dir = resource_path("languages")
+if languages_dir not in sys.path:
+    sys.path.insert(0, languages_dir)
+
+#Inject DLL directory into PATH
+def inject_dll_directory():
+    dll_dir = resource_path("dlls")
+    if os.path.isdir(dll_dir):
+        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+    else:
+        print(f"[Warning] DLL folder not found: {dll_dir}")
 
 # 🟢 Call this before any ONNX/TensorRT/CUDA init
-#inject_dll_directory()
+inject_dll_directory()
 
 
 def save_settings():
@@ -366,7 +373,7 @@ class CreateToolTip:
 # --- Window Setup ---
 root = tk.Tk()
 root.title("VisionDepth3D v3.2.4")
-root.geometry("885x860")
+root.geometry("890x870")
 
 # --- Menu Bar Setup ---
 menu_bar = tk.Menu(root)
@@ -447,6 +454,7 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
+        "DepthCrafter (Diffusers)": "tencent/DepthCrafter",
         "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
@@ -461,6 +469,7 @@ def load_supported_models():
         "V2-Metric-Indoor-Large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "V2-Metric-Outdoor-Large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
         "DepthPro": "apple/DepthPro-hf",
+        "Prompt Depth Anything": "depth-anything/prompt-depth-anything-vitl-hf",
         "marigold-depth-v1-0": "prs-eth/marigold-depth-v1-0",
         "ZoeDepth": "Intel/zoedepth-nyu-kitti",
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
@@ -510,13 +519,14 @@ INFERENCE_RESOLUTIONS = {
     "1024x1024": (1024, 1024),
 
     # ViT/DINOV2-safe resolutions (multiples of 14)
-    "518x518 ([Local] Distill Base)": (518, 518),
+    "518x518 ([Local] models)": (518, 518),
     "896x896 (ViT-safe near 900)": (896, 896),
     "1008x1008 (ViT-safe)": (1008, 1008),
 
     # Widescreen & cinematic
     "512x256 (DC-Fastest)": (512, 256),
     "704x384 (DC-Balanced)": (704, 384),
+    "910x518 (Depth Anything)": (910, 518),
     "960x540 (DC-Good Quality)": (960, 540),
     "1024x576 (DC-Max Quality)": (1024, 576),
 
@@ -877,20 +887,119 @@ FFMPEG_CODEC_MAP = {
 
 # ─── FrameTools3D GUI Layout ──────────────────────────────────────────────
 
-# Extract Button
-extract_frames_button = tk.Button(
+
+
+# 🎥 Scene Detection
+scene_threshold_var = tk.DoubleVar(value=30.0)
+scene_output_format = tk.StringVar(value="mkv")
+scene_detect_label = tk.Label(
     FrameTools3D,
-    text=t("Extract Frames from Video"),
-    command=lambda: select_video_and_generate_frames(ft3d_frames_folder.set),
-    bg="green",
-    fg="white",
-    relief="flat"
+    text="🎥 Scene Detection (PySceneDetect)",
+    font=("Segoe UI", 12, "bold"), background="#1c1c1c",
+    foreground="white"
 )
-extract_frames_button.pack(pady=10)
+scene_detect_label.pack(pady=(20, 5))
+
+scene_detect_threshold = tk.Label(
+    FrameTools3D,
+    text="Sensitivity Threshold (lower = more cuts):",
+    background="#1c1c1c", foreground="white"
+)
+scene_detect_threshold.pack()
+
+scene_detect_slider = tk.Scale(
+    FrameTools3D,
+    from_=10, to=80,
+    variable=scene_threshold_var,
+    orient="horizontal",
+    bg="#1c1c1c", fg="white", length=300
+)
+scene_detect_slider.pack(pady=5)
+
+def run_scene_detect():
+    global scene_output_format
+    video_path = filedialog.askopenfilename(title="Select Video for Scene Detection", filetypes=[("Video Files", "*.mp4;*.avi;*.mov;*.mkv")])
+    if not video_path:
+        return
+    output_folder = filedialog.askdirectory(title="Select Output Folder for Scenes")
+    if not output_folder:
+        return
+    threshold = scene_threshold_var.get()
+    ext = scene_output_format.get().strip().lower()
+    if ext not in ["mp4", "mov", "avi", "mkv"]:
+        messagebox.showerror("Invalid Format", f"Unsupported output format: {ext}")
+        return
+    merged_status.config(text="⏳ Detecting scenes...")
+    merged_progress.start()
+    
+    def scene_thread():
+        from scenedetect import open_video, SceneManager
+        from scenedetect.detectors import ContentDetector
+        import os, subprocess
+
+        video = open_video(video_path)
+        scene_manager = SceneManager()
+        scene_manager.add_detector(ContentDetector(threshold=threshold))
+        scene_manager.detect_scenes(video)
+
+        scene_list = scene_manager.get_scene_list()
+        fps = video.frame_rate
+
+        for i, (start, end) in enumerate(scene_list):
+            start_frame = start.get_frames()
+            end_frame = end.get_frames()
+            start_time = start_frame / fps
+            duration = (end_frame - start_frame) / fps
+
+            scene_filename = os.path.join(output_folder, f"scene_{i+1:03d}.{ext}")
+            command = [
+                "ffmpeg", "-y", "-hwaccel", "auto",
+                "-i", video_path,
+                "-ss", f"{start_time:.3f}", "-t", f"{duration:.3f}",
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "128k",
+                scene_filename
+            ]
+            subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        merged_progress.stop()
+        merged_status.config(text=f"✅ Exported {len(scene_list)} scenes as videos.")
+        messagebox.showinfo("Done", f"✅ Exported {len(scene_list)} scenes to:\n{output_folder}")
+
+    threading.Thread(target=scene_thread, daemon=True).start()
+
+detect_scenes_button = tk.Button(
+    FrameTools3D,
+    text="🎩 Detect Scenes & Extract",
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
+    command=run_scene_detect
+)
+detect_scenes_button.pack(pady=10)
 
 # Input / Output Group
 io_frame = tk.LabelFrame(FrameTools3D, text=t("Input / Output"), bg="#1c1c1c", fg="white")
 io_frame.pack(fill="x", padx=10, pady=4)
+
+# Extract Button
+
+
+extract_frames_button = tk.Button(
+    io_frame,
+    text=t("Extract Frames from Video"),
+    bg="#2c2c2c", fg="white",
+    activebackground="#444444", activeforeground="white",
+    relief="groove", bd=2,
+    command=lambda: select_video_and_generate_frames(
+        ft3d_frames_folder.set,
+        merged_progress,
+        merged_status
+    )
+)
+extract_frames_button.pack(pady=10)
+
+
 
 frames_folder_label = tk.Label(
     io_frame, text=t("Frames Folder:"),
@@ -1011,6 +1120,8 @@ merged_progress.pack(pady=6)
 
 merged_status = tk.Label(FrameTools3D, text=t("Waiting to start..."), bg="#1c1c1c", fg="white")
 merged_status.pack()
+
+
 
 # ---3D Generator Frame Contents ---
 
