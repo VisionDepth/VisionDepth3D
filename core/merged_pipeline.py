@@ -37,14 +37,13 @@ session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE
 # ✅ ONNX Execution Provider fallback logic
 available_providers = ort.get_available_providers()
 
-if "TensorrtExecutionProvider" in available_providers:
-    device = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
-elif "CUDAExecutionProvider" in available_providers:
+if "CUDAExecutionProvider" in available_providers:
     device = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 else:
     device = ["CPUExecutionProvider"]
 
 print(f"🧠 ONNX will use providers: {device}")
+
 
 
 # ✅ Load RIFE
@@ -69,33 +68,74 @@ def update_progress(done, total, start):
     eta_fmt = time.strftime("%H:%M:%S", time.gmtime(eta)) if eta != float("inf") else "--:--"
     status_label["text"] = f"Progress: {done}/{total} | FPS: {fps:.2f} | ETA: {eta_fmt}"
 
-def select_video_and_generate_frames(set_folder_callback=None):
+from tkinter.simpledialog import askstring
+
+def select_video_and_generate_frames(set_folder_callback=None, merged_progress=None, merged_status=None):
     video_path = filedialog.askopenfilename(
+        title="Select Video",
         filetypes=[("Video Files", "*.mp4;*.avi;*.mov;*.mkv"), ("All Files", "*.*")]
     )
     if not video_path:
         return
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        messagebox.showerror("Error", "❌ Unable to open selected video.")
+    output_root = filedialog.askdirectory(title="Select Folder to Save Extracted Frames")
+    if not output_root:
         return
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    image_format = askstring("Image Format", "Enter image format to save (e.g., png, jpg):")
+    valid_formats = ["png", "jpg", "jpeg", "bmp", "webp"]
+    if not image_format or image_format.lower() not in valid_formats:
+        messagebox.showerror("Invalid Format", "Please enter a valid format like png, jpg, etc.")
+        return
+    image_format = image_format.lower()
+
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    output_folder = os.path.join("frames", f"{base_name}_frames")
+    output_folder = os.path.join(output_root, f"{base_name}_frames")
     os.makedirs(output_folder, exist_ok=True)
 
-    for i in range(total_frames):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        cv2.imwrite(os.path.join(output_folder, f"frame_{i:05d}.png"), frame)
+    output_pattern = os.path.join(output_folder, f"frame_%05d.{image_format}")
 
-    cap.release()
-    messagebox.showinfo("Done", f"✅ Extracted {total_frames} frames to:\n{output_folder}")
-    if set_folder_callback:
-        set_folder_callback(output_folder)
+    def extract_thread():
+        def start_spinner():
+            if merged_progress and merged_status:
+                merged_progress.config(mode="indeterminate")
+                merged_progress.start()
+                merged_status.config(text="⏳ Extracting frames...")
+
+        def stop_spinner(success):
+            if merged_progress and merged_status:
+                merged_progress.stop()
+                merged_progress.config(mode="determinate")
+                if success:
+                    merged_status.config(text="✅ Extraction complete.")
+                    messagebox.showinfo("Done", f"✅ Frames saved to:\n{output_folder}")
+                    if set_folder_callback:
+                        set_folder_callback(output_folder)
+                else:
+                    merged_status.config(text="❌ Extraction failed.")
+                    messagebox.showerror("Error", "❌ FFmpeg frame extraction failed.")
+
+        if merged_progress:
+            merged_progress.after(0, start_spinner)
+
+        print(f"🚀 Running FFmpeg to extract frames from: {video_path}")
+        print(f"📁 Saving to: {output_folder}")
+
+        command = [
+            "ffmpeg", "-y",
+            "-hwaccel", "auto",
+            "-i", video_path,
+            "-q:v", "2",
+            output_pattern
+        ]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+        if merged_progress:
+            merged_progress.after(0, lambda: stop_spinner(result.returncode == 0))
+
+
+    threading.Thread(target=extract_thread, daemon=True).start()
+
 
 def select_output_file(output_path_var):
     file_path = filedialog.asksaveasfilename(
