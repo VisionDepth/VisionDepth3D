@@ -373,7 +373,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.2.4")
+root.title("VisionDepth3D v3.2.5")
 root.geometry("890x870")
 
 # --- Menu Bar Setup ---
