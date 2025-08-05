@@ -1,0 +1,18 @@
+{
+    "fg_shift": 2.5,
+    "mg_shift": 1.5,
+    "bg_shift": -6.0,
+    "zero_parallax_strength": 0.02,
+    "max_pixel_shift": 0.03,
+    "parallax_balance": 0.8,
+    "sharpness_factor": 0.2,
+    "use_ffmpeg": true,
+    "enable_feathering": true,
+    "enable_edge_masking": false,
+    "use_floating_window": true,
+    "auto_crop_black_bars": false,
+    "skip_blank_frames": true,
+    "dof_strength": 2.5,
+    "convergence_strength": 0.01,
+    "enable_dynamic_convergence": true
+}
