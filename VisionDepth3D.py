@@ -72,6 +72,14 @@ translations = {}
 current_language = "en"
 tooltip_refs = {}
 
+def rendering_in_progress():
+    return is_rendering
+
+def is_render_done():
+    global process_thread
+    return process_thread is None or not process_thread.is_alive()
+
+
 def set_language(lang_code):
     global current_language
     current_language = lang_code
@@ -115,14 +123,13 @@ languages_dir = resource_path("languages")
 if languages_dir not in sys.path:
     sys.path.insert(0, languages_dir)
 
-# Inno Setup
 #Inject DLL directory into PATH
 #def inject_dll_directory():
 #    dll_dir = resource_path("dlls")
 #    if os.path.isdir(dll_dir):
 #        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
-#
-#       print(f"[Warning] DLL folder not found: {dll_dir}")
+#    else:
+#        print(f"[Warning] DLL folder not found: {dll_dir}")
 
 # 🟢 Call this before any ONNX/TensorRT/CUDA init
 #inject_dll_directory()
@@ -247,48 +254,61 @@ def resume_processing():
     suspend_flag.clear()
     print("▶ Processing Resumed!")
 
+is_rendering = False  # Make sure this is defined globally at the top of your script
+
 def handle_generate_3d():
-    global process_thread
+    global process_thread, is_rendering
+
     try:
         if process_thread is None or not process_thread.is_alive():
             print("🚀 Starting new 3D processing thread...")
             cancel_flag.clear()
             suspend_flag.clear()
-            process_thread = threading.Thread(target=lambda: process_video(
-                input_video_path,
-                selected_depth_map,
-                output_sbs_video_path,
-                selected_codec,
-                fg_shift,
-                mg_shift,
-                bg_shift,
-                sharpness_factor,
-                output_format,
-                selected_aspect_ratio,
-                aspect_ratios,
-                feather_strength,
-                blur_ksize,
-                progress,
-                progress_label,
-                suspend_flag,
-                cancel_flag,
-                use_ffmpeg,
-                selected_ffmpeg_codec, 
-                crf_value,
-                use_subject_tracking,
-                use_floating_window,
-                max_pixel_shift,
-                auto_crop_black_bars,
-                parallax_balance,
-                preserve_original_aspect,
-                zero_parallax_strength,
-                enable_edge_masking,
-                enable_feathering,
-                skip_blank_frames,
-                dof_strength,
-                convergence_strength,
-                enable_dynamic_convergence,
-            ), daemon=True)
+            is_rendering = True  # Set rendering flag to True before starting
+
+            def run_and_clear_flag():
+                try:
+                    process_video(
+                        input_video_path,
+                        selected_depth_map,
+                        output_sbs_video_path,
+                        selected_codec,
+                        fg_shift,
+                        mg_shift,
+                        bg_shift,
+                        sharpness_factor,
+                        output_format,
+                        selected_aspect_ratio,
+                        aspect_ratios,
+                        feather_strength,
+                        blur_ksize,
+                        progress,
+                        progress_label,
+                        suspend_flag,
+                        cancel_flag,
+                        use_ffmpeg,
+                        selected_ffmpeg_codec,
+                        crf_value,
+                        use_subject_tracking,
+                        use_floating_window,
+                        max_pixel_shift,
+                        auto_crop_black_bars,
+                        parallax_balance,
+                        preserve_original_aspect,
+                        zero_parallax_strength,
+                        enable_edge_masking,
+                        enable_feathering,
+                        skip_blank_frames,
+                        dof_strength,
+                        convergence_strength,
+                        enable_dynamic_convergence,
+                    )
+                except Exception as e:
+                    print(f"❌ Error during 3D processing: {e}")
+                finally:
+                    is_rendering = False  # Always clear the flag when done
+
+            process_thread = threading.Thread(target=run_and_clear_flag, daemon=True)
             process_thread.start()
         else:
             print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
@@ -1555,70 +1575,112 @@ tk.Scale(
 ).grid(row=6, column=3, sticky="ew")
 
 
-# File Selection
-select_input_video_button = tk.Button(
-    visiondepth_content_frame,
-    text=t("Select Input Video"),
-    bg="#2c2c2c", fg="white",
-    activebackground="#444444", activeforeground="white",
-    relief="groove", bd=2,
-    command=lambda: select_input_video(
-        input_video_path,
-        video_thumbnail_label,
-        video_specs_label,
-        update_aspect_preview,
-        original_video_width,
-        original_video_height
-    )
-)
-select_input_video_button.grid(row=3, column=0, pady=5, sticky="ew")
+# --- Mode Toggle ---
+mode = tk.StringVar(value="Single")
+tk.Label(visiondepth_content_frame, text="Mode:", bg="#1e1e1e", fg="white").grid(row=3, column=0, sticky="w")
+ttk.Combobox(visiondepth_content_frame, textvariable=mode, values=["Single", "Batch"]).grid(row=3, column=1, pady=5, padx=5)
 
-tk.Entry(
-    visiondepth_content_frame,
-    textvariable=input_video_path,
-    width=50,
-    bg="#2c2c2c", fg="white",
-    insertbackground="white",
-    relief="groove", bd=2
-).grid(row=3, column=1, pady=5, padx=5)
+# --- Frame Containers ---
+single_frame = tk.Frame(visiondepth_content_frame, bg="#1e1e1e")
+batch_frame = tk.Frame(visiondepth_content_frame, bg="#1e1e1e")
+single_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
+batch_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
+batch_frame.grid_remove()
 
-select_depth_map_button = tk.Button(
-    visiondepth_content_frame,
-    text=t("Select Depth Map"),
-    bg="#2c2c2c", fg="white",
-    activebackground="#444444", activeforeground="white",
-    relief="groove", bd=2,
-    command=lambda: select_depth_map(selected_depth_map, depth_map_label)
-)
-select_depth_map_button.grid(row=4, column=0, pady=5, sticky="ew")
+# --- Single Input Fields ---
+tk.Button(single_frame, text=t("Select Input Video"), command=lambda: select_input_video(input_video_path, video_thumbnail_label, video_specs_label, update_aspect_preview, original_video_width, original_video_height), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=0, column=0, pady=5, sticky="ew")
+tk.Entry(single_frame, textvariable=input_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=0, column=1, pady=5, padx=5)
+tk.Button(single_frame, text=t("Select Depth Map"), command=lambda: select_depth_map(selected_depth_map, depth_map_label), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=1, column=0, pady=5, sticky="ew")
+tk.Entry(single_frame, textvariable=selected_depth_map, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=1, column=1, pady=5, padx=5)
+tk.Button(single_frame, text=t("Select Output Video"), command=lambda: select_output_video(output_sbs_video_path), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=2, column=0, pady=5, sticky="ew")
+tk.Entry(single_frame, textvariable=output_sbs_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=2, column=1, pady=5, padx=5)
 
-tk.Entry(
-    visiondepth_content_frame,
-    textvariable=selected_depth_map,
-    width=50,
-    bg="#2c2c2c", fg="white",
-    insertbackground="white",
-    relief="groove", bd=2
-).grid(row=4, column=1, pady=5, padx=5)
+# --- Batch Input Fields ---
+def add_to_listbox(listbox, filetypes):
+    files = filedialog.askopenfilenames(filetypes=filetypes)
+    for f in files:
+        listbox.insert(tk.END, f)
 
-select_output_video_button = tk.Button(
-    visiondepth_content_frame,
-    text=t("Select Output Video"),
-    bg="#2c2c2c", fg="white",
-    activebackground="#444444", activeforeground="white",
-    relief="groove", bd=2,
-    command=lambda: select_output_video(output_sbs_video_path)
-)
-select_output_video_button.grid(row=5, column=0, pady=5, sticky="ew")
+input_video_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
+input_video_listbox.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
+tk.Button(batch_frame, text="+ Add Video", command=lambda: add_to_listbox(input_video_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=0, column=0, pady=5, sticky="ew")
 
-tk.Entry(
-    visiondepth_content_frame,
-    textvariable=output_sbs_video_path,
-    width=50,
-    bg="#2c2c2c", fg="white",
-    insertbackground="white",
-    relief="groove", bd=2
-).grid(row=5, column=1, pady=5, padx=5)
+depth_map_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
+depth_map_listbox.grid(row=1, column=1, pady=5, padx=5, sticky="ew")
+tk.Button(batch_frame, text="+ Add Depth Map", command=lambda: add_to_listbox(depth_map_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=1, column=0, pady=5, sticky="ew")
+
+# --- Toggle Mode Visibility ---
+def toggle_mode(*args):
+    if mode.get() == "Single":
+        batch_frame.grid_remove()
+        single_frame.grid()
+    else:
+        single_frame.grid_remove()
+        batch_frame.grid()
+
+mode.trace_add("write", toggle_mode)
+toggle_mode()  # Init toggle on startup
+
+output_batch_folder = ""
+
+def select_output_batch_folder():
+    global output_batch_folder
+    folder = filedialog.askdirectory(title="Select Output Folder for 3D Batch")
+    if folder:
+        output_batch_folder = folder
+    else:
+        messagebox.showerror("Error", "You must select an output folder to proceed.")
+
+batch_queue = []
+
+def start_batch_processing():
+    global batch_queue
+
+    if input_video_listbox.size() != depth_map_listbox.size():
+        messagebox.showerror("Mismatch", "Videos and depth maps must match in count.")
+        return
+
+    select_output_batch_folder()
+    if not output_batch_folder:
+        return  # Cancelled
+
+    video_paths = input_video_listbox.get(0, tk.END)
+    depth_paths = depth_map_listbox.get(0, tk.END)
+
+    batch_queue = list(zip(video_paths, depth_paths))
+    process_next_in_batch()
+
+
+def process_next_in_batch():
+    global is_rendering, batch_queue, output_batch_folder
+
+    if not batch_queue:
+        print("✅ All batch renders complete.")
+        return
+
+    if not is_render_done():
+        # Still rendering the current video, check again in 1 second
+        visiondepth_content_frame.after(1000, process_next_in_batch)
+        return
+
+    # Load next item from queue
+    video, depth = batch_queue.pop(0)
+
+    input_video_path.set(video)
+    selected_depth_map.set(depth)
+
+    # Generate generic output filename
+    scene_num = len(input_video_listbox.get(0, tk.END)) - len(batch_queue)
+    output_name = f"sbs-scene-{scene_num:03}.mkv"
+    output_path = os.path.join(output_batch_folder, output_name)
+    output_sbs_video_path.set(output_path)
+
+    print(f"🎬 Rendering {output_name}...")
+
+    handle_generate_3d()  # Starts a threaded render
+
+    # Check again in 1 second to see if render is done
+    visiondepth_content_frame.after(1000, process_next_in_batch)
 
 
 # Frame to Hold Buttons and Format Selection in a Single Row
@@ -1657,6 +1719,19 @@ start_button = tk.Button(
 )
 
 start_button.pack(side="left", padx=5)
+
+batch_start_button = tk.Button(
+    button_frame,
+    text=t("Start Batch Render"),
+    bg="purple",
+    fg="white",
+    command=lambda: (
+        save_settings(),
+        start_batch_processing()
+    )
+)
+batch_start_button.pack(side="left", padx=5)
+
 
 preview_button = tk.Button(
     button_frame,
