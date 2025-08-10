@@ -734,7 +734,7 @@ def render_sbs_3d(
     original_video_height=None,
     convergence_strength=0.0,
     enable_dynamic_convergence=True,
-
+    ipd_factor=1.0
     
 ):
 
@@ -964,6 +964,11 @@ def render_sbs_3d(
             left_frame = frame
             right_frame = frame
         else:
+            # ✅ IPD scaling
+            fg *= ipd_factor
+            mg *= ipd_factor
+            bg *= ipd_factor
+            
             left_frame, right_frame = pixel_shift_cuda(
                 frame_tensor, depth_tensor, resized_width, resized_height,
                 fg, mg, bg,
