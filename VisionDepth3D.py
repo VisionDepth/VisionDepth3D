@@ -393,7 +393,7 @@ class CreateToolTip:
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.2.5")
+root.title("VisionDepth3D v3.2.6")
 root.geometry("890x870")
 
 # --- Menu Bar Setup ---
@@ -405,7 +405,7 @@ language_menu = tk.Menu(menu_bar, tearoff=0)
 lang_var = tk.StringVar(value="en")
 
 # Add language options
-for code, label in [("en", "English"), ("fr", "Français"), ("de", "German"), ("es", "Español"), ]:
+for code, label in [("en", "English"), ("fr", "Français"), ("de", "German"), ("es", "Español"), ("ja", "Japanese"), ]:
     language_menu.add_command(
         label=label,
         command=lambda c=code: (
@@ -1588,11 +1588,36 @@ batch_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
 batch_frame.grid_remove()
 
 # --- Single Input Fields ---
-tk.Button(single_frame, text=t("Select Input Video"), command=lambda: select_input_video(input_video_path, video_thumbnail_label, video_specs_label, update_aspect_preview, original_video_width, original_video_height), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=0, column=0, pady=5, sticky="ew")
+select_input_video_button = tk.Button(
+    single_frame, text=t("Select Input Video"),
+    command=lambda:
+        select_input_video(input_video_path,
+        video_thumbnail_label, video_specs_label,
+        update_aspect_preview, original_video_width,
+        original_video_height), bg="#2c2c2c", fg="white",
+        activebackground="#444444", activeforeground="white",
+        relief="groove", bd=2)
+select_input_video_button.grid(row=0, column=0, pady=5, sticky="ew")
+    
 tk.Entry(single_frame, textvariable=input_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=0, column=1, pady=5, padx=5)
-tk.Button(single_frame, text=t("Select Depth Map"), command=lambda: select_depth_map(selected_depth_map, depth_map_label), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=1, column=0, pady=5, sticky="ew")
+select_depth_map_button = tk.Button(
+    single_frame, text=t("Select Depth Map"),
+    command=lambda:
+        select_depth_map(selected_depth_map,
+        depth_map_label), bg="#2c2c2c", fg="white",
+        activebackground="#444444", activeforeground="white",
+        relief="groove", bd=2)
+select_depth_map_button.grid(row=1, column=0, pady=5, sticky="ew")
+
 tk.Entry(single_frame, textvariable=selected_depth_map, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=1, column=1, pady=5, padx=5)
-tk.Button(single_frame, text=t("Select Output Video"), command=lambda: select_output_video(output_sbs_video_path), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=2, column=0, pady=5, sticky="ew")
+select_output_video_button = tk.Button(
+    single_frame, text=t("Select Output Video"),
+    command=lambda:
+        select_output_video(output_sbs_video_path),
+        bg="#2c2c2c", fg="white", activebackground="#444444",
+        activeforeground="white", relief="groove", bd=2)
+select_output_video_button.grid(row=2, column=0, pady=5, sticky="ew")
+
 tk.Entry(single_frame, textvariable=output_sbs_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=2, column=1, pady=5, padx=5)
 
 # --- Batch Input Fields ---
@@ -2287,3 +2312,4 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
+
