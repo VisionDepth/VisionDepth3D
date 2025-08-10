@@ -36,7 +36,6 @@ cancel_flag = threading.Event()
 process_thread = None 
 global_session_start_time = None
 
-
 # Common Aspect Ratios
 aspect_ratios = {
     "Default (16:9)": 16 / 9,
@@ -206,6 +205,64 @@ class TemporalDepthFilter:
             self.prev_depth = curr_depth.clone()
         self.prev_depth = self.alpha * self.prev_depth + (1 - self.alpha) * curr_depth
         return self.prev_depth
+
+# --- Robust per-shot depth normalization with temporal smoothing ---
+
+class DepthPercentileEMA:
+    def __init__(self, p_lo=0.02, p_hi=0.98, alpha=0.90):
+        self.p_lo = p_lo
+        self.p_hi = p_hi
+        self.alpha = alpha
+        self._lo = None
+        self._hi = None
+
+    def normalize(self, depth_01: torch.Tensor):
+        """
+        depth_01: [1, H, W] in [0,1] (roughly). Returns normalized depth in [0,1].
+        Uses EMA of low/high percentiles to keep range stable across frames.
+        """
+        assert depth_01.dim() == 3 and depth_01.shape[0] == 1
+        d = depth_01.clamp(0, 1)
+        # Compute robust low/high percentiles on GPU (fast)
+        lo = torch.quantile(d, self.p_lo)
+        hi = torch.quantile(d, self.p_hi)
+        # guard against collapse
+        if (hi - lo) < 1e-5:
+            return d
+
+        if self._lo is None:
+            self._lo, self._hi = lo.detach(), hi.detach()
+        else:
+            self._lo = self.alpha * self._lo + (1 - self.alpha) * lo.detach()
+            self._hi = self.alpha * self._hi + (1 - self.alpha) * hi.detach()
+
+        out = (d - self._lo) / (self._hi - self._lo + 1e-6)
+        return out.clamp(0, 1)
+
+
+def midtone_shape(depth_01: torch.Tensor, gamma=0.85):
+    """
+    Gentle power curve to allocate more disparity to mid-depths.
+    gamma < 1.0 -> more near/mid pop; 0.80–0.95 range is typical.
+    """
+    return depth_01.clamp(0, 1).pow(gamma)
+
+
+class ConvergenceEMA:
+    """Very small EMA to stabilize screen-plane (optional)."""
+    def __init__(self, alpha=0.95):
+        self.alpha = alpha
+        self.val = None
+    def update(self, x):
+        self.val = x if self.val is None else (self.alpha * self.val + (1 - self.alpha) * x)
+        return self.val
+
+
+# --- place these AFTER the class defs ---
+depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
+conv_ema = ConvergenceEMA(alpha=0.97)
+MID_GAMMA = 0.85  # 0.80–0.95 works well
+
 
 def tensor_to_frame(tensor):
     frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
@@ -800,6 +857,10 @@ def render_sbs_3d(
             h = new_h
         
     if preserve_original_aspect:
+        if original_video_width is None or original_video_height is None:
+            # fallback to current frame tensor size
+            _, h0, w0 = first_frame_tensor.shape
+            original_video_width, original_video_height = w0, h0
         resized_width = original_video_width
         resized_height = original_video_height
 
@@ -812,7 +873,7 @@ def render_sbs_3d(
             per_eye_w = resized_width // 2
             per_eye_h = resized_height
             out_width = resized_width
-            out_height = resized_height
+            out_height = resized_height           
         elif output_format == "VR":
             per_eye_w = 1440
             per_eye_h = 1600
@@ -848,7 +909,9 @@ def render_sbs_3d(
             per_eye_h = resized_height
             out_width = resized_width * 2
             out_height = resized_height
-
+            
+    ffmpeg_proc = None
+    out = None
 
     if use_ffmpeg:
         ffmpeg_cmd = [
@@ -864,7 +927,6 @@ def render_sbs_3d(
             "-preset", "slow",
             "-pix_fmt", "yuv420p"
         ]
-
         if selected_ffmpeg_codec.startswith("libx"):
             ffmpeg_cmd += ["-crf", str(crf_value)]
         elif "nvenc" in selected_ffmpeg_codec:
@@ -874,6 +936,10 @@ def render_sbs_3d(
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
     else:
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*selected_codec), fps, (out_width, out_height))
+        if not out.isOpened():
+            print("❌ OpenCV VideoWriter failed to open. Check codec/fourcc and path.")
+            cap.release(); dcap.release()
+            return
 
     start_time = time.time()
     prev_time = time.time()
@@ -884,209 +950,226 @@ def render_sbs_3d(
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    
     avg_fps = 0
 
-    for idx in range(total_frames):
-        if cancel_flag.is_set():
-            break
-
-        while suspend_flag.is_set():
+    try:
+        for idx in range(total_frames):
             if cancel_flag.is_set():
                 break
-            try:
-                time.sleep(0.2)
-            except KeyboardInterrupt:
-                print("⚡ KeyboardInterrupt during suspend. Forcing cancel.")
-                cancel_flag.set()
+
+            # ⏸ pause handling (must be inside the loop so idx is defined)
+            while suspend_flag.is_set():
+                if cancel_flag.is_set():
+                    break
+                try:
+                    time.sleep(0.2)
+                except KeyboardInterrupt:
+                    print("⚡ KeyboardInterrupt during suspend. Forcing cancel.")
+                    cancel_flag.set()
+                    break
+                if progress_label:
+                    elapsed = time.time() - global_session_start_time
+                    elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    percent = (idx / total_frames) * 100
+                    eta = (total_frames - idx) / avg_fps if avg_fps > 0 else 0
+                    eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+                    progress_label.config(
+                        text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} ⏸️ Paused"
+                    )
+                    progress_label.update()
+
+            if cancel_flag.is_set():
                 break
-            if progress_label:
-                elapsed = time.time() - global_session_start_time
-                elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-                percent = (idx / total_frames) * 100
-                eta = (total_frames - idx) / avg_fps if avg_fps > 0 else 0
-                eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
-                progress_label.config(
-                    text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} ⏸️ Paused"
+
+            ret1, frame = cap.read()
+            ret2, depth = dcap.read()
+            if not ret1 or not ret2:
+                break
+
+            frame_tensor = frame_to_tensor(frame)
+            depth_tensor = depth_to_tensor(depth)
+
+            if auto_crop_black_bars:
+                top_crop, bottom_crop = detect_black_bars(frame_tensor)
+                print(f"🔪 Cropping top: {top_crop}px, bottom: {bottom_crop}px")
+                frame_tensor = crop_black_bars_torch(frame_tensor, top_crop, bottom_crop)
+                depth_tensor = crop_black_bars_torch(depth_tensor, top_crop, bottom_crop)
+
+            _, h, w = frame_tensor.shape
+            current_ratio = w / h
+            if abs(current_ratio - target_ratio) > 0.01:
+                if current_ratio > target_ratio:
+                    new_w = int(h * target_ratio)
+                    start = (w - new_w) // 2
+                    frame_tensor = frame_tensor[:, :, start:start + new_w]
+                    depth_tensor = depth_tensor[:, :, start:start + new_w]
+                else:
+                    new_h = int(w / target_ratio)
+                    start = (h - new_h) // 2
+                    frame_tensor = frame_tensor[:, start:start + new_h, :]
+                    depth_tensor = depth_tensor[:, start:start + new_h, :]
+
+            # compute per-eye size
+            if not preserve_original_aspect:
+                cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
+                target_eye_w = per_eye_w
+                target_eye_h = int(per_eye_w / cinema_aspect_ratio)
+                if target_eye_h % 2 != 0:
+                    target_eye_h += 1
+            else:
+                target_eye_w = per_eye_w
+                target_eye_h = per_eye_h
+
+            # resize tensors
+            frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+            depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+
+            # depth smoothing & shaping
+            depth_tensor = temporal_depth_filter.smooth(depth_tensor)
+            depth_tensor = depth_ema_norm.normalize(depth_tensor)
+            depth_tensor = midtone_shape(depth_tensor, gamma=MID_GAMMA)
+
+            fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
+
+            # dynamic IPD scale
+            try:
+                dyn_scale = compute_dynamic_parallax_scale(depth_tensor, min_scale=0.90, max_scale=1.15)
+            except Exception:
+                dyn_scale = 1.0
+            fg *= dyn_scale; mg *= dyn_scale; bg *= dyn_scale
+
+            if idx in blank_frames:
+                print(f"⏩ Skipping blank frame {idx}")
+                left_frame = frame
+                right_frame = frame
+            else:
+                fg *= ipd_factor; mg *= ipd_factor; bg *= ipd_factor
+                left_frame, right_frame = pixel_shift_cuda(
+                    frame_tensor, depth_tensor, resized_width, resized_height,
+                    fg, mg, bg,
+                    blur_ksize=blur_ksize,
+                    feather_strength=feather_strength,
+                    use_subject_tracking=use_subject_tracking,
+                    enable_floating_window=use_floating_window,
+                    return_shift_map=False,
+                    max_pixel_shift_percent=max_pixel_shift_percent,
+                    zero_parallax_strength=zero_parallax_strength,
+                    enable_edge_masking=enable_edge_masking,
+                    enable_feathering=enable_feathering,
+                    dof_strength=dof_strength,
+                    convergence_strength=convergence_strength,
+                    enable_dynamic_convergence=enable_dynamic_convergence,
                 )
-                progress_label.update()
 
+            # floating window mask
+            subject_depth = estimate_subject_depth(depth_tensor)
+            raw_zero = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2 + 1e-6)
+            stable_zero = conv_ema.update(raw_zero.item())
+            if use_floating_window and use_subject_tracking:
+                shift_thresh = 0.005
+                raw_bar_width = int(abs(stable_zero) * resized_width * 0.75)
+                smoothed_bar_width = bar_easer.ease(raw_bar_width)
+                bar_width = max(min(smoothed_bar_width, 80), 0)
+                if stable_zero > shift_thresh:
+                    left_frame  = apply_side_mask(left_frame,  side="right", width=bar_width)
+                    right_frame = apply_side_mask(right_frame, side="right", width=bar_width)
+                elif stable_zero < -shift_thresh:
+                    left_frame  = apply_side_mask(left_frame,  side="left",  width=bar_width)
+                    right_frame = apply_side_mask(right_frame, side="left",  width=bar_width)
 
+            # sharpen & pack
+            left_sharp = apply_sharpening(left_frame, sharpness_factor)
+            right_sharp = apply_sharpening(right_frame, sharpness_factor)
 
-        ret1, frame = cap.read()
-        ret2, depth = dcap.read()
-        if not ret1 or not ret2: break
-
-        frame_tensor = frame_to_tensor(frame)
-        depth_tensor = depth_to_tensor(depth)
-
-        if auto_crop_black_bars:
-            top_crop, bottom_crop = detect_black_bars(frame_tensor)
-            print(f"🔪 Cropping top: {top_crop}px, bottom: {bottom_crop}px")
-            frame_tensor = crop_black_bars_torch(frame_tensor, top_crop, bottom_crop)
-            depth_tensor = crop_black_bars_torch(depth_tensor, top_crop, bottom_crop)
-
-        _, h, w = frame_tensor.shape
-        current_ratio = w / h
-        if abs(current_ratio - target_ratio) > 0.01:
-            if current_ratio > target_ratio:
-                new_w = int(h * target_ratio)
-                start = (w - new_w) // 2
-                frame_tensor = frame_tensor[:, :, start:start + new_w]
-                depth_tensor = depth_tensor[:, :, start:start + new_w]
+            if output_format == "Full-SBS":
+                left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+                right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+            elif output_format == "Half-SBS":
+                left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
             else:
-                new_h = int(w / target_ratio)
-                start = (h - new_h) // 2
-                frame_tensor = frame_tensor[:, start:start + new_h, :]
-                depth_tensor = depth_tensor[:, start:start + new_h, :]
+                left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+                right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
 
-        # Only recalculate target_eye_h if we're NOT preserving the original aspect
-        if not preserve_original_aspect:
-            cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
-            target_eye_w = per_eye_w
-            target_eye_h = int(per_eye_w / cinema_aspect_ratio)
-            if target_eye_h % 2 != 0:
-                target_eye_h += 1
-        else:
-            # ✅ Use exact dimensions without recalculation
-            target_eye_w = per_eye_w
-            target_eye_h = per_eye_h
+            final = format_3d_output(left_out, right_out, output_format)
 
+            # write frame
+            if use_ffmpeg:
+                try:
+                    ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
+                except Exception as e:
+                    print(f"❌ FFmpeg write error: {e}")
+                    break
+            else:
+                out.write(final)
 
-        frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
-        depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+            # progress / fps
+            percent = (idx / total_frames) * 100
+            elapsed = time.time() - global_session_start_time
+            elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
 
-        fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
+            curr_time = time.time()
+            delta = curr_time - prev_time
+            if delta > 0:
+                fps_values.append(1.0 / delta)
+                if len(fps_values) > 10:
+                    fps_values.pop(0)
+            avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0
 
-        if idx in blank_frames:
-            # 🔥 Detected blank frame: skip pixel shifting
-            print(f"⏩ Skipping blank frame {idx}")
-            left_frame = frame
-            right_frame = frame
-        else:
-            # ✅ IPD scaling
-            fg *= ipd_factor
-            mg *= ipd_factor
-            bg *= ipd_factor
-            
-            left_frame, right_frame = pixel_shift_cuda(
-                frame_tensor, depth_tensor, resized_width, resized_height,
-                fg, mg, bg,
-                blur_ksize=blur_ksize,
-                feather_strength=feather_strength,
-                use_subject_tracking=use_subject_tracking,
-                enable_floating_window=use_floating_window,
-                return_shift_map=False,
-                max_pixel_shift_percent=max_pixel_shift_percent,
-                zero_parallax_strength=zero_parallax_strength,
-                enable_edge_masking=enable_edge_masking,
-                enable_feathering=enable_feathering,
-                dof_strength=dof_strength,
-                convergence_strength=convergence_strength,
-                enable_dynamic_convergence=enable_dynamic_convergence,
-            )
+            if progress:
+                progress["value"] = percent
+                progress.update()
+            remaining_frames = total_frames - idx
+            eta = remaining_frames / avg_fps if avg_fps > 0 else 0
+            eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
 
+            if progress_label:
+                progress_label.config(
+                    text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
+                )
 
-        subject_depth = estimate_subject_depth(depth_tensor)
-        zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
+            prev_time = curr_time
 
-        if use_floating_window and use_subject_tracking:
-            shift_thresh = 0.005
-            raw_bar_width = int(abs(zero_parallax_offset) * resized_width * 0.75)
-            smoothed_bar_width = bar_easer.ease(raw_bar_width)
-            bar_width = max(min(smoothed_bar_width, 80), 0)
-            if zero_parallax_offset > shift_thresh:
-                left_frame = apply_side_mask(left_frame, side="right", width=bar_width)
-                right_frame = apply_side_mask(right_frame, side="right", width=bar_width)
-            elif zero_parallax_offset < -shift_thresh:
-                left_frame = apply_side_mask(left_frame, side="left", width=bar_width)
-                right_frame = apply_side_mask(right_frame, side="left", width=bar_width)
-
-        left_sharp = apply_sharpening(left_frame, sharpness_factor)
-        right_sharp = apply_sharpening(right_frame, sharpness_factor)
-
-        if output_format == "Full-SBS":
-            left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-            right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-        elif output_format == "Half-SBS":
-            left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-            right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-        else:
-            left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-            right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-
-        final = format_3d_output(left_out, right_out, output_format)
-
-        if use_ffmpeg:
-            try:
-                ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
-            except Exception as e:
-                print(f"❌ FFmpeg write error: {e}")
-                break
-        else:
-            out.write(final)
-
-        percent = (idx / total_frames) * 100
-        elapsed = time.time() - global_session_start_time
-        elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-
-        curr_time = time.time()
-        delta = curr_time - prev_time
-        if delta > 0:
-            fps_values.append(1.0 / delta)
-            if len(fps_values) > 10:
-                fps_values.pop(0)
-        avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0
-
+        # ✅ final progress update (inside try)
         if progress:
-            progress["value"] = percent
+            progress["value"] = 100
             progress.update()
-        remaining_frames = total_frames - idx
-        eta = remaining_frames / avg_fps if avg_fps > 0 else 0
-        eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
-
         if progress_label:
+            elapsed = time.time() - global_session_start_time
+            elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
             progress_label.config(
-                text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
+                text=f"100.00% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: 00:00:00"
             )
 
-        prev_time = curr_time
+    except Exception as e:
+        print(f"❌ Render crashed: {e}")
 
-    # ✅ Final progress update
-    if progress:
-        progress["value"] = 100
-        progress.update()
+    finally:
+        cap.release(); dcap.release()
+        if use_ffmpeg and ffmpeg_proc is not None:
+            try:
+                ffmpeg_proc.stdin.close()
+            except:
+                pass
+            try:
+                if cancel_flag.is_set():
+                    ffmpeg_proc.kill()
+                else:
+                    ffmpeg_proc.wait(timeout=5)
+            except:
+                pass
+        elif out is not None:
+            try:
+                out.release()
+            except:
+                pass
 
-    if progress_label:
-        elapsed = time.time() - global_session_start_time
-        elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-        progress_label.config(
-            text=f"100.00% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: 00:00:00"
-        )
+        torch.cuda.empty_cache()
+        if global_session_start_time is not None:
+            total_time = time.time() - global_session_start_time
+            print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
+            global_session_start_time = None
 
-    cap.release()
-    dcap.release()
-
-    if use_ffmpeg:
-        try:
-            ffmpeg_proc.stdin.close()
-        except Exception as e:
-            print(f"⚠️ Error closing FFmpeg stdin: {e}")
-
-        try:
-            if cancel_flag.is_set():
-                ffmpeg_proc.kill()
-            else:
-                ffmpeg_proc.wait()
-        except Exception as e:
-            print(f"⚠️ Error terminating FFmpeg: {e}")
-    else:
-        out.release()
-
-    torch.cuda.empty_cache()
-    total_time = time.time() - global_session_start_time
-    print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
-    global_session_start_time = None
 
 
 def start_processing_thread():
@@ -1349,6 +1432,8 @@ def process_video(
             enable_feathering=enable_feathering.get(),
             skip_blank_frames=skip_blank_frames.get(),
             dof_strength=dof_strength.get(),
+            original_video_width=width,
+            original_video_height=height,
             convergence_strength=convergence_strength.get(),
             enable_dynamic_convergence=enable_dynamic_convergence.get(),
         )   
