@@ -39,6 +39,125 @@ global_session_start_time = None
 current_warmup_session = {"id": None}
 torch.set_grad_enabled(False)
 
+def detect_letterbox(frame_bgr, y_thresh=18, var_thresh=4.0, min_frac=0.06):
+    """
+    Returns (top_px, bottom_px). 0 means none.
+    Heuristic: black bars are very dark + low variance.
+    """
+    h, w = frame_bgr.shape[:2]
+    min_bar = int(h * min_frac)
+
+    # Approx luma
+    y = (0.299*frame_bgr[...,2] + 0.587*frame_bgr[...,1] + 0.114*frame_bgr[...,0]).astype(np.float32)
+    row_mean = y.mean(axis=1)
+    row_var  = y.var(axis=1)
+
+    # scan top
+    top = 0
+    while top < h//2 and row_mean[top] < y_thresh and row_var[top] < var_thresh:
+        top += 1
+    # scan bottom
+    bot = 0
+    i = h - 1
+    while i >= h//2 and row_mean[i] < y_thresh and row_var[i] < var_thresh:
+        bot += 1
+        i -= 1
+
+    if top < min_bar: top = 0
+    if bot < min_bar: bot = 0
+    return int(top), int(bot)
+
+def detect_letterbox_multiframe(cap, original_height, fps, max_seconds=3, samples=7):
+    """
+    Probe several frames in the first few seconds and return a stable (top,bottom).
+    Uses median of valid detections; ignores obviously bad full-height results.
+    """
+    try:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    except Exception:
+        total = 0
+
+    window = min(total, int((fps if fps and fps > 0 else 30) * max_seconds)) or min(total, 30)
+
+    # Fallback: single frame if we can't sample a window
+    if window <= 1:
+        pos0 = cap.get(cv2.CAP_PROP_POS_FRAMES)
+        ok, f0 = cap.read()
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        if pos0 is not None:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        if not ok:
+            return 0, 0
+        t, b = detect_letterbox(f0)
+        return (0, 0) if (t + b >= original_height) else (t, b)
+
+    # Uniformly sample a few frames in the window
+    idxs = np.linspace(0, max(0, window - 1), num=min(samples, max(1, window)), dtype=int)
+
+    tops, bottoms = [], []
+    pos_backup = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    for i in idxs:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        t, b = detect_letterbox(frame)
+        # accept only sane detections
+        if 0 <= t < original_height and 0 <= b < original_height and (t + b) < original_height:
+            tops.append(t)
+            bottoms.append(b)
+
+    # restore to frame 0 for normal processing
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    if pos_backup is not None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    if not tops:
+        return 0, 0
+
+    t = int(np.median(tops))
+    b = int(np.median(bottoms))
+    return (0, 0) if (t + b >= original_height) else (t, b)
+
+
+def crop_by_bars(frame_bgr, top, bottom):
+    h = frame_bgr.shape[0]
+    # If bars would remove everything or go negative, skip cropping
+    if top < 0: top = 0
+    if bottom < 0: bottom = 0
+    if top + bottom >= h:
+        return frame_bgr
+    return frame_bgr[top:h-bottom, :, :]
+
+    
+def convert_depth_to_grayscale(depth):
+    if isinstance(depth, Image.Image):
+        depth = np.array(depth).astype(np.float32)
+    elif isinstance(depth, torch.Tensor):
+        depth = depth.detach().cpu().float().numpy()
+    elif isinstance(depth, np.ndarray):
+        depth = depth.astype(np.float32)
+    else:
+        raise TypeError(f"Unsupported depth type: {type(depth)}")
+
+    # Handle [C, H, W] or [H, W, C]
+    if depth.ndim == 3:
+        if depth.shape[0] in {1, 3}:  # [C, H, W]
+            depth = depth[0] if depth.shape[0] == 1 else depth.mean(axis=0)
+        elif depth.shape[2] in {1, 3}:  # [H, W, C]
+            depth = depth[..., 0] if depth.shape[2] == 1 else depth.mean(axis=-1)
+    elif depth.ndim != 2:
+        raise ValueError(f"Unexpected depth shape: {depth.shape}")
+
+    # Normalize safely to [0, 255]
+    depth_min, depth_max = np.min(depth), np.max(depth)
+    if np.isnan(depth_min) or np.isnan(depth_max) or depth_max - depth_min < 1e-6:
+        print("⚠️ Skipping frame with invalid depth values.")
+        return np.zeros_like(depth, dtype=np.uint8)
+
+    norm = (depth - depth_min) / (depth_max - depth_min + 1e-6)
+    return (norm * 255).astype(np.uint8)
+
 
 # === Setup: Local weights directory ===
 def get_weights_dir():
@@ -929,7 +1048,8 @@ def process_video2(
     generator=None,
     offload_mode_dropdown=None,
     save_frames=False,
-    target_fps=15
+    target_fps=15,
+    ignore_letterbox_bars=False,
     
       
 ):
@@ -984,7 +1104,7 @@ def process_video2(
         encode_cmd = [
             "ffmpeg", "-y", "-framerate", "24",  # fallback FPS
             "-i", os.path.join(tmp_frame_dir, "frame_%05d_depth.png"),
-            "-c:v", "ffv1", "-pix_fmt", "yuv420p16le",
+            "-c:v", "ffv1", "-pix_fmt", "gray16le",
             output_path
         ]
         subprocess.run(encode_cmd)
@@ -1003,6 +1123,15 @@ def process_video2(
     original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # 🔎 Robust letterbox detection (multi-probe)
+    bars_top = bars_bottom = 0
+    if ignore_letterbox_bars:
+        bars_top, bars_bottom = detect_letterbox_multiframe(cap, original_height, fps)
+        if bars_top + bars_bottom >= original_height:
+            bars_top = bars_bottom = 0
+        print(f"[VD3D] Letterbox detected (multi-probe): top={bars_top} bottom={bars_bottom}")
+
+
     print(f"📁 Saving video to: {output_path}")
 
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
@@ -1011,21 +1140,27 @@ def process_video2(
         print(f"❌ Failed to open video writer for {output_filename}")
         return 0
 
+    try:
+        sidecar = os.path.splitext(output_path)[0] + ".letterbox.json"
+        with open(sidecar, "w", encoding="utf-8") as f:
+            json.dump({
+                "top": bars_top, "bottom": bars_bottom,
+                "orig_w": original_width, "orig_h": original_height
+            }, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Failed to write letterbox sidecar: {e}")
+
+
     frame_output_dir = os.path.join(output_dir, f"{name}_frames")
     if save_frames:
         os.makedirs(frame_output_dir, exist_ok=True)
 
     frame_count = 0
+    write_index = 0
     frames_batch = []
     total_processed_frames = 0
     
     inference_size = parse_inference_resolution(inference_res_var.get())
-#    if inference_size is not None:
-#        inference_size = (
-#            round_to_multiple_of_8(inference_size[0]),
-#            round_to_multiple_of_8(inference_size[1])
-#        )
-
     resize_required = inference_size is not None
     
     try:
@@ -1047,7 +1182,8 @@ def process_video2(
     
     global_session_start_time = time.time()
     previous_depth = None
-
+    
+    # Define it here, before you start reading frames
     while True:
         if cancel_requested.is_set():
             print("🛑 Cancel requested before frame read.")
@@ -1058,12 +1194,31 @@ def process_video2(
             break
 
         frame_count += 1
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        RECHECK_EVERY = 90   # ~3s at 30fps
+        MIN_DELTA     = 8    # ignore tiny changes to avoid flicker
+
+        if ignore_letterbox_bars and (frame_count % RECHECK_EVERY == 0):
+            nt, nb = detect_letterbox(frame)
+            # accept only sane updates and only if meaningfully different
+            if (0 <= nt < original_height) and (0 <= nb < original_height) and (nt + nb < original_height):
+                if abs(nt - bars_top) + abs(nb - bars_bottom) >= MIN_DELTA:
+                    bars_top, bars_bottom = nt, nb
+                    print(f"↻ Letterbox updated: top={bars_top} bottom={bars_bottom}")
+        
+        frame_for_infer = crop_by_bars(frame, bars_top, bars_bottom) if (ignore_letterbox_bars and (bars_top or bars_bottom)) else frame
+
+        # Safety: if cropping somehow produced empty, fall back to original
+        if frame_for_infer is None or frame_for_infer.size == 0:
+            frame_for_infer = frame
+
+        frame_rgb = cv2.cvtColor(frame_for_infer, cv2.COLOR_BGR2RGB)
+
         pil_image = Image.fromarray(frame_rgb)
 
         if resize_required:
             pil_image = pil_image.resize(inference_size, Image.BICUBIC)
         frames_batch.append(pil_image)
+
 
         if len(frames_batch) == batch_size or frame_count == total_frames:
             if cancel_requested.is_set():
@@ -1074,12 +1229,11 @@ def process_video2(
             if pipe_type == "diffusion":
                 # Frame stride (optional)
                 if target_fps != -1 and fps > target_fps:
-                    stride = round(fps / target_fps)
-                    stride = max(stride, 1)
+                    stride = max(1, round(fps / target_fps))
                     print(f"🎚️ Frame stride enabled: {stride}")
-                    frames_input = input_frames[::stride]
+                    frames_input = frames_batch[::stride]
                 else:
-                    frames_input = input_frames
+                    frames_input = frames_batch
 
                 print("Running DepthCrafter inference with:")
                 print(f"    input frames: {len(frames_input)}")
@@ -1155,60 +1309,72 @@ def process_video2(
 
                 try:
                     raw_depth = prediction["predicted_depth"]
-
-                    def convert_depth_to_grayscale(depth):
-                        if isinstance(depth, Image.Image):
-                            depth = np.array(depth).astype(np.float32)
-
-                        elif isinstance(depth, torch.Tensor):
-                            depth = depth.detach().cpu().float().numpy()
-
-                        elif isinstance(depth, np.ndarray):
-                            depth = depth.astype(np.float32)
-                        else:
-                            raise TypeError(f"Unsupported depth type: {type(depth)}")
-
-                        # Handle [C, H, W] or [H, W, C]
-                        if depth.ndim == 3:
-                            if depth.shape[0] in {1, 3}:  # [C, H, W]
-                                depth = depth[0] if depth.shape[0] == 1 else depth.mean(axis=0)
-                            elif depth.shape[2] in {1, 3}:  # [H, W, C]
-                                depth = depth[..., 0] if depth.shape[2] == 1 else depth.mean(axis=-1)
-
-                        elif depth.ndim != 2:
-                            raise ValueError(f"Unexpected depth shape: {depth.shape}")
-
-                        # Normalize safely to [0, 255]
-                        depth_min, depth_max = np.min(depth), np.max(depth)
-                        if np.isnan(depth_min) or np.isnan(depth_max) or depth_max - depth_min < 1e-6:
-                            print("⚠️ Skipping frame with invalid depth values.")
-                            return np.zeros_like(depth, dtype=np.uint8)
-
-                        norm = (depth - depth_min) / (depth_max - depth_min + 1e-6)
-                        return (norm * 255).astype(np.uint8)
-
                     # Process list of frames or single frame
                     if isinstance(raw_depth, list):
                         for depth_frame_tensor in raw_depth:
-                            gray = convert_depth_to_grayscale(depth_frame_tensor)
-                            bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                            bgr = cv2.resize(bgr, (original_width, original_height))
-                            out.write(bgr)
+                            gray = convert_depth_to_grayscale(depth_frame_tensor)                            
+                            if invert_var.get():
+                                gray = 255 - gray
+                            
+                            if ignore_letterbox_bars and (bars_top or bars_bottom):
+                                core_h = original_height - bars_top - bars_bottom
+                                if core_h <= 0:
+                                    bars_top = bars_bottom = 0
+                                    core_h = original_height
+                                # Resize depth to core area size (full width, cropped height)
+                                gray_core = cv2.resize(gray, (original_width, core_h), interpolation=cv2.INTER_CUBIC)
+                                
+                                # Use scene-median as neutral depth for the bars (prevents bars “popping”)
+                                neutral = int(np.median(gray_core)) if gray_core.size else 0
+                                full_gray = np.full((original_height, original_width), neutral, dtype=np.uint8)
+                                full_gray[bars_top:bars_top+core_h, :] = gray_core
 
+                                bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
+                            else:
+                                # No bars ignored → normal path
+                                bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                                bgr = cv2.resize(bgr, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
+
+                            out.write(bgr)
+                            
+                            to_save = full_gray if (ignore_letterbox_bars and (bars_top or bars_bottom)) else gray
                             if save_frames:
-                                frame_filename = os.path.join(frame_output_dir, f"frame_{frame_count:05d}.png")
-                                cv2.imwrite(frame_filename, gray)
+                                frame_filename = os.path.join(frame_output_dir, f"frame_{write_index:05d}.png")
+                                cv2.imwrite(frame_filename, to_save)
+                            write_index += 1
 
                             total_processed_frames += 1
                     else:
                         gray = convert_depth_to_grayscale(raw_depth)
-                        bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                        bgr = cv2.resize(bgr, (original_width, original_height))
+                        if invert_var.get():
+                            gray = 255 - gray
+                            
+                        if ignore_letterbox_bars and (bars_top or bars_bottom):
+                            core_h = original_height - bars_top - bars_bottom
+                            if core_h <= 0:
+                                bars_top = bars_bottom = 0
+                                core_h = original_height
+                            gray_core = cv2.resize(gray, (original_width, core_h), interpolation=cv2.INTER_CUBIC)
+
+                            # Use scene-median as neutral depth for the bars (prevents bars “popping”)
+                            neutral = int(np.median(gray_core)) if gray_core.size else 0
+                            full_gray = np.full((original_height, original_width), neutral, dtype=np.uint8)
+                            full_gray[bars_top:bars_top+core_h, :] = gray_core
+
+                            bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
+                        else:
+                            # No bars ignored → normal path
+                            bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                            bgr = cv2.resize(bgr, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
+
                         out.write(bgr)
 
+                        to_save = full_gray if (ignore_letterbox_bars and (bars_top or bars_bottom)) else gray
                         if save_frames:
-                            frame_filename = os.path.join(frame_output_dir, f"frame_{frame_count:05d}.png")
-                            cv2.imwrite(frame_filename, gray)
+                            frame_filename = os.path.join(frame_output_dir, f"frame_{write_index:05d}.png")
+                            cv2.imwrite(frame_filename, to_save)
+                        write_index += 1
+
 
                         total_processed_frames += 1
 
@@ -1337,6 +1503,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         ),
         kwargs={
             "offload_mode_dropdown": offload_mode_dropdown,
-            "target_fps": 15
+            "target_fps": 15,
+            "ignore_letterbox_bars": True,
         }
     ).start()
