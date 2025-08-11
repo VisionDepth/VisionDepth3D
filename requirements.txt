@@ -11,3 +11,4 @@ scipy
 diffusers
 safetensors
 mediapy
+scenedetect
