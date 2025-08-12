@@ -219,39 +219,7 @@ install Pytorch-Cuda 12.8 or which CUDA version you are running
 
 if you are running AMD GPU select CPU build
 
-### 🧰 TensorRT Setup Instructions (for VisionDepth3D on Windows)
-
-1. **Download TensorRT** 
-   - Go to the [NVIDIA TensorRT download page](https://developer.nvidia.com/tensorrt), log in or register, and download the appropriate `.zip` version for your platform (Windows, CUDA-compatible).
-
-2. **Create the TensorRT folder**  
-   - Inside your VisionDepth3D directory, create a new folder:  
-     ```
-     VisionDepth3D\TensorRT
-     ```
-
-3. **Extract the TensorRT ZIP**  
-   - Unzip the downloaded TensorRT package.  
-   - From the extracted contents, **copy the entire `lib` folder** into your new `TensorRT` directory so the structure looks like:
-     ```
-     VisionDepth3D\TensorRT\lib\*.dll
-     ```
-
-4. **Edit the batch file to set the DLL path**  
-   - Open `Start_VD3D_Windows.bat` in a text editor.
-   - On the **second line** (just after the `cd` command), add the following:
-     ```bat
-     SET "PATH=%~dp0TensorRT/lib;%PATH%"
-     ```
-   - Save the file.
-
----
-
-✅ This step **temporarily adds** the TensorRT DLL folder to your system `PATH` — just for the session started by the batch script.  
-No system-wide changes are made, keeping your environment clean. 
-
-
-- Once Pytorch TensorRT and all dependancies are installed update the batch script for system you are running and run the following command:
+- Once all dependancies are installed update the batch script for system you are running and run the following command:
 ```
 Start_VD3D_Conda.bat
 # or 
