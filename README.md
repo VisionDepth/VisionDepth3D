@@ -180,8 +180,10 @@
   cd C:\VisionDepth3D-main
   pip install -r requirements.txt
   ```
-  - continue to installing pytorch with cuda and then run VisionDepth3D.bat 
-  - 
+  - continue to step 3: installing pytorch with cuda
+  - Update 'Start_VD3D_Windows.bat' script file
+  - Double click the Script to launch VD3D
+  
 ### 🔵 Option 2: Install via Conda (Recommended)
 
 (Automatically manages dependencies & isolates environment.)
