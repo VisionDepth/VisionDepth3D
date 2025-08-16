@@ -40,6 +40,56 @@ current_warmup_session = {"id": None}
 torch.set_grad_enabled(False)
 
 # ---------- Letterbox detection: robust helpers ----------
+# ---- utility metrics that letterbox detection depends on ----
+def _luma_saturation(frame_bgr: np.ndarray):
+    """
+    Returns (Y, S) as float32 arrays:
+      Y = luma (0..255), computed from RGB
+      S = saturation (0..255), from HSV's S channel
+    Works with uint8 BGR frames.
+    """
+    if frame_bgr is None or frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
+        raise ValueError("Expected BGR uint8 image with 3 channels")
+
+    # BGR -> Y (luma) using Rec.709 coefficients
+    b = frame_bgr[..., 0].astype(np.float32)
+    g = frame_bgr[..., 1].astype(np.float32)
+    r = frame_bgr[..., 2].astype(np.float32)
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b  # 0..255 range
+
+    # BGR -> HSV -> S (saturation)
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    s = hsv[..., 1].astype(np.float32)  # 0..255
+    return y, s
+
+
+def is_scene_cut(prev_gray: np.ndarray, gray: np.ndarray,
+                 mad_thresh: float = 28.0,
+                 corr_thresh: float = 0.60) -> bool:
+    """
+    Lightweight scene-cut detector.
+    - If mean absolute difference (MAD) is large -> cut.
+    - Else, compare 64-bin grayscale histograms; low correlation -> cut.
+    """
+    if prev_gray is None or gray is None:
+        return False
+    if prev_gray.shape != gray.shape:
+        return True
+
+    # Mean absolute difference
+    mad = float(np.mean(np.abs(prev_gray.astype(np.int16) - gray.astype(np.int16))))
+    if mad > mad_thresh:
+        return True
+
+    # Histogram correlation as a secondary check
+    hist1 = cv2.calcHist([prev_gray], [0], None, [64], [0, 256])
+    hist2 = cv2.calcHist([gray],      [0], None, [64], [0, 256])
+    cv2.normalize(hist1, hist1)
+    cv2.normalize(hist2, hist2)
+    corr = float(cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL))
+    return corr < corr_thresh
+
+
 def _row_uniformity_metrics(bgr):
     # Mean/variance per row for luma + saturation (fast)
     y, s = _luma_saturation(bgr)
