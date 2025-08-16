@@ -55,9 +55,25 @@ def open_3d_preview_window(
     max_pixel_shift,
     dof_strength,
     convergence_strength,
-    enable_dynamic_convergence,    
+    enable_dynamic_convergence,
+    depth_pop_gamma_var=None,
+    depth_pop_mid_var=None,
+    depth_stretch_lo_var=None,
+    depth_stretch_hi_var=None,
+    fg_pop_multiplier_var=None,
+    bg_push_multiplier_var=None,
+    subject_lock_strength_var=None,
+        
 ):
     settings = load_settings()
+    # --- New pop controls: state (restored from settings or defaults)
+    depth_pop_gamma = tk.DoubleVar(value=float(settings.get('depth_pop_gamma', 0.85)))
+    depth_pop_mid = tk.DoubleVar(value=float(settings.get('depth_pop_mid', 0.50)))
+    depth_stretch_lo = tk.DoubleVar(value=float(settings.get('depth_stretch_lo', 0.05)))
+    depth_stretch_hi = tk.DoubleVar(value=float(settings.get('depth_stretch_hi', 0.95)))
+    fg_pop_multiplier = tk.DoubleVar(value=float(settings.get('fg_pop_multiplier', 1.20)))
+    bg_push_multiplier = tk.DoubleVar(value=float(settings.get('bg_push_multiplier', 1.10)))
+    subject_lock_strength = tk.DoubleVar(value=float(settings.get('subject_lock_strength', 1.00)))
 
     preview_win = tk.Toplevel()
     preview_win.title("Live 3D Preview")
@@ -68,31 +84,101 @@ def open_3d_preview_window(
     frame = None
     depth = None
     preview_cap = cv2.VideoCapture(input_video_path.get())
-    total_frames = int(preview_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if preview_cap.isOpened() else 10000
+    # NEW: persistent depth capture
+    depth_cap = cv2.VideoCapture(selected_depth_map.get())
 
-    main_frame = tk.Frame(preview_win)
-    main_frame.pack(fill="both", expand=True)
+    input_total  = int(preview_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if preview_cap.isOpened() else 0
+    depth_total  = int(depth_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if depth_cap.isOpened() else 0
 
-    preview_canvas = tk.Label(main_frame)
-    preview_canvas.pack(side="top", anchor="center")
+    # If depth couldn’t be opened (e.g., image or 16-bit stream not supported),
+    # fall back to input length but we’ll guard per-frame below.
+    if input_total <= 0:
+        input_total = 1
+    total_frames = min(v for v in (input_total, depth_total) if v > 0) if (input_total > 0 and depth_total > 0) else input_total
+    total_frames = max(1, total_frames)
+    
+    # ----- Paned layout: top (preview) / bottom (scrollable controls) -----
+    preview_win.minsize(980, 640)
+    preview_win.rowconfigure(0, weight=1)
+    preview_win.columnconfigure(0, weight=1)
 
-    frame_slider = tk.Scale(main_frame, from_=0, to=total_frames-1, orient="horizontal", label="Frame", length=800)
-    frame_slider.pack(side="top", pady=5)
+    paned = tk.PanedWindow(preview_win, orient="vertical", sashwidth=6, sashrelief="flat")
+    paned.grid(row=0, column=0, sticky="nsew")
 
-    scroll_canvas = tk.Canvas(main_frame)
-    scroll_canvas.pack(side="bottom", fill="both", expand=True)
-    control_scroll = tk.Scrollbar(main_frame, orient="horizontal", command=scroll_canvas.xview)
-    control_scroll.pack(side="bottom", fill="x")
-    scroll_canvas.configure(xscrollcommand=control_scroll.set)
+    # Top area: reserved image holder + frame slider
+    top_area = tk.Frame(paned)
+    top_area.columnconfigure(0, weight=1)
+    paned.add(top_area, minsize=280)  # keep space for preview
 
-    control_container = tk.Frame(scroll_canvas)
-    scroll_canvas.create_window((0, 0), window=control_container, anchor='nw')
-    control_container.bind("<Configure>", lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")))
+    # Reserve height so image never overlaps the slider
+    initial_w = int(settings.get('width', '960')) if str(settings.get('width', '960')).isdigit() else 960
+    initial_h = int(settings.get('height', '540')) if str(settings.get('height', '540')).isdigit() else 540
 
-    v_scroll = tk.Scrollbar(main_frame, orient="vertical", command=scroll_canvas.yview)
-    v_scroll.pack(side="right", fill="y")
-    scroll_canvas.configure(yscrollcommand=v_scroll.set)
+    img_holder = tk.Frame(top_area, height=initial_h + 8)
+    img_holder.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
+    img_holder.pack_propagate(False)  # label inside won't change holder height
 
+    preview_canvas = tk.Label(img_holder, bg="#111", bd=1, relief="flat", width=initial_w, height=initial_h)
+    preview_canvas.pack(anchor="center")
+
+    frame_slider = tk.Scale(
+        top_area, from_=0, to=total_frames - 1, orient="horizontal",
+        label="Frame", length=800
+    )
+    frame_slider.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+    # Auto-fit slider length to window width
+    def _resize_slider(ev=None):
+        try:
+            w = top_area.winfo_width()
+            frame_slider.configure(length=max(100, w - 40))
+        except Exception:
+            pass
+    preview_win.bind("<Configure>", _resize_slider)
+
+    # Bottom area: scrollable controls
+    bottom_area = tk.Frame(paned)
+    paned.add(bottom_area)
+
+    class ScrollableFrame(tk.Frame):
+        def __init__(self, parent, *args, **kwargs):
+            super().__init__(parent, *args, **kwargs)
+            self.canvas = tk.Canvas(self, highlightthickness=0)
+            self.vsb = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+            self.canvas.configure(yscrollcommand=self.vsb.set)
+
+            self.inner = tk.Frame(self.canvas)
+            self.inner.bind(
+                "<Configure>",
+                lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            )
+            self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+            self.canvas.grid(row=0, column=0, sticky="nsew")
+            self.vsb.grid(row=0, column=1, sticky="ns")
+            self.rowconfigure(0, weight=1)
+            self.columnconfigure(0, weight=1)
+
+            # Make inner frame follow canvas width
+            def _resize_inner(event):
+                self.canvas.itemconfig(self._win, width=event.width)
+            self.canvas.bind("<Configure>", _resize_inner)
+
+            # Mouse wheel scrolling (Win/mac/X11)
+            def _on_wheel(event):
+                delta = event.delta
+                if delta == 0 and hasattr(event, "num"):  # X11
+                    delta = -120 if event.num == 5 else 120
+                self.canvas.yview_scroll(int(-delta / 120), "units")
+
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.canvas.bind_all(seq, _on_wheel, add="+")
+
+    scroll = ScrollableFrame(bottom_area)
+    scroll.pack(fill="both", expand=True)
+
+    # Use this as the parent for all your controls below
+    control_container = scroll.inner
 
     top_controls_frame = tk.LabelFrame(control_container, text="Preview Controls", padx=10, pady=5)
     top_controls_frame.pack(pady=(0, 10), anchor="center")
@@ -100,23 +186,21 @@ def open_3d_preview_window(
     width_label = tk.Label(top_controls_frame, text="Width:")
     width_label.grid(row=0, column=0)
     width_entry = tk.Entry(top_controls_frame, width=5)
-    width_entry.insert(0, settings.get('width', '960'))
+    width_entry.insert(0, str(initial_w))
     width_entry.grid(row=0, column=1, padx=(0, 10))
 
     height_label = tk.Label(top_controls_frame, text="Height:")
     height_label.grid(row=0, column=2)
     height_entry = tk.Entry(top_controls_frame, width=5)
-    height_entry.insert(0, settings.get('height', '540'))
+    height_entry.insert(0, str(initial_h))
     height_entry.grid(row=0, column=3, padx=(0, 10))
     preview_job = None  
-
 
     def update_preview_debounced(*args):
         nonlocal preview_job
         if preview_job is not None:
             preview_win.after_cancel(preview_job)
         preview_job = preview_win.after(150, update_preview_now)  # 150ms debounce
-
 
     def apply_size():
         try:
@@ -125,8 +209,11 @@ def open_3d_preview_window(
         except ValueError:
             messagebox.showerror("Input Error", "Invalid width or height.")
             return
-        frame_slider.config(length=preview_width - 120)
+        # Reserve space for the image and size the label itself
+        img_holder.configure(height=preview_height + 8)
         preview_canvas.config(width=preview_width, height=preview_height)
+        # Let the slider auto-fit via <Configure> binding; still nudge once
+        _resize_slider()
         update_preview_debounced()
 
     apply_size_button = tk.Button(top_controls_frame, text="Apply Size", command=apply_size)
@@ -134,7 +221,6 @@ def open_3d_preview_window(
 
     save_button = tk.Button(top_controls_frame, text="Save Preview", command=lambda: save_preview(preview_img))
     save_button.grid(row=0, column=8, padx=(0, 10))
-
 
     preview_type_var = tk.StringVar(value=settings.get('preview_type', "HSBS"))
     preview_dropdown = tk.OptionMenu(top_controls_frame, preview_type_var, *[
@@ -219,6 +305,71 @@ def open_3d_preview_window(
     )
     parallax_balance_slider.grid(row=2, column=2, columnspan=2, sticky="w")
 
+    pop_frame = tk.LabelFrame(control_container, text="Pop & Subject Controls", padx=10, pady=8)
+    pop_frame.pack(pady=(0, 10), anchor="center")
+
+    # Row 0
+    tk.Label(pop_frame, text="Depth Pop Gamma").grid(row=0, column=0, sticky="w")
+    gamma_slider = tk.Scale(pop_frame, from_=0.70, to=1.20, resolution=0.01,
+                            orient="horizontal", variable=depth_pop_gamma, length=180,
+                            command=lambda _: update_preview_debounced())
+    gamma_slider.grid(row=0, column=1, padx=8, sticky="w")
+
+    tk.Label(pop_frame, text="Pop Mid (0..1)").grid(row=0, column=2, sticky="w")
+    pop_mid_entry = tk.Entry(pop_frame, width=6)
+    pop_mid_entry.insert(0, f"{depth_pop_mid.get():.2f}")
+    pop_mid_entry.grid(row=0, column=3, sticky="w")
+
+    # Row 1
+    tk.Label(pop_frame, text="Stretch Lo").grid(row=1, column=0, sticky="w")
+    stretch_lo_entry = tk.Entry(pop_frame, width=6)
+    stretch_lo_entry.insert(0, f"{depth_stretch_lo.get():.2f}")
+    stretch_lo_entry.grid(row=1, column=1, sticky="w")
+
+    tk.Label(pop_frame, text="Stretch Hi").grid(row=1, column=2, sticky="w")
+    stretch_hi_entry = tk.Entry(pop_frame, width=6)
+    stretch_hi_entry.insert(0, f"{depth_stretch_hi.get():.2f}")
+    stretch_hi_entry.grid(row=1, column=3, sticky="w")
+
+    # Row 2
+    tk.Label(pop_frame, text="FG Pop ×").grid(row=2, column=0, sticky="w")
+    fg_pop_slider = tk.Scale(pop_frame, from_=1.00, to=1.60, resolution=0.01,
+                             orient="horizontal", variable=fg_pop_multiplier, length=180,
+                             command=lambda _: update_preview_debounced())
+    fg_pop_slider.grid(row=2, column=1, padx=8, sticky="w")
+
+    tk.Label(pop_frame, text="BG Push ×").grid(row=2, column=2, sticky="w")
+    bg_push_slider = tk.Scale(pop_frame, from_=1.00, to=1.40, resolution=0.01,
+                              orient="horizontal", variable=bg_push_multiplier, length=180,
+                              command=lambda _: update_preview_debounced())
+    bg_push_slider.grid(row=2, column=3, padx=8, sticky="w")
+
+    # Row 3
+    tk.Label(pop_frame, text="Subject Lock").grid(row=3, column=0, sticky="w")
+    subj_lock_slider = tk.Scale(pop_frame, from_=0.00, to=2.00, resolution=0.05,
+                                orient="horizontal", variable=subject_lock_strength, length=180,
+                                command=lambda _: update_preview_debounced())
+    subj_lock_slider.grid(row=3, column=1, padx=8, sticky="w")
+
+    # Commit button for the Entry fields
+    def _commit_pop_entries():
+        try:
+            depth_pop_mid.set(float(pop_mid_entry.get()))
+            lo = float(stretch_lo_entry.get())
+            hi = float(stretch_hi_entry.get())
+            # simple guardrails
+            lo = max(0.0, min(1.0, lo))
+            hi = max(0.0, min(1.0, hi))
+            if hi <= lo:
+                messagebox.showwarning("Invalid Input", "Stretch Hi must be > Stretch Lo.")
+                return
+            depth_stretch_lo.set(lo)
+            depth_stretch_hi.set(hi)
+            update_preview_debounced()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Enter numeric values for Mid/Lo/Hi in 0..1.")
+
+    tk.Button(pop_frame, text="Apply Entries", command=_commit_pop_entries).grid(row=3, column=3, sticky="e")
 
     def update_max_shift(*_):
         try:
@@ -230,7 +381,7 @@ def open_3d_preview_window(
 
     def update_feather_strength(*_):
         try:
-            val = float(feather_strength_slider.get())
+            val = float(feather_strength.get())
             feather_strength.set(val)
             update_preview_debounced()
         except ValueError:
@@ -238,7 +389,7 @@ def open_3d_preview_window(
 
     def update_blur_ksize(*_):
         try:
-            val = int(blur_ksize_slider.get())
+            val = int(blur_ksize.get())
             blur_ksize.set(val)
             update_preview_debounced()
         except ValueError:
@@ -246,8 +397,8 @@ def open_3d_preview_window(
 
     def update_sharpness(*_):
         try:
-            val = float(sharpening_slider.get())
-            sharpness_factor.set(val)
+            val = float(sharpness_factor.get())
+            sharpness_factor.set(val)  # normalize any string → float
             update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for sharpness.")
@@ -289,10 +440,7 @@ def open_3d_preview_window(
 
         messagebox.showinfo("Saved", f"Files saved to:\n{save_dir}")
 
-
     dof_strength_slider.bind("<KeyRelease>", update_dof_strength)
-
-
     sharpness_slider.bind("<KeyRelease>", update_sharpness)
     max_shift_slider.bind("<KeyRelease>", update_max_shift)
 
@@ -305,7 +453,6 @@ def open_3d_preview_window(
             messagebox.showwarning("Invalid Input", "Enter a valid float for convergence strength.")
 
     convergence_slider.bind("<KeyRelease>", update_convergence_strength)
-
 
     def update_preview_now():
         nonlocal preview_job
@@ -323,9 +470,20 @@ def open_3d_preview_window(
             return
 
         frame = get_frame(preview_cap, frame_idx)
-        depth = grab_frame_from_video(depth_path, frame_idx)
-        if frame is None or depth is None:
-            messagebox.showerror("Frame Error", "Unable to grab frame from video.")
+
+        # depth frame from persistent cap
+        depth = None
+        if depth_cap and depth_cap.isOpened():
+            # clamp just in case someone typed a bigger index programmatically
+            if depth_total > 0 and frame_idx >= depth_total:
+                frame_idx = depth_total - 1
+            depth = get_frame(depth_cap, frame_idx)
+
+        if frame is None:
+            messagebox.showerror("Frame Error", "Unable to grab frame from INPUT video at this index.")
+            return
+        if depth is None:
+            messagebox.showerror("Frame Error", "Unable to grab frame from DEPTH video at this index. (Depth is shorter or unreadable at this position.)")
             return
 
         h, w = frame.shape[:2]
@@ -333,8 +491,6 @@ def open_3d_preview_window(
         depth_tensor = F.interpolate(depth_to_tensor(depth).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
 
         try:
-            #blur_ksize_val = int(blur_ksize_slider.get())
-            #feather_strength_val = float(feather_strength_slider.get())
             max_pixel_shift_val = float(max_shift_slider.get())
             zero_parallax_strength_val = float(zero_parallax_strength.get())
             parallax_balance_val = float(parallax_balance.get())
@@ -361,6 +517,15 @@ def open_3d_preview_window(
             dof_strength=dof_strength_val,
             convergence_strength=convergence_strength_val,
             enable_dynamic_convergence=dynamic_convergence_enabled,
+
+            # NEW pop controls
+            depth_pop_gamma=depth_pop_gamma.get(),
+            depth_pop_mid=depth_pop_mid.get(),
+            depth_stretch_lo=depth_stretch_lo.get(),
+            depth_stretch_hi=depth_stretch_hi.get(),
+            fg_pop_multiplier=fg_pop_multiplier.get(),
+            bg_push_multiplier=bg_push_multiplier.get(),
+            subject_lock_strength=subject_lock_strength.get(),
         )
 
         # Convert tensors to frames
@@ -394,8 +559,6 @@ def open_3d_preview_window(
             preview_canvas.config(image=img_tk)
             preview_canvas.image = img_tk
 
-
-
     def on_close():
         settings = {
             'width': width_entry.get(),
@@ -415,10 +578,21 @@ def open_3d_preview_window(
             'dof_strength': dof_strength.get(),
             'convergence_strength':convergence_strength.get(),
             'enable_dynamic_convergence': enable_dynamic_convergence.get(),
-
+            'depth_pop_gamma': depth_pop_gamma.get(),
+            'depth_pop_mid': depth_pop_mid.get(),
+            'depth_stretch_lo': depth_stretch_lo.get(),
+            'depth_stretch_hi': depth_stretch_hi.get(),
+            'fg_pop_multiplier': fg_pop_multiplier.get(),
+            'bg_push_multiplier': bg_push_multiplier.get(),
+            'subject_lock_strength': subject_lock_strength.get(),
         }
         save_settings(settings)
-        preview_cap.release()
+        try:
+            if preview_cap: preview_cap.release()
+        except: pass
+        try:
+            if depth_cap: depth_cap.release()
+        except: pass
         preview_win.destroy()
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
@@ -435,4 +609,14 @@ def open_3d_preview_window(
     enable_feathering.trace_add("write", lambda *_: update_preview_debounced())
     enable_dynamic_convergence.trace_add("write", lambda *_: update_preview_debounced())
     sharpness_factor.trace_add("write", lambda *_: update_preview_debounced())
+    depth_pop_gamma.trace_add("write", lambda *_: update_preview_debounced())
+    fg_pop_multiplier.trace_add("write", lambda *_: update_preview_debounced())
+    bg_push_multiplier.trace_add("write", lambda *_: update_preview_debounced())
+    subject_lock_strength.trace_add("write", lambda *_: update_preview_debounced())
+    pop_mid_entry.bind("<Return>", lambda _e: _commit_pop_entries())
+    stretch_lo_entry.bind("<Return>", lambda _e: _commit_pop_entries())
+    stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 
+    # Nudge sizing once so holder + slider lengths are correct on open
+    _resize_slider()
+    apply_size()
