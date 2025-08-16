@@ -488,6 +488,54 @@ class FloatingBarEaser:
 
 bar_easer = FloatingBarEaser(alpha=0.85)
 
+# === POP CURVE HELPERS ===
+
+def _signed_pow(x: torch.Tensor, gamma: float):
+    # symmetric contrast around 0
+    return torch.sign(x) * (torch.abs(x) ** gamma)
+
+@torch.no_grad()
+def shape_depth_for_pop(
+    depth_01: torch.Tensor,
+    subject_depth: torch.Tensor,
+    *,
+    stretch_lo: float = 0.05,      # percentile low
+    stretch_hi: float = 0.95,      # percentile high
+    depth_mid: float = 0.50,       # where you want the subject to sit after shaping
+    gamma: float = 0.85,           # <1 amplifies near/mid separation
+) -> torch.Tensor:
+    """
+    1) Robustly stretch depth to full 0..1 using percentiles
+    2) Recentre so subject ≈ depth_mid
+    3) Apply symmetric power curve to exaggerate away from mid
+    """
+    d = depth_01.clamp(0, 1)
+
+    lo = torch.quantile(d, stretch_lo)
+    hi = torch.quantile(d, stretch_hi)
+    if (hi - lo) < 1e-5:
+        # fallback, nothing to stretch
+        d_stretched = d
+    else:
+        d_stretched = ((d - lo) / (hi - lo + 1e-6)).clamp(0, 1)
+
+    # recenter around subject so subject maps to depth_mid
+    # shift by the subject’s current value in stretched space
+    subj = subject_depth.clamp(0, 1)
+    # compute subject in stretched domain too
+    subj_lo = torch.quantile(d, stretch_lo)
+    subj_hi = torch.quantile(d, stretch_hi)
+    if (subj_hi - subj_lo) < 1e-5:
+        subj_stretched = subj
+    else:
+        subj_stretched = ((subj - subj_lo) / (subj_hi - subj_lo + 1e-6)).clamp(0, 1)
+
+    centered = d_stretched - subj_stretched + depth_mid
+    # symmetric “S” contrast around depth_mid
+    shaped = _signed_pow(centered - depth_mid, gamma) + depth_mid
+    return shaped.clamp(0, 1)
+
+
 def pixel_shift_cuda(
     frame_tensor,
     depth_tensor,
@@ -509,6 +557,14 @@ def pixel_shift_cuda(
     dof_strength=2.0,
     convergence_strength=0.0,
     enable_dynamic_convergence=True,
+    # new pop controls
+    depth_pop_gamma=0.85,
+    depth_pop_mid=0.50,
+    depth_stretch_lo=0.05,
+    depth_stretch_hi=0.95,
+    fg_pop_multiplier=1.20,
+    bg_push_multiplier=1.10,
+    subject_lock_strength=1.00,
 ):
     width = int(width)
     height = int(height)
@@ -522,33 +578,57 @@ def pixel_shift_cuda(
 
     depth_tensor = depth_tensor.clamp(0.0, 1.0)
 
-    fg_weight = (1.0 - depth_tensor)
-    mg_weight = (1.0 - (depth_tensor - 0.4).abs() * 2.5)
-    bg_weight = depth_tensor
+    # --- subject estimate on raw map ---
+    subj_depth_raw = estimate_subject_depth(depth_tensor)
+
+    # --- shape depth for pop: stretch range, recenter on subject, apply symmetric curve ---
+    d_shaped = shape_depth_for_pop(
+        depth_tensor,
+        subj_depth_raw,
+        stretch_lo=depth_stretch_lo,
+        stretch_hi=depth_stretch_hi,
+        depth_mid=depth_pop_mid,
+        gamma=depth_pop_gamma
+    )
+
+    # recompute subject after shaping for tighter screen-plane lock
+    subject_depth = estimate_subject_depth(d_shaped)
+
+    # weights from shaped depth (steeper foreground falloff)
+    fg_weight = (1.0 - d_shaped).pow(1.5).clamp(0, 1)
+    mg_weight = (1.0 - (d_shaped - depth_pop_mid).abs() * 3.0).clamp(0, 1)  # slightly tighter mid band
+    bg_weight = d_shaped.clamp(0, 1)
 
     half_width = width / 2.0
 
-    raw_shift = (fg_weight * fg_shift +
+    # amplify near pop and far push locally, not globally
+    raw_shift = (fg_weight * fg_shift * fg_pop_multiplier +
                  mg_weight * mg_shift +
-                 bg_weight * bg_shift)
+                 bg_weight * bg_shift * bg_push_multiplier)
 
     total_shift = (raw_shift * parallax_balance) / half_width
 
     if use_subject_tracking:
-        subject_depth = estimate_subject_depth(depth_tensor)
         adjusted_depth = subject_depth * parallax_balance
 
         zero_parallax_offset = (
-            (-adjusted_depth * fg_shift) +
+            (-adjusted_depth * fg_shift * fg_pop_multiplier) +
             (-adjusted_depth * mg_shift) +
-            (adjusted_depth * bg_shift)
-        ) / half_width - zero_parallax_strength
+            ( adjusted_depth * bg_shift * bg_push_multiplier)
+        ) / half_width
+
+        # actively lock to subject
+        zero_parallax_offset = zero_parallax_offset * float(subject_lock_strength)
+        # include user zero_parallax_strength as a bias away from screen plane if desired
+        zero_parallax_offset = zero_parallax_offset - float(zero_parallax_strength)
 
         if enable_floating_window:
-            subject_weight = torch.clamp(1.0 - subject_depth * 2.5, 0.25, 1.0)
+            subject_weight = torch.clamp(1.0 - subject_depth * 2.0, 0.5, 1.0)
             zero_parallax_offset *= subject_weight
-            zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.3, 0.3)
-            zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset.item(), threshold=0.002)
+            zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.35, 0.35)
+            zero_parallax_offset = floating_window_tracker.smooth_offset(
+                zero_parallax_offset.item(), threshold=0.0015
+            )
 
         total_shift -= zero_parallax_offset
 
@@ -558,27 +638,28 @@ def pixel_shift_cuda(
 
     if convergence_strength != 0.0:
         if enable_dynamic_convergence:
-            subject_depth = estimate_subject_depth(depth_tensor)
-            convergence_bias = subject_depth * convergence_strength
+            # use shaped depth for convergence estimate
+            subj_for_conv = estimate_subject_depth(d_shaped)
+            convergence_bias = subj_for_conv * convergence_strength
         else:
             convergence_bias = convergence_strength
 
         convergence_norm = convergence_bias.item() if isinstance(convergence_bias, torch.Tensor) else convergence_bias
         convergence_norm = convergence_norm / half_width
-
         total_shift -= convergence_norm
 
     mask_strength = np.clip(feather_strength / 10.0, 0.05, 0.3)
 
     if enable_edge_masking:
-        edge_suppressed = suppress_artifacts_with_edge_mask(depth_tensor, total_shift, feather_strength)
+        # use shaped depth for edge awareness so it aligns with weighting
+        edge_suppressed = suppress_artifacts_with_edge_mask(d_shaped, total_shift, feather_strength)
         final_shift = (1.0 - mask_strength) * total_shift + mask_strength * edge_suppressed
     else:
         final_shift = total_shift
 
     shift_vals = final_shift.squeeze(0)
 
-    H, W = depth_tensor.shape[1:]
+    H, W = d_shaped.shape[1:]
     xx, yy = torch.meshgrid(
         torch.linspace(-1, 1, W, device=device),
         torch.linspace(-1, 1, H, device=device),
@@ -594,8 +675,8 @@ def pixel_shift_cuda(
     warped_left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
     warped_right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
 
-    warped_depth_left = F.grid_sample(depth_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
-    warped_depth_right = F.grid_sample(depth_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_depth_left = F.grid_sample(d_shaped.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_depth_right = F.grid_sample(d_shaped.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
 
     focal_depth_left = estimate_subject_depth(warped_depth_left)
     focal_depth_right = estimate_subject_depth(warped_depth_right)
@@ -614,7 +695,7 @@ def pixel_shift_cuda(
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
     else:
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
-        
+
 # Sharpening
 
 def apply_sharpening(frame, factor=1.0):
@@ -791,7 +872,14 @@ def render_sbs_3d(
     original_video_height=None,
     convergence_strength=0.0,
     enable_dynamic_convergence=True,
-    ipd_factor=1.0
+    ipd_factor=1.0,
+    depth_pop_gamma=0.85,
+    depth_pop_mid=0.50,
+    depth_stretch_lo=0.05,
+    depth_stretch_hi=0.95,
+    fg_pop_multiplier=1.20,
+    bg_push_multiplier=1.10,
+    subject_lock_strength=1.00,
     
 ):
 
@@ -1027,7 +1115,6 @@ def render_sbs_3d(
             # depth smoothing & shaping
             depth_tensor = temporal_depth_filter.smooth(depth_tensor)
             depth_tensor = depth_ema_norm.normalize(depth_tensor)
-            depth_tensor = midtone_shape(depth_tensor, gamma=MID_GAMMA)
 
             fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
@@ -1059,7 +1146,17 @@ def render_sbs_3d(
                     dof_strength=dof_strength,
                     convergence_strength=convergence_strength,
                     enable_dynamic_convergence=enable_dynamic_convergence,
+
+                    # new pop controls (tweak as you like)
+                    depth_pop_gamma=0.85,       # 0.80–0.95 stronger near/mid pop as it gets smaller
+                    depth_pop_mid=0.50,         # move to 0.52–0.55 to push BG farther
+                    depth_stretch_lo=0.05,
+                    depth_stretch_hi=0.95,
+                    fg_pop_multiplier=1.20,     # 1.3–1.5 = more pop-out
+                    bg_push_multiplier=1.10,    # 1.15–1.25 = BG feels deeper
+                    subject_lock_strength=1.00, # 1.2–1.5 = tighter screen-plane lock
                 )
+
 
             # floating window mask
             subject_depth = estimate_subject_depth(depth_tensor)
@@ -1212,6 +1309,13 @@ def start_processing_thread():
             dof_strength,
             convergence_strength,
             enable_dynamic_convergence,
+            depth_pop_gamma,          # e.g., tk.DoubleVar()
+            depth_pop_mid,            # tk.DoubleVar()
+            depth_stretch_lo,         # tk.DoubleVar()
+            depth_stretch_hi,         # tk.DoubleVar()
+            fg_pop_multiplier,        # tk.DoubleVar()
+            bg_push_multiplier,       # tk.DoubleVar()
+            subject_lock_strength,    # tk.DoubleVar()
         ),
         daemon=True
     )
@@ -1338,7 +1442,14 @@ def process_video(
     skip_blank_frames,
     dof_strength,  
     convergence_strength,
-    enable_dynamic_convergence    
+    enable_dynamic_convergence,
+    depth_pop_gamma,
+    depth_pop_mid,
+    depth_stretch_lo,
+    depth_stretch_hi,
+    fg_pop_multiplier,
+    bg_push_multiplier,
+    subject_lock_strength,
 ):
 
     global original_video_width, original_video_height
@@ -1436,6 +1547,13 @@ def process_video(
             original_video_height=height,
             convergence_strength=convergence_strength.get(),
             enable_dynamic_convergence=enable_dynamic_convergence.get(),
+            depth_pop_gamma=depth_pop_gamma.get(),
+            depth_pop_mid=depth_pop_mid.get(),
+            depth_stretch_lo=depth_stretch_lo.get(),
+            depth_stretch_hi=depth_stretch_hi.get(),
+            fg_pop_multiplier=fg_pop_multiplier.get(),
+            bg_push_multiplier=bg_push_multiplier.get(),
+            subject_lock_strength=subject_lock_strength.get(),
         )   
 
 
