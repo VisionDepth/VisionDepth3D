@@ -33,6 +33,9 @@ def resource_path(relative_path):
 session_options = ort.SessionOptions()
 session_options.log_severity_level = 3
 session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+session_options.intra_op_num_threads = max(1, os.cpu_count() // 2)
+session_options.inter_op_num_threads = 1
+
 
 # ✅ ONNX Execution Provider fallback logic
 available_providers = ort.get_available_providers()
@@ -61,12 +64,45 @@ esrgan_session = None  # Lazy-load ESRGAN
 def update_progress(done, total, start):
     if not progress_bar or not status_label:
         return
-    progress_bar["value"] = (done / total) * 100
     elapsed = time.time() - start
     fps = done / elapsed if elapsed > 0 else 0
     eta = (total - done) / fps if fps > 0 else float("inf")
     eta_fmt = time.strftime("%H:%M:%S", time.gmtime(eta)) if eta != float("inf") else "--:--"
-    status_label["text"] = f"Progress: {done}/{total} | FPS: {fps:.2f} | ETA: {eta_fmt}"
+    pct = (done / total) * 100 if total else 0
+
+    # ✅ marshal UI updates to the main thread
+    try:
+        progress_bar.after(0, lambda: progress_bar.configure(value=pct))
+        status_label.after(0, lambda: status_label.configure(
+            text=f"Progress: {done}/{total} | FPS: {fps:.2f} | ETA: {eta_fmt}"
+        ))
+    except Exception:
+        pass
+
+
+from queue import Queue
+
+def _frame_loader(file_list, target_size):
+    q = Queue(maxsize=8)
+    stop = object()
+
+    def _worker():
+        for fp in file_list:
+            img = cv2.imread(fp, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            if target_size:
+                img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC)
+            q.put(img)
+        q.put(stop)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is stop:
+            break
+        yield item
+
 
 from tkinter.simpledialog import askstring
 
@@ -201,34 +237,52 @@ def blend_images(original, upscaled, mode="OFF"):
     alpha = alpha_map.get(mode.upper(), 1.0)
     return cv2.addWeighted(upscaled, alpha, original, 1 - alpha, 0)
     
-def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_Gx4_fp16", target_size=None):
+def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_Gx4_fp16",
+               target_size=None, tile=None, tile_pad=8):
     global esrgan_session
     if not esrgan_session:
         return frame
 
-    original = frame.copy()
+    original = frame
     if input_res_pct != 100:
         h, w = frame.shape[:2]
-        frame = cv2.resize(frame, (int(w * input_res_pct / 100), int(h * input_res_pct / 100)), interpolation=cv2.INTER_CUBIC)
+        frame = cv2.resize(frame, (int(w * input_res_pct / 100), int(h * input_res_pct / 100)), interpolation=cv2.INTER_AREA if input_res_pct < 100 else cv2.INTER_CUBIC)
 
-    tensor = preprocess_esr(frame)
-    try:
-        output = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: tensor})[0]
-        upscaled = postprocess_esr(output)
+    if tile:
+        upscaled = _esrgan_tiled(frame, tile, tile_pad)
+    else:
+        tensor = preprocess_esr(frame)
+        try:
+            output = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: tensor})[0]
+            upscaled = postprocess_esr(output)
+        except Exception as e:
+            print(f"❌ ESRGAN failed: {e}")
+            return original
 
-        scale = 2 if "x2" in model_name.lower() else 4
-        upscaled = cv2.resize(upscaled, (frame.shape[1] * scale, frame.shape[0] * scale), interpolation=cv2.INTER_CUBIC)
-        upscaled = cv2.resize(upscaled, (original.shape[1], original.shape[0]), interpolation=cv2.INTER_CUBIC)
+    scale = 2 if "x2" in model_name.lower() else 4
+    upscaled = cv2.resize(upscaled, (frame.shape[1] * scale, frame.shape[0] * scale), interpolation=cv2.INTER_CUBIC)
+    upscaled = cv2.resize(upscaled, (original.shape[1], original.shape[0]), interpolation=cv2.INTER_CUBIC)
+    if target_size:
+        upscaled = cv2.resize(upscaled, target_size, interpolation=cv2.INTER_CUBIC)
+    return blend_images(original, upscaled, mode=blend_mode)
 
-        # 🔁 Force to output resolution if specified
-        if target_size:
-            upscaled = cv2.resize(upscaled, target_size, interpolation=cv2.INTER_CUBIC)
+def _esrgan_tiled(img, tile, pad):
+    h, w = img.shape[:2]
+    out = np.zeros_like(img)
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            y0, x0 = max(0, y - pad), max(0, x - pad)
+            y1, x1 = min(h, y + tile + pad), min(w, x + tile + pad)
+            crop = img[y0:y1, x0:x1]
+            t = preprocess_esr(crop)
+            pred = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: t})[0]
+            up = postprocess_esr(pred)
+            # place center region
+            yc0, xc0 = y - y0, x - x0
+            yc1, xc1 = yc0 + min(tile, h - y), xc0 + min(tile, w - x)
+            out[y:y+min(tile, h - y), x:x+min(tile, w - x)] = up[yc0:yc1, xc0:xc1]
+    return out
 
-        return blend_images(original, upscaled, mode=blend_mode)
-
-    except Exception as e:
-        print(f"❌ ESRGAN failed: {e}")
-        return original
 
 def start_merged_pipeline(settings, progress_widget, status_label_widget):
     global progress_bar, status_label, esrgan_session
@@ -267,55 +321,108 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     video = start_ffmpeg_writer(output_path, width, height, output_fps, settings["codec"])
     start = time.time()
 
-    total = len(files)
-    frame_count = total - 1 if enable_rife else total
+    # ---- prefetch-driven loop ----
+    target_size = (width, height)
 
-    for i in range(frame_count):
+    # If upscaling is enabled, let run_esrgan handle resizing to target_size.
+    # Otherwise, have the loader resize to target_size up-front to hide I/O latency.
+    file_iter = _frame_loader(files, None if enable_upscale else target_size)
+
+    # prime the first frame
+    prev = next(file_iter, None)
+    if prev is None:
+        messagebox.showerror("Error", "No readable frames.")
+        try:
+            video.stdin.close()
+        except Exception:
+            pass
+        video.wait()
+        return
+
+    if enable_upscale:
+        prev = run_esrgan(prev, blend_mode, input_res_pct, target_size=target_size)
+
+    # write first frame
+    video.stdin.write(prev.tobytes())
+
+    # total frames we’ll report progress against
+    # (if RIFE is enabled, we conceptually process pairs; progress uses #source frames)
+    total_src = len(files)
+
+    for i, curr in enumerate(file_iter, start=1):
         if cancel_flag.is_set():
             break
 
-        f1 = cv2.imread(files[i])
-        f1 = run_esrgan(f1, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(f1, (width, height))
-        video.stdin.write(f1.tobytes())
+        if enable_upscale:
+            curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size)
+        else:
+            curr_proc = curr  # already resized by loader
 
-        if enable_rife and i + 1 < total:
-            f2 = cv2.imread(files[i + 1])
-            f2 = run_esrgan(f2, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(f2, (width, height))
-            interpolated = run_rife(f1, f2, fps_mult)
-            for frame in interpolated:
-                video.stdin.write(frame.tobytes())
+        if enable_rife:
+            # interpolate between prev and curr, then write curr
+            inter = run_rife(prev, curr_proc, fps_mult)
+            for f in inter:
+                video.stdin.write(f.tobytes())
 
-        update_progress(i + 1, frame_count, start)
+        video.stdin.write(curr_proc.tobytes())
+        prev = curr_proc
 
-    if not enable_rife:
-        last_frame = cv2.imread(files[-1])
-        last_frame = run_esrgan(last_frame, blend_mode, input_res_pct, target_size=(width, height)) if enable_upscale else cv2.resize(last_frame, (width, height))
-        video.stdin.write(last_frame.tobytes())
+        # progress reports against source frames consumed
+        update_progress(i + 1, total_src if not enable_rife else total_src - 1, start)
 
-    video.stdin.close()
+    # if cancelled, still close ffmpeg cleanly
+    try:
+        video.stdin.close()
+    except Exception:
+        pass
     video.wait()
 
-    update_progress(frame_count, frame_count, start)
-    status_label["text"] = "\u2705 Processing Complete!"
+    # final progress / status
+    final_total = total_src if not enable_rife else total_src - 1
+    update_progress(final_total, final_total, start)
+    try:
+        status_label.after(0, lambda: status_label.configure(text="✅ Processing Complete!"))
+    except Exception:
+        pass
 
+
+
+def _encoder_args(codec: str, width: int, height: int):
+    codec = (codec or "").lower()
+
+    if "nvenc" in codec:  # NVIDIA
+        # Good quality/speed balance: CQ with moderate preset
+        return [
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",             # p1 best quality .. p7 fastest
+            "-tune", "hq",
+            "-rc", "vbr",                # or "constqp" for fixed QP
+            "-cq", "19",                 # ~CRF-like; lower=better
+            "-rc-lookahead", "20",
+            "-bf:v", "3",
+            "-b_ref_mode", "middle",
+            "-pix_fmt", "yuv420p"
+        ]
+    else:  # libx264
+        return [
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "18",                # quality target
+            "-pix_fmt", "yuv420p"
+        ]
 
 def start_ffmpeg_writer(output_path, width, height, fps, codec):
-    command = [
-        "ffmpeg",
-        "-y",
+    base = [
+        "ffmpeg", "-y",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-pix_fmt", "bgr24",
         "-s", f"{width}x{height}",
         "-r", str(fps),
-        "-i", "-",
-        "-c:v", codec,
-        "-preset", "p5" if "nvenc" in codec else "medium",
-        "-b:v", "10M",
-        "-maxrate", "20M",
-        "-bufsize", "40M",
-        "-pix_fmt", "yuv420p",
-        output_path
+        "-i", "-"
     ]
+    enc = _encoder_args(codec, width, height)
+    command = base + enc + [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE)
+
 
