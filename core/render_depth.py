@@ -39,93 +39,266 @@ global_session_start_time = None
 current_warmup_session = {"id": None}
 torch.set_grad_enabled(False)
 
-def detect_letterbox(frame_bgr, y_thresh=18, var_thresh=4.0, min_frac=0.06):
+# ---------- Letterbox detection: robust helpers ----------
+def _row_uniformity_metrics(bgr):
+    # Mean/variance per row for luma + saturation (fast)
+    y, s = _luma_saturation(bgr)
+    y_row_mean = y.mean(axis=1)
+    y_row_var  = y.var(axis=1)
+    s_row_mean = s.mean(axis=1)
+    return y_row_mean, y_row_var, s_row_mean
+
+def _horizontal_edge_density(gray, ksize=3, low=30, high=90):
+    edges = cv2.Canny(gray, low, high, apertureSize=ksize, L2gradient=True)
+    # Count edges along rows (lower = more likely uniform bars)
+    row_edge_density = edges.mean(axis=1)  # 0..255 -> normalize below
+    return row_edge_density / 255.0
+
+def detect_letterbox_strict_robust(
+    frame_bgr,
+    y_thresh=16,
+    var_thresh=3.0,
+    sat_thresh=6.0,
+    max_scan_frac=0.25,
+    min_band_frac=0.06,
+    edge_max=0.04  # rows with more than ~4% edges are not “bars”
+):
     """
-    Returns (top_px, bottom_px). 0 means none.
-    Heuristic: black bars are very dark + low variance.
+    Single-frame guess for (top, bottom) with extra edge-uniformity gate.
+    Returns (top, bottom) or (0, 0).
     """
     h, w = frame_bgr.shape[:2]
-    min_bar = int(h * min_frac)
+    if h < 64 or w < 64:
+        return 0, 0
 
-    # Approx luma
-    y = (0.299*frame_bgr[...,2] + 0.587*frame_bgr[...,1] + 0.114*frame_bgr[...,0]).astype(np.float32)
-    row_mean = y.mean(axis=1)
-    row_var  = y.var(axis=1)
+    y_mean, y_var, s_mean = _row_uniformity_metrics(frame_bgr)
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    row_edge = _horizontal_edge_density(gray)
 
-    # scan top
-    top = 0
-    while top < h//2 and row_mean[top] < y_thresh and row_var[top] < var_thresh:
-        top += 1
-    # scan bottom
-    bot = 0
-    i = h - 1
-    while i >= h//2 and row_mean[i] < y_thresh and row_var[i] < var_thresh:
-        bot += 1
-        i -= 1
+    def scan(side):
+        H = int(h * max_scan_frac)
+        run = 0
+        if side == "top":
+            rng = range(0, H)
+        else:
+            rng = range(h-1, h-1-H, -1)
 
-    if top < min_bar: top = 0
-    if bot < min_bar: bot = 0
+        for i in rng:
+            if (y_mean[i] < y_thresh and
+                y_var[i]  < var_thresh and
+                s_mean[i] < sat_thresh and
+                row_edge[i] <= edge_max):
+                run += 1
+            else:
+                break
+
+        min_band = int(h * min_band_frac)
+        if run < min_band:
+            run = 0
+        if run % 2 == 1:
+            run -= 1
+        return max(run, 0)
+
+    top = scan("top")
+    bot = scan("bottom")
+    if top + bot >= h * 0.6:  # absurd
+        return 0, 0
     return int(top), int(bot)
 
-def detect_letterbox_multiframe(cap, original_height, fps, max_seconds=3, samples=7):
+def is_near_black_frame(frame_bgr, mean_thresh=18, edge_thresh=0.02):
+    # Extended: also check edges; pure black/fades have very few edges
+    y, _ = _luma_saturation(frame_bgr)
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    row_edge = _horizontal_edge_density(gray).mean()
+    return float(y.mean()) < mean_thresh and row_edge < edge_thresh
+
+def detect_letterbox_multiframe_confidence(
+    cap, original_height, fps, max_seconds=3, samples=9
+):
     """
-    Probe several frames in the first few seconds and return a stable (top,bottom).
-    Uses median of valid detections; ignores obviously bad full-height results.
+    Probe early frames and return ((top, bottom), confidence in [0..1]).
+    Skips blacks & scene cuts. Confidence = fraction of valid samples agreeing
+    with the median within a small tolerance.
     """
     try:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     except Exception:
         total = 0
 
-    window = min(total, int((fps if fps and fps > 0 else 30) * max_seconds)) or min(total, 30)
-
-    # Fallback: single frame if we can't sample a window
-    if window <= 1:
-        pos0 = cap.get(cv2.CAP_PROP_POS_FRAMES)
-        ok, f0 = cap.read()
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        if pos0 is not None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        if not ok:
-            return 0, 0
-        t, b = detect_letterbox(f0)
-        return (0, 0) if (t + b >= original_height) else (t, b)
-
-    # Uniformly sample a few frames in the window
-    idxs = np.linspace(0, max(0, window - 1), num=min(samples, max(1, window)), dtype=int)
+    window = min(total, int((fps if fps and fps > 0 else 30) * max_seconds))
+    window = max(window, 1)
 
     tops, bottoms = [], []
+    prev_gray = None
+
     pos_backup = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    idxs = np.linspace(0, max(0, window - 1), num=min(samples, window), dtype=int)
+
     for i in idxs:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
         ok, frame = cap.read()
         if not ok:
             continue
-        t, b = detect_letterbox(frame)
-        # accept only sane detections
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if is_near_black_frame(frame) or is_scene_cut(prev_gray, gray):
+            prev_gray = gray
+            continue
+
+        t, b = detect_letterbox_strict_robust(frame)
         if 0 <= t < original_height and 0 <= b < original_height and (t + b) < original_height:
             tops.append(t)
             bottoms.append(b)
 
-    # restore to frame 0 for normal processing
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    if pos_backup is not None:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        prev_gray = gray
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, pos_backup or 0)
 
     if not tops:
-        return 0, 0
+        return (0, 0), 0.0
 
-    t = int(np.median(tops))
-    b = int(np.median(bottoms))
-    return (0, 0) if (t + b >= original_height) else (t, b)
+    t_med = int(np.median(tops))
+    b_med = int(np.median(bottoms))
+
+    # even
+    if t_med % 2: t_med -= 1
+    if b_med % 2: b_med -= 1
+    t_med = max(t_med, 0); b_med = max(b_med, 0)
+    if t_med + b_med >= original_height * 0.6:
+        return (0, 0), 0.0
+
+    # Confidence = fraction within ±4px of median (together)
+    agree = 0
+    for t, b in zip(tops, bottoms):
+        if abs(t - t_med) <= 4 and abs(b - b_med) <= 4:
+            agree += 1
+    confidence = agree / max(1, len(tops))
+    return (t_med, b_med), float(confidence)
+
+# ---------- Runtime tracker with locks & hysteresis ----------
+class LetterboxTracker:
+    """
+    Tracks and freezes letterbox bars. Rechecks only at scene cuts on non-black frames.
+    States:
+      - locked_zero: no bars; never auto-enable from fades
+      - locked_bars: (top, bottom) applied; can update on strong evidence at cuts
+    """
+    def __init__(
+        self,
+        h,
+        fps,
+        min_change=8,
+        confirm_needed=3,
+        max_total_frac=0.35,
+        conf_enable=0.7,   # require >=70% agreement to enable bars
+        conf_disable=0.6,  # require >=60% agreement to switch to zero
+        cooldown_sec=3.0
+    ):
+        self.h = int(h)
+        self.fps = float(fps) if fps and fps > 0 else 30.0
+        self.min_change = int(min_change)
+        self.confirm_needed = int(confirm_needed)
+        self.max_total_frac = float(max_total_frac)
+        self.conf_enable = float(conf_enable)
+        self.conf_disable = float(conf_disable)
+        self.cooldown_frames = int(self.fps * cooldown_sec)
+
+        # state
+        self.top = 0
+        self.bot = 0
+        self.locked_zero = True   # default: assume no bars
+        self.locked_bars = False
+        self._cand = (0, 0)
+        self._streak = 0
+        self._cooldown = 0
+
+        self.prev_gray = None
+
+    def bootstrap(self, cap):
+        (t, b), conf = detect_letterbox_multiframe_confidence(cap, self.h, self.fps)
+        if conf >= self.conf_enable and (t + b) > 0:
+            self.top, self.bot = t, b
+            self.locked_bars = True
+            self.locked_zero = False
+        else:
+            self.top, self.bot = 0, 0
+            self.locked_zero = True
+            self.locked_bars = False
+        self._cooldown = self.cooldown_frames
+        return self.top, self.bot, (self.locked_bars, self.locked_zero)
+
+    def should_recheck(self, frame_idx):
+        # Only recheck when cooldown done
+        return self._cooldown <= 0
+
+    def update(self, frame_bgr, frame_idx):
+        # count down cooldown
+        if self._cooldown > 0:
+            self._cooldown -= 1
+
+        # avoid rechecks on black/fades
+        if is_near_black_frame(frame_bgr):
+            self.prev_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            return self.top, self.bot
+
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        if not is_scene_cut(self.prev_gray, gray):
+            self.prev_gray = gray
+            return self.top, self.bot
+
+        # Scene cut: we’re allowed to re-evaluate
+        self.prev_gray = gray
+        if not self.should_recheck(frame_idx):
+            return self.top, self.bot
+
+        # Measure bars for this frame (robust)
+        mt, mb = detect_letterbox_strict_robust(frame_bgr)
+
+        # sanity caps
+        if (mt + mb) > int(self.h * self.max_total_frac):
+            mt, mb = 0, 0
+
+        # even px
+        if mt % 2: mt -= 1
+        if mb % 2: mb -= 1
+        mt = max(mt, 0); mb = max(mb, 0)
+
+        # Hysteresis
+        change = abs(mt - self.top) + abs(mb - self.bot)
+        if change < self.min_change:
+            self._streak = 0
+            self._cand = (self.top, self.bot)
+            return self.top, self.bot
+
+        cand = (mt, mb)
+        if cand == self._cand:
+            self._streak += 1
+        else:
+            self._cand = cand
+            self._streak = 1
+
+        if self._streak >= self.confirm_needed:
+            # If we were locked_zero, only switch to bars if non-zero and plausible
+            if self.locked_zero and (mt + mb) > 0:
+                self.top, self.bot = mt, mb
+                self.locked_zero = False
+                self.locked_bars = True
+                self._cooldown = self.cooldown_frames
+            # If we were locked_bars, allow switch to different bars or zero
+            elif self.locked_bars:
+                self.top, self.bot = mt, mb
+                self.locked_zero = (mt + mb) == 0
+                self.locked_bars = (mt + mb) > 0
+                self._cooldown = self.cooldown_frames
+
+        return self.top, self.bot
 
 
+# ---------- Cropping (unchanged, with guard) ----------
 def crop_by_bars(frame_bgr, top, bottom):
     h = frame_bgr.shape[0]
-    # If bars would remove everything or go negative, skip cropping
-    if top < 0: top = 0
-    if bottom < 0: bottom = 0
-    if top + bottom >= h:
+    top = max(int(top), 0); bottom = max(int(bottom), 0)
+    if top + bottom >= h or h <= 0:
         return frame_bgr
     return frame_bgr[top:h-bottom, :, :]
 
@@ -378,7 +551,8 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
     return run_onnx, {
         "input_rank": input_rank,
         "session": session,
-        "provider": device
+        "provider": device,
+        "is_onnx": True
     }
 
 
@@ -465,7 +639,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
                     offload_mode = offload_mode_dropdown.get()
 
-                    pipe = load_depthcrafter_adapter(weights_dir)
+                    pipe = load_depthcrafter_adapter(get_weights_dir)
                     pipe_type = "diffusion"
 
                     # ✅ Skip real inference to avoid PIL shape issues
@@ -1096,7 +1270,6 @@ def process_video2(
             status_label=status_label,
             progress_bar=progress_bar,
             root=dummy_root,
-            cancel_requested=cancel_requested,
             invert_var=invert_var
         )
 
@@ -1123,13 +1296,24 @@ def process_video2(
     original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # 🔎 Robust letterbox detection (multi-probe)
-    bars_top = bars_bottom = 0
-    if ignore_letterbox_bars:
-        bars_top, bars_bottom = detect_letterbox_multiframe(cap, original_height, fps)
-        if bars_top + bars_bottom >= original_height:
-            bars_top = bars_bottom = 0
-        print(f"[VD3D] Letterbox detected (multi-probe): top={bars_top} bottom={bars_bottom}")
+    # ... after you read fps/original_w/h
+    tracker = LetterboxTracker(original_height, fps)
+
+    bars_top, bars_bottom, (locked_bars, locked_zero) = tracker.bootstrap(cap)
+    print(f"[VD3D] Bootstrap bars: top={bars_top} bottom={bars_bottom} | "
+          f"locked_bars={locked_bars} locked_zero={locked_zero}")
+
+    # (Optional) write sidecar using bootstrapped values:
+    try:
+        sidecar = os.path.splitext(output_path)[0] + ".letterbox.json"
+        with open(sidecar, "w", encoding="utf-8") as f:
+            json.dump({
+                "top": int(bars_top), "bottom": int(bars_bottom),
+                "orig_w": int(original_width), "orig_h": int(original_height),
+                "locked_bars": bool(locked_bars), "locked_zero": bool(locked_zero)
+            }, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Failed to write letterbox sidecar: {e}")
 
 
     print(f"📁 Saving video to: {output_path}")
@@ -1194,24 +1378,13 @@ def process_video2(
             break
 
         frame_count += 1
-        RECHECK_EVERY = 90   # ~3s at 30fps
-        MIN_DELTA     = 8    # ignore tiny changes to avoid flicker
+        if ignore_letterbox_bars:
+            # Let the tracker decide; it rechecks only at scene cuts (non-black) with hysteresis
+            bars_top, bars_bottom = tracker.update(frame, frame_count)
+        else:
+            bars_top, bars_bottom = 0, 0
 
-        if ignore_letterbox_bars and (frame_count % RECHECK_EVERY == 0):
-            nt, nb = detect_letterbox(frame)
-            # accept only sane updates and only if meaningfully different
-            if (0 <= nt < original_height) and (0 <= nb < original_height) and (nt + nb < original_height):
-                if abs(nt - bars_top) + abs(nb - bars_bottom) >= MIN_DELTA:
-                    bars_top, bars_bottom = nt, nb
-                    print(f"↻ Letterbox updated: top={bars_top} bottom={bars_bottom}")
-        
-        frame_for_infer = crop_by_bars(frame, bars_top, bars_bottom) if (ignore_letterbox_bars and (bars_top or bars_bottom)) else frame
-
-        # Safety: if cropping somehow produced empty, fall back to original
-        if frame_for_infer is None or frame_for_infer.size == 0:
-            frame_for_infer = frame
-
-        frame_rgb = cv2.cvtColor(frame_for_infer, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         pil_image = Image.fromarray(frame_rgb)
 

@@ -175,7 +175,24 @@
   "Tooltip.InputResPct": "Réduit la résolution d'entrée avant l'agrandissement pour économiser de la mémoire ou accélérer le traitement. 100 % = pleine résolution.",
   "Tooltip.ModelSelect": "Choisissez un modèle ESRGAN ONNX. x2 = plus rapide, x4 = plus net mais plus lent.",
   "Tooltip.OriginalFPS": "Indique la fréquence d’images native de la vidéo source pour une interpolation précise.",
-  "Tooltip.Resolution": "Spécifie la résolution de sortie pour la vidéo finale rendue (ex. : 1920x1080)."
+  "Tooltip.Resolution": "Spécifie la résolution de sortie pour la vidéo finale rendue (ex. : 1920x1080).",
+
+  "Pop & Subject Controls": "Contrôles de Pop et Sujet",
+  "Depth Pop Gamma": "Gamma de profondeur",
+  "Pop Mid (0..1)": "Milieu du Pop (0..1)",
+  "Stretch Lo": "Étirer Bas",
+  "Stretch Hi": "Étirer Haut",
+  "FG Pop ×": "Pop Premier plan ×",
+  "BG Push ×": "Poussée arrière-plan ×",
+  "Subject Lock": "Verrouillage du sujet",
+
+  "Tooltip.PopGamma": "Courbe de puissance pour la mise en forme de la profondeur. <1 ajoute du pop proche/moyen ; >1 aplatit la profondeur.",
+  "Tooltip.PopMid": "Profondeur cible pour le sujet après mise en forme (0 = proche, 1 = loin).",
+  "Tooltip.StretchLo": "Percentile bas utilisé lors de l'étirement de la plage de profondeur.",
+  "Tooltip.StretchHi": "Percentile haut utilisé lors de l'étirement de la plage de profondeur.",
+  "Tooltip.FGPop": "Multiplicateur pour accentuer le pop-out du premier plan.",
+  "Tooltip.BGPush": "Multiplicateur pour repousser l'arrière-plan plus profondément.",
+  "Tooltip.SubjectLock": "Force du verrouillage du zéro-parallaxe sur le sujet détecté."
 
 }
  

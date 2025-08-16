@@ -178,7 +178,25 @@
   "Tooltip.FPSMultiplier": "Controls how many extra frames are generated between originals (e.g., 2x, 4x, 8x FPS).",
   "Tooltip.AIBlend": "Controls how much AI output is blended with the original. High values preserve more source texture.",
   "Tooltip.InputResPct": "Downscales input before upscaling to save memory or improve speed. 100% = full resolution.",
-  "Tooltip.ModelSelect": "Choose an ESRGAN ONNX model. x2 = faster, x4 = sharper but slower."
+  "Tooltip.ModelSelect": "Choose an ESRGAN ONNX model. x2 = faster, x4 = sharper but slower.",
+
+  "Pop & Subject Controls": "Pop & Subject Controls",
+  "Depth Pop Gamma": "Depth Pop Gamma",
+  "Pop Mid (0..1)": "Pop Mid (0..1)",
+  "Stretch Lo": "Stretch Lo",
+  "Stretch Hi": "Stretch Hi",
+  "FG Pop ×": "FG Pop ×",
+  "BG Push ×": "BG Push ×",
+  "Subject Lock": "Subject Lock",
+
+  "Tooltip.PopGamma": "Power curve for depth shaping. <1 adds near/mid pop; >1 flattens depth.",
+  "Tooltip.PopMid": "Target depth for the subject after shaping (0=near, 1=far).",
+  "Tooltip.StretchLo": "Low percentile used when stretching the depth range.",
+  "Tooltip.StretchHi": "High percentile used when stretching the depth range.",
+  "Tooltip.FGPop": "Multiplier to emphasize foreground pop-out.",
+  "Tooltip.BGPush": "Multiplier to push background deeper.",
+  "Tooltip.SubjectLock": "How strongly to lock zero-parallax to the detected subject."
+
 }
 
 

@@ -166,7 +166,25 @@
   "Tooltip.FPSMultiplier": "オリジナルの間に生成される追加フレームの数を制御します（例：2x、4x、8x FPS）。",
   "Tooltip.AIBlend": "AI出力とオリジナルをどの程度ブレンドするかを制御します。高い値では元の質感をより多く保持します。",
   "Tooltip.InputResPct": "メモリ節約や高速化のために入力をアップスケール前にダウンサンプリングします。100%は元解像度。",
-  "Tooltip.ModelSelect": "ESRGAN ONNXモデルを選択します。x2は高速、x4は高精細ですが遅くなります。"
+  "Tooltip.ModelSelect": "ESRGAN ONNXモデルを選択します。x2は高速、x4は高精細ですが遅くなります。",
+
+  "Pop & Subject Controls": "ポップ＆被写体コントロール",
+  "Depth Pop Gamma": "奥行きポップガンマ",
+  "Pop Mid (0..1)": "ポップ中間 (0..1)",
+  "Stretch Lo": "ストレッチ低",
+  "Stretch Hi": "ストレッチ高",
+  "FG Pop ×": "前景ポップ ×",
+  "BG Push ×": "背景プッシュ ×",
+  "Subject Lock": "被写体ロック",
+
+  "Tooltip.PopGamma": "奥行き形成のためのべき乗カーブ。<1 は近距離/中距離のポップを追加、>1 は奥行きを平坦化。",
+  "Tooltip.PopMid": "成形後の被写体の目標奥行き（0=近、1=遠）。",
+  "Tooltip.StretchLo": "奥行き範囲を拡張する際に使用する低パーセンタイル。",
+  "Tooltip.StretchHi": "奥行き範囲を拡張する際に使用する高パーセンタイル。",
+  "Tooltip.FGPop": "前景のポップアウトを強調する乗数。",
+  "Tooltip.BGPush": "背景をより奥に押し込む乗数。",
+  "Tooltip.SubjectLock": "検出された被写体にゼロパララックスを固定する強さ。"
+
 
 }
 

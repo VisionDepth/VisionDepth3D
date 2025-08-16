@@ -171,6 +171,23 @@
   "Tooltip.ConvergenceStrength": "Agrega un desplazamiento de convergencia estéreo para controlar la profundidad aparente del sujeto principal. Valores más altos acercan las vistas izquierda y derecha, generando un efecto de sobresaliente más intenso.",
   "Tooltip.EnableDynConvergence": "Ajusta dinámicamente la intensidad de la convergencia según la profundidad del sujeto. Mejora la comodidad visual alineando automáticamente la convergencia con las áreas clave de la escena.",
   "Tooltip.InferenceSteps": "Controla el número de pasos que el modelo de difusión usa para estimar la profundidad. Valores más altos pueden mejorar la calidad, pero aumentan el tiempo de procesamiento.",
-  "Tooltip.CPUMode": "Determina qué partes del modelo se descargan a la CPU. Usa 'sequential' en sistemas con poca VRAM para reducir el uso de memoria GPU a cambio de menor velocidad."
+  "Tooltip.CPUMode": "Determina qué partes del modelo se descargan a la CPU. Usa 'sequential' en sistemas con poca VRAM para reducir el uso de memoria GPU a cambio de menor velocidad.",
+  
+  "Pop & Subject Controls": "Controles de Pop y Sujeto",
+  "Depth Pop Gamma": "Gamma de profundidad",
+  "Pop Mid (0..1)": "Pop medio (0..1)",
+  "Stretch Lo": "Estiramiento bajo",
+  "Stretch Hi": "Estiramiento alto",
+  "FG Pop ×": "Pop primer plano ×",
+  "BG Push ×": "Empuje fondo ×",
+  "Subject Lock": "Bloqueo de sujeto",
+
+  "Tooltip.PopGamma": "Curva de potencia para dar forma a la profundidad. <1 agrega pop cercano/medio; >1 aplana la profundidad.",
+  "Tooltip.PopMid": "Profundidad objetivo para el sujeto después de dar forma (0=cerca, 1=lejos).",
+  "Tooltip.StretchLo": "Percentil bajo usado al estirar el rango de profundidad.",
+  "Tooltip.StretchHi": "Percentil alto usado al estirar el rango de profundidad.",
+  "Tooltip.FGPop": "Multiplicador para enfatizar el pop-out del primer plano.",
+  "Tooltip.BGPush": "Multiplicador para empujar el fondo más profundo.",
+  "Tooltip.SubjectLock": "Qué tan fuerte se bloquea la cero paralaje al sujeto detectado."
 
 }

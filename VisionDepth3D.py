@@ -185,6 +185,15 @@ def reset_settings():
     mg_shift.set(2.0)
     bg_shift.set(6.0)
 
+    # --- NEW: Pop & Subject Controls ---
+    depth_pop_gamma.set(0.85)          # mid-contrast gamma curve for depth
+    depth_pop_mid.set(0.50)            # mid depth pivot point
+    depth_stretch_lo.set(0.05)         # lower depth compression bound
+    depth_stretch_hi.set(0.95)         # upper depth compression bound
+    fg_pop_multiplier.set(1.20)        # extra push-out for FG
+    bg_push_multiplier.set(1.10)       # extra push-back for BG
+    subject_lock_strength.set(1.00)    # subject tracking lock weight
+
     # ✨ Visual Enhancements
     sharpness_factor.set(1.0)
     blend_factor.set(0.0)
@@ -206,8 +215,8 @@ def reset_settings():
     preserve_original_aspect.set(False)
     zero_parallax_strength.set(0.000)
     skip_blank_frames.set(False)
-    convergence_strength.set(0.0),
-    enable_dynamic_convergence.set(True),
+    convergence_strength.set(0.0)
+    enable_dynamic_convergence.set(True)
 
     # 🎥 CRF for FFmpeg
     crf_value.set(23)
@@ -227,7 +236,6 @@ def reset_settings():
         print(f"⚠️ Aspect preview reset skipped: {e}")
 
     messagebox.showinfo("Settings Reset", "✅ All settings and preview panels reset to default!")
-
 
 def cancel_processing():
     global cancel_flag, suspend_flag, cancel_requested, process_thread
@@ -255,7 +263,6 @@ def resume_processing():
     print("▶ Processing Resumed!")
 
 is_rendering = False  # Make sure this is defined globally at the top of your script
-
 def handle_generate_3d():
     global process_thread, is_rendering
 
@@ -302,6 +309,13 @@ def handle_generate_3d():
                         dof_strength,
                         convergence_strength,
                         enable_dynamic_convergence,
+                        depth_pop_gamma,
+                        depth_pop_mid,
+                        depth_stretch_lo,
+                        depth_stretch_hi,
+                        fg_pop_multiplier,
+                        bg_push_multiplier,
+                        subject_lock_strength
                     )
                 except Exception as e:
                     print(f"❌ Error during 3D processing: {e}")
@@ -314,7 +328,6 @@ def handle_generate_3d():
             print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
     except Exception as e:
         print(f"❌ Error starting 3D processing: {e}")
-
 
 def grab_frame_from_video(video_path, frame_idx=0):
     cap = cv2.VideoCapture(video_path)
@@ -354,36 +367,79 @@ def update_aspect_preview(*args):
         aspect_preview_label.config(text="❌ Invalid Aspect Ratio")
         print(f"[Aspect Preview Error] {e}")
 
-# ✅ Simple Tooltip Helper for Tkinter
+
 class CreateToolTip:
-    def __init__(self, widget, text):
+    def __init__(self, widget, text, delay=500, wraplength=250):
         self.widget = widget
         self.text = text
+        self.delay = delay  # Delay before showing (ms)
+        self.wraplength = wraplength
         self.tip_window = None
-        self.widget.bind("<Enter>", self.show_tooltip)
+        self.id = None
+        self.alpha = 0.0  # For fade effect
+
+        self.widget.bind("<Enter>", self.schedule_show)
         self.widget.bind("<Leave>", self.hide_tooltip)
+        self.widget.bind("<ButtonPress>", self.hide_tooltip)
+
+    def schedule_show(self, event=None):
+        self.unschedule()
+        self.id = self.widget.after(self.delay, self.show_tooltip)
+
+    def unschedule(self):
+        if self.id:
+            self.widget.after_cancel(self.id)
+            self.id = None
 
     def show_tooltip(self, event=None):
         if self.tip_window or not self.text:
             return
-        x = y = 0
-        x, y, _, _ = self.widget.bbox("insert")
+        
+        # Positioning
+        x, y, _, _ = self.widget.bbox("insert") if self.widget.bbox("insert") else (0, 0, 0, 0)
         x += self.widget.winfo_rootx() + 25
         y += self.widget.winfo_rooty() + 25
+
+        # Create window
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(tw, text=self.text, justify='left',
-                         background="#ffffe0", relief='solid', borderwidth=1,
-                         font=("tahoma", "8", "normal"))
-        label.pack(ipadx=4, ipady=2)
+
+        # Drop shadow effect using an extra frame
+        shadow = tk.Frame(tw, bg="#999999")
+        shadow.pack(padx=2, pady=2)
+
+        label = tk.Label(
+            shadow, 
+            text=self.text, 
+            justify='left',
+            background="#ffffe0",
+            relief='solid',
+            borderwidth=1,
+            wraplength=self.wraplength,
+            font=("Segoe UI", 9, "normal")
+        )
+        label.pack(ipadx=6, ipady=4)
+
+        self.alpha = 0.0
+        self.fade_in()
+
+    def fade_in(self):
+        """Gradually make tooltip visible for a nicer feel."""
+        if self.tip_window:
+            self.alpha += 0.1
+            if self.alpha >= 1.0:
+                self.alpha = 1.0
+            self.tip_window.attributes("-alpha", self.alpha)
+            if self.alpha < 1.0:
+                self.tip_window.after(15, self.fade_in)
 
     def hide_tooltip(self, event=None):
+        self.unschedule()
         tw = self.tip_window
         self.tip_window = None
         if tw:
             tw.destroy()
-
 
 # ---GUI Setup---
 
@@ -391,80 +447,283 @@ class CreateToolTip:
 # Global Variables & Setup
 # -----------------------
 
+# ---- Dark theme helpers (once at startup) ----
+BG_MAIN      = "#1e1e1e"
+BG_CONTROLS  = "#292929"
+FG_TEXT      = "white"
+ACCENT_COLOR = "#4dd0e1"
+
+from tkinter import ttk  # ensure ttk imported
+
+def setup_dark_ttk(root):
+    style = ttk.Style(root)
+    style.theme_use("clam")
+
+    # Base frame bg for ttk
+    style.configure("VD3D.TFrame", background=BG_MAIN)
+
+    # Notebook + Tabs
+    style.configure("VD3D.TNotebook",
+        background=BG_MAIN,
+        borderwidth=0,
+    )
+    style.configure("VD3D.TNotebook.Tab",
+        background=BG_CONTROLS,
+        foreground=FG_TEXT,
+        padding=(10, 6),
+        borderwidth=0,
+    )
+    style.map("VD3D.TNotebook.Tab",
+        background=[("selected", "#333333"), ("active", "#3a3a3a")],
+        foreground=[("selected", ACCENT_COLOR), ("active", FG_TEXT)],
+    )
+
+    # Scrollbars
+    style.configure("VD.Vertical.TScrollbar",
+                    background=BG_CONTROLS, troughcolor=BG_MAIN,
+                    bordercolor=BG_MAIN, arrowcolor=FG_TEXT,
+                    lightcolor=BG_MAIN, darkcolor=BG_MAIN)
+    style.configure("VD.Horizontal.TScrollbar",
+                    background=BG_CONTROLS, troughcolor=BG_MAIN,
+                    bordercolor=BG_MAIN, arrowcolor=FG_TEXT,
+                    lightcolor=BG_MAIN, darkcolor=BG_MAIN)
+
+    # Progressbar (optional)
+    style.configure("VD.Horizontal.TProgressbar",
+                    background=ACCENT_COLOR, troughcolor=BG_CONTROLS)
+
+
+# ---------- Reusable dark scrollable container ----------
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, parent, *, vscroll=True, hscroll=False,
+                 bg=BG_MAIN, inner_bg=BG_MAIN, **kwargs):
+        super().__init__(parent, **kwargs)
+
+        # canvas draws the background
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=bg)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # inner content frame (tk.Frame so bg actually shows)
+        self.inner = tk.Frame(self.canvas, bg=inner_bg)
+
+        # scrollbars (ttk, dark style)
+        self.vsb = None
+        self.hsb = None
+        if vscroll:
+            self.vsb = ttk.Scrollbar(self, orient="vertical",
+                                     command=self.canvas.yview,
+                                     style="VD.Vertical.TScrollbar")
+            self.canvas.configure(yscrollcommand=self.vsb.set)
+            self.vsb.grid(row=0, column=1, sticky="ns")
+        if hscroll:
+            self.hsb = ttk.Scrollbar(self, orient="horizontal",
+                                     command=self.canvas.xview,
+                                     style="VD.Horizontal.TScrollbar")
+            self.canvas.configure(xscrollcommand=self.hsb.set)
+            self.hsb.grid(row=1, column=0, sticky="ew")
+
+        # put inner frame into canvas
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        # keep scrollregion current + make inner match width on resize
+        self.inner.bind(
+            "<Configure>",
+            lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self._win, width=e.width)
+        )
+
+        # mousewheel: only while hovered
+        self._bind_hover_scroll()
+        self.configure(style="VD3D.TFrame")  # ensure bg matches
+
+    def _bind_hover_scroll(self):
+        self.canvas.bind("<Enter>", self._mw_bind)
+        self.canvas.bind("<Leave>", self._mw_unbind)
+        self.inner.bind("<Enter>", self._mw_bind)
+        self.inner.bind("<Leave>", self._mw_unbind)
+        for seq in ("<Button-4>", "<Button-5>"):  # Linux
+            self.canvas.bind(seq, self._on_mousewheel)
+            self.inner.bind(seq, self._on_mousewheel)
+        self.bind("<Destroy>", lambda _e: self._mw_unbind())
+
+    def _mw_bind(self, _e=None):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_wheel)
+
+    def _mw_unbind(self, _e=None):
+        try:
+            self.canvas.unbind_all("<MouseWheel>")
+            self.canvas.unbind_all("<Shift-MouseWheel>")
+        except Exception:
+            pass
+
+    def _on_mousewheel(self, event):
+        if event.num in (4, 5):
+            delta = -1 if event.num == 4 else 1
+        else:
+            delta = int(-event.delta / 120)
+        self.canvas.yview_scroll(delta, "units")
+
+    def _on_shift_wheel(self, event):
+        delta = int(-event.delta / 120) if event.delta else 0
+        self.canvas.xview_scroll(delta, "units")
+
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.3")
-root.geometry("890x870")
+root.title("VisionDepth3D v3.4")
+root.geometry("897x786+514+45")
+root.resizable(True, False)
 
-# --- Menu Bar Setup ---
-menu_bar = tk.Menu(root)
-root.config(menu=menu_bar)
+# Apply dark ttk styles once
+setup_dark_ttk(root)
 
-# 🌐 Language Menu
-language_menu = tk.Menu(menu_bar, tearoff=0)
-lang_var = tk.StringVar(value="en")
+# Root grid
+root.grid_rowconfigure(0, weight=0)  # header
+root.grid_rowconfigure(1, weight=1)  # notebook
+root.grid_columnconfigure(0, weight=1)
 
-# Add language options
-for code, label in [("en", "English"), ("fr", "Français"), ("de", "German"), ("es", "Español"), ("ja", "Japanese"), ]:
-    language_menu.add_command(
-        label=label,
-        command=lambda c=code: (
-            load_language(c),
-            refresh_ui_labels(),
-            lang_var.set(c)
+# OPTIONAL: these affect tk.Menu dropdown styling; not required for custom header
+MENU_BG        = "#1e1e1e"
+MENU_FG        = "white"
+MENU_ACTIVE_BG = "#333333"
+MENU_ACTIVE_FG = "#4dd0e1"
+MENU_FONT      = ("Segoe UI", 9)
+root.option_add("*Menu.background",       MENU_BG)
+root.option_add("*Menu.foreground",       MENU_FG)
+root.option_add("*Menu.activeBackground", MENU_ACTIVE_BG)
+root.option_add("*Menu.activeForeground", MENU_ACTIVE_FG)
+root.option_add("*Menu.relief",           "flat")
+root.option_add("*Menu.borderWidth",      1)
+root.option_add("*Menu.font",             MENU_FONT)
+root.option_add("*tearOff",               False)
+
+# --- Dark Header Bar (custom, replaces native menubar) ---
+HEADER_BG  = "#1e1e1e"
+HEADER_FG  = "white"
+HEADER_HOV = "#2a2a2a"
+ACCENT     = "#4dd0e1"
+
+def build_dark_header(root, on_language_change):
+    style = ttk.Style(root); style.theme_use("clam")
+    style.configure("VD.Menu.TMenubutton",
+                    background=HEADER_BG, foreground=HEADER_FG,
+                    padding=(10,4), relief="flat")
+    style.map("VD.Menu.TMenubutton",
+              background=[("active", HEADER_HOV)],
+              foreground=[("active", HEADER_FG)])
+
+    hdr = tk.Frame(root, bg=HEADER_BG)
+    hdr.grid_columnconfigure(99, weight=1)  # spacer stretch
+
+    def mk_menu():
+        return tk.Menu(hdr, tearoff=False, bg=HEADER_BG, fg=HEADER_FG,
+                       activebackground=HEADER_HOV, activeforeground=ACCENT,
+                       relief="flat", borderwidth=1)
+
+    # Language
+    lang_var = tk.StringVar(value="en")
+    lang_btn = ttk.Menubutton(hdr, text="🌐 Language", style="VD.Menu.TMenubutton")
+    lang_menu = mk_menu()
+    for code, label in [("en","English"),("fr","Français"),("de","German"),
+                        ("es","Español"),("ja","Japanese")]:
+        lang_menu.add_radiobutton(
+            label=label, variable=lang_var, value=code,
+            command=lambda c=code: (lang_var.set(c), on_language_change(c))
+        )
+    lang_btn["menu"] = lang_menu
+    lang_btn.grid(row=0, column=0, padx=(8,0), pady=4)
+
+    # File
+    file_btn = ttk.Menubutton(hdr, text="File", style="VD.Menu.TMenubutton")
+    file_menu = mk_menu()
+    file_menu.add_command(label="Exit    Ctrl+Q", command=root.quit)
+    file_btn["menu"] = file_menu
+    file_btn.grid(row=0, column=1, padx=(8,0), pady=4)
+
+    # Help
+    help_btn = ttk.Menubutton(hdr, text="Help", style="VD.Menu.TMenubutton")
+    help_menu = mk_menu()
+    help_menu.add_command(
+        label="About    F1",
+        command=lambda: messagebox.showinfo(
+            "About VisionDepth3D",
+            (
+                "VisionDepth3D v3.4\n"
+                "----------------------------\n"
+                "A real-time 2D-to-3D conversion suite for cinema and VR.\n\n"
+                "Features:\n"
+                " • 25+ AI depth estimation models\n"
+                " • Depth-weighted parallax shifting\n"
+                " • Scene-aware stereo rendering\n"
+                " • CUDA acceleration\n"
+                " • Real-time preview & batch processing\n\n"
+                "Created by: Johnathan Carpenter\n"
+                "Website: https://github.com/VisionDepth/VisionDepth3D\n"
+                "© 2025 VisionDepth3D. All rights reserved."
+            )
         )
     )
 
-menu_bar.add_cascade(label="🌐 Language", menu=language_menu)
+    help_btn["menu"] = help_menu
+    help_btn.grid(row=0, column=2, padx=(8,0), pady=4)
 
-# Optional: File and Help menus
-file_menu = tk.Menu(menu_bar, tearoff=0)
-file_menu.add_command(label="Exit", command=root.quit)
-menu_bar.add_cascade(label="File", menu=file_menu)
+    # divider
+    tk.Frame(hdr, bg="#2a2a2a", height=1).grid(row=1, column=0, columnspan=100, sticky="ew")
+    return hdr
 
-help_menu = tk.Menu(menu_bar, tearoff=0)
-help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About", "VisionDepth3D v3.1.8"))
-menu_bar.add_cascade(label="Help", menu=help_menu)
+def _on_language_change(code):
+    load_language(code)
+    refresh_ui_labels()
 
+header = build_dark_header(root, _on_language_change)
+header.grid(row=0, column=0, sticky="ew")
 
-# --- Notebook for Tabs ---
-tab_control = ttk.Notebook(root)
-tab_control.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
+# Shortcuts
+root.bind_all("<Control-q>", lambda e: root.quit())
+root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.3"))
+
+# --- Notebook for Tabs (single instance, dark) ---
+tab_control = ttk.Notebook(root, style="VD3D.TNotebook")
+tab_control.grid(row=1, column=0, sticky="nsew")
 
 # --- Depth Estimation GUI ---
-depth_estimation_frame = tk.Frame(tab_control)
-tab_control.add(depth_estimation_frame, text="Depth Estimation")  # Initial text
-depth_tab_index = tab_control.index("end") - 1  # Save the tab index
+depth_estimation_frame = ttk.Frame(tab_control, style="VD3D.TFrame")
+tab_control.add(depth_estimation_frame, text="Depth Estimation")
+depth_tab_index = tab_control.index("end") - 1
 
-# Use the depth estimation tab’s content frame as the parent
-depth_content_frame = tk.Frame(depth_estimation_frame, highlightthickness=0, bd=0)
+depth_content_frame = tk.Frame(depth_estimation_frame, bg=BG_MAIN, highlightthickness=0, bd=0)
 depth_content_frame.pack(fill="both", expand=True)
 
-# Sidebar Frame inside depth_content_frame
-sidebar = tk.Frame(depth_content_frame, bg="#1c1c1c", width=320)
+sidebar = tk.Frame(depth_content_frame, bg=BG_MAIN, width=320)
 sidebar.pack(side="left", fill="y")
 
-# Main Content Frame inside depth_content_frame
-main_content = tk.Frame(depth_content_frame, bg="#2b2b2b")
+main_content = tk.Frame(depth_content_frame, bg=BG_CONTROLS)
 main_content.pack(side="right", fill="both", expand=True)
 
-# --- 3D Video Generator Tab ---
-visiondepth_frame = tk.Frame(tab_control)
+# --- 3D Video Generator Tab (scrollable, dark) ---
+visiondepth_frame = ttk.Frame(tab_control, style="VD3D.TFrame")
 tab_control.add(visiondepth_frame, text="3D Video Generator")
 visiondepth_tab_index = tab_control.index("end") - 1
 
-visiondepth_content_frame = tk.Frame(visiondepth_frame, highlightthickness=0, bd=0, bg="#1c1c1c")
-visiondepth_content_frame.pack(fill="both", expand=True)
+scroll_area = ScrollableFrame(visiondepth_frame, vscroll=True, hscroll=False,
+                              bg=BG_MAIN, inner_bg=BG_MAIN)
+scroll_area.pack(fill="both", expand=True)
+visiondepth_content_frame = scroll_area.inner  # parent for your 3D widgets
 
-FrameTools3D = tk.Frame(tab_control, bg="#1c1c1c")
+# --- FrameTools Tab ---
+FrameTools3D = ttk.Frame(tab_control, style="VD3D.TFrame")
 tab_control.add(FrameTools3D, text="FrameTools")
 frametools_tab_index = tab_control.index("end") - 1
 
-# --- Colors ---
-bg_main = "#1e1e1e"
-bg_controls = "#292929"
-accent_color = "#4dd0e1"
-fg_text = "white"
+scroll_area = ScrollableFrame(FrameTools3D, vscroll=True, hscroll=False,
+                              bg=BG_MAIN, inner_bg=BG_MAIN)
+scroll_area.pack(fill="both", expand=True)
+FrameTools3D = scroll_area.inner
 
 # --- Depth Content ---
 
@@ -475,8 +734,8 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "DepthCrafter (Diffusers)": "tencent/DepthCrafter",
-        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
+#        "DepthCrafter (Diffusers)": "tencent/DepthCrafter",
+#        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
@@ -487,15 +746,19 @@ def load_supported_models():
         "Depth Anything V1 Large": "LiheYoung/depth-anything-large-hf",
         "Depth Anything V1 Base": "LiheYoung/depth-anything-base-hf",
         "Depth Anything V1 Small": "LiheYoung/depth-anything-small-hf",
+        "vitl14": "LiheYoung/depth_anything_vitl14",
         "V2-Metric-Indoor-Large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "V2-Metric-Outdoor-Large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
         "DepthPro": "apple/DepthPro-hf",
-        "Prompt Depth Anything": "depth-anything/prompt-depth-anything-vitl-hf",
+#        "Prompt Depth Anything": "depth-anything/prompt-depth-anything-vitl-hf",
         "marigold-depth-v1-0": "prs-eth/marigold-depth-v1-0",
         "ZoeDepth": "Intel/zoedepth-nyu-kitti",
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
         "DPT-Large": "Intel/dpt-large",
+        "Manojb - DPT-Large": "Manojb/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
+        "Midas-V2": "qualcomm/Midas-V2",
+        
     }
 
     # ✅ Add local models from weights directory
@@ -1187,6 +1450,14 @@ skip_blank_frames = tk.BooleanVar()
 dof_strength = tk.DoubleVar(value=2.0)  # Default strength (sigma)
 enable_dynamic_convergence = tk.BooleanVar(value=True)
 convergence_strength = tk.DoubleVar(value=0.0)
+depth_pop_gamma       = tk.DoubleVar(value=0.85)
+depth_pop_mid         = tk.DoubleVar(value=0.50)
+depth_stretch_lo      = tk.DoubleVar(value=0.05)
+depth_stretch_hi      = tk.DoubleVar(value=0.95)
+fg_pop_multiplier     = tk.DoubleVar(value=1.20)
+bg_push_multiplier    = tk.DoubleVar(value=1.10)
+subject_lock_strength = tk.DoubleVar(value=1.00)
+
 
 
 
@@ -1278,6 +1549,14 @@ gui_variables = {
     "dof_strength": dof_strength,
     "convergence_strength": convergence_strength,
     "enable_dynamic_convergence": enable_dynamic_convergence,
+    "depth_pop_gamma": depth_pop_gamma,
+    "depth_pop_mid": depth_pop_mid,
+    "depth_stretch_lo": depth_stretch_lo,
+    "depth_stretch_hi": depth_stretch_hi,
+    "fg_pop_multiplier": fg_pop_multiplier,
+    "bg_push_multiplier": bg_push_multiplier,
+    "subject_lock_strength": subject_lock_strength,
+    
 
 }
 
@@ -1575,6 +1854,94 @@ tk.Scale(
 ).grid(row=6, column=3, sticky="ew")
 
 
+pop_frame = tk.LabelFrame(
+    visiondepth_content_frame,
+    text=t("Pop & Subject Controls"),
+    bg="#1c1c1c", fg="white",
+    font=("Segoe UI", 10, "bold"),
+    labelanchor="nw", padx=10, pady=10
+)
+pop_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="nsew")
+
+for i in range(4):
+    pop_frame.columnconfigure(i, weight=1)
+
+# Row 0
+pop_gamma_label = tk.Label(pop_frame, text=t("Depth Pop Gamma"), bg="#1c1c1c", fg="white")
+pop_gamma_label.grid(row=0, column=0, sticky="w")
+pop_gamma_scale = tk.Scale(pop_frame, from_=0.70, to=1.20, resolution=0.01,
+                           orient=tk.HORIZONTAL, variable=depth_pop_gamma,
+                           bg="#1c1c1c", fg="white")
+pop_gamma_scale.grid(row=0, column=1, sticky="ew")
+
+pop_mid_label = tk.Label(pop_frame, text=t("Pop Mid (0..1)"), bg="#1c1c1c", fg="white")
+pop_mid_label.grid(row=0, column=2, sticky="w")
+pop_mid_entry = tk.Entry(pop_frame, width=8, bg="#2b2b2b", fg="white", insertbackground="white")
+pop_mid_entry.insert(0, f"{depth_pop_mid.get():.2f}")
+pop_mid_entry.grid(row=0, column=3, sticky="w")
+
+# Row 1
+stretch_lo_label = tk.Label(pop_frame, text=t("Stretch Lo"), bg="#1c1c1c", fg="white")
+stretch_lo_label.grid(row=1, column=0, sticky="w")
+stretch_lo_entry = tk.Entry(pop_frame, width=8, bg="#2b2b2b", fg="white", insertbackground="white")
+stretch_lo_entry.insert(0, f"{depth_stretch_lo.get():.2f}")
+stretch_lo_entry.grid(row=1, column=1, sticky="w")
+
+stretch_hi_label = tk.Label(pop_frame, text=t("Stretch Hi"), bg="#1c1c1c", fg="white")
+stretch_hi_label.grid(row=1, column=2, sticky="w")
+stretch_hi_entry = tk.Entry(pop_frame, width=8, bg="#2b2b2b", fg="white", insertbackground="white")
+stretch_hi_entry.insert(0, f"{depth_stretch_hi.get():.2f}")
+stretch_hi_entry.grid(row=1, column=3, sticky="w")
+
+# Row 2
+fg_pop_label = tk.Label(pop_frame, text=t("FG Pop ×"), bg="#1c1c1c", fg="white")
+fg_pop_label.grid(row=2, column=0, sticky="w")
+fg_pop_scale = tk.Scale(pop_frame, from_=1.00, to=1.60, resolution=0.01,
+                        orient=tk.HORIZONTAL, variable=fg_pop_multiplier,
+                        bg="#1c1c1c", fg="white")
+fg_pop_scale.grid(row=2, column=1, sticky="ew")
+
+bg_push_label = tk.Label(pop_frame, text=t("BG Push ×"), bg="#1c1c1c", fg="white")
+bg_push_label.grid(row=2, column=2, sticky="w")
+bg_push_scale = tk.Scale(pop_frame, from_=1.00, to=1.40, resolution=0.01,
+                         orient=tk.HORIZONTAL, variable=bg_push_multiplier,
+                         bg="#1c1c1c", fg="white")
+bg_push_scale.grid(row=2, column=3, sticky="ew")
+
+# Row 3
+subj_lock_label = tk.Label(pop_frame, text=t("Subject Lock"), bg="#1c1c1c", fg="white")
+subj_lock_label.grid(row=3, column=0, sticky="w")
+subj_lock_scale = tk.Scale(pop_frame, from_=0.00, to=2.00, resolution=0.05,
+                           orient=tk.HORIZONTAL, variable=subject_lock_strength,
+                           bg="#1c1c1c", fg="white")
+subj_lock_scale.grid(row=3, column=1, sticky="ew")
+
+
+def _commit_pop_entries():
+    try:
+        depth_pop_mid.set(float(pop_mid_entry.get()))
+        lo = float(stretch_lo_entry.get())
+        hi = float(stretch_hi_entry.get())
+        lo = max(0.0, min(1.0, lo))
+        hi = max(0.0, min(1.0, hi))
+        if hi <= lo:
+            messagebox.showwarning(t("Invalid Input"), t("Stretch Hi must be greater than Stretch Lo."))
+            return
+        depth_stretch_lo.set(lo)
+        depth_stretch_hi.set(hi)
+    except ValueError:
+        messagebox.showwarning(t("Invalid Input"), t("Use numeric values for Mid/Lo/Hi (0..1)."))
+
+apply_entries_btn = tk.Button(pop_frame, text=t("Apply Entries"), command=_commit_pop_entries,
+                              bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white")
+apply_entries_btn.grid(row=3, column=3, sticky="e")
+
+# (optional) Enter-to-commit
+pop_mid_entry.bind("<Return>", lambda _e: _commit_pop_entries())
+stretch_lo_entry.bind("<Return>", lambda _e: _commit_pop_entries())
+stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
+
+
 # --- Mode Toggle ---
 mode = tk.StringVar(value="Single")
 tk.Label(visiondepth_content_frame, text="Mode:", bg="#1e1e1e", fg="white").grid(row=3, column=0, sticky="w")
@@ -1780,6 +2147,13 @@ preview_button = tk.Button(
         dof_strength,
         convergence_strength,
         enable_dynamic_convergence,
+        depth_pop_gamma,
+        depth_pop_mid,
+        depth_stretch_lo,
+        depth_stretch_hi,
+        fg_pop_multiplier,
+        bg_push_multiplier,
+        subject_lock_strength,
 
     )
 
@@ -2023,8 +2397,8 @@ tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, t("Tooltip.A
 
 # Sliders
 tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, t("Tooltip.FGShift"))
-tooltip_refs["mg_shift_label"] = CreateToolTip(mg_shift_label, t("Tooltip.MGShift"))
-tooltip_refs["MGShift"] = CreateToolTip(bg_shift_label, t("Tooltip.BGShift"))
+tooltip_refs["MGShift"] = CreateToolTip(mg_shift_label, t("Tooltip.MGShift"))
+tooltip_refs["BGShift"] = CreateToolTip(bg_shift_label, t("Tooltip.BGShift"))
 tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, t("Tooltip.Sharpness"))
 tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, t("Tooltip.ZeroParallaxStrength"))
 tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, t("Tooltip.ParallaxBalance"))
@@ -2042,6 +2416,14 @@ tooltip_refs["Feathering"] = CreateToolTip(enable_feathering_checkbox, t("Toolti
 tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, t("Tooltip.SkipBlankFrames"))
 tooltip_refs["UseFFmpeg"] = CreateToolTip(use_ffmpeg_checkbox, t("Tooltip.UseFFmpeg"))
 tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, t("Tooltip.EnableDynConvergence"))
+
+tooltip_refs["PopGamma"]        = CreateToolTip(pop_gamma_label, t("Tooltip.PopGamma"))
+tooltip_refs["PopMid"]          = CreateToolTip(pop_mid_label,   t("Tooltip.PopMid"))
+tooltip_refs["StretchLo"]       = CreateToolTip(stretch_lo_label, t("Tooltip.StretchLo"))
+tooltip_refs["StretchHi"]       = CreateToolTip(stretch_hi_label, t("Tooltip.StretchHi"))
+tooltip_refs["FGPop"]           = CreateToolTip(fg_pop_label,    t("Tooltip.FGPop"))
+tooltip_refs["BGPush"]          = CreateToolTip(bg_push_label,   t("Tooltip.BGPush"))
+tooltip_refs["SubjectLock"]     = CreateToolTip(subj_lock_label, t("Tooltip.SubjectLock"))
 
 
 # Encoding
@@ -2066,101 +2448,118 @@ PRESET_DIR = "presets"
 os.makedirs(PRESET_DIR, exist_ok=True)
 
 def refresh_ui_labels():
+    # small safety helper so missing widgets don't crash refresh
+    def _cfg(w, **kw):
+        try:
+            w.config(**kw)
+        except Exception:
+            pass
+
+    # Tabs
     tab_control.tab(depth_tab_index, text=t("Depth Estimation"))
     tab_control.tab(visiondepth_tab_index, text=t("3D Video Generator"))
     tab_control.tab(frametools_tab_index, text=t("FrameTools"))
-    selected_model_label.config(text=t("Model"))
-    output_dir_label.config(text=t("Output Dir: None"))
-    output_dir_button.config(text=t("Choose Directory"))
-    colormap_label.config(text=t("Colormap:"))
-    invert_checkbox.config(text=t("Invert Depth"))
-    save_frames_checkbox.config(text=t("Save Frames"))
-    batch_size_label.config(text=t("Batch Size (Frames):"))
-    inference_res_label.config(text=t("Inference Resolution:"))
-    inference_steps_label.config(text=t("Inference Steps:"))
-    status_label.config(text=t("Ready"))
-    offload_mode_label.config(text=t("CPU Offload Mode"))
-    input_label.config(text=t("Input Image"))
-    output_label.config(text=t("Depth Map"))
-    process_image_button.config(text=t("Process Image"))
-    process_image_folder_button.config(text=t("Process Image Folder"))
-    process_video_button.config(text=t("Process Video"))
-    process_video_folder_button.config(text=t("Process Video Folder"))
 
-    # 3D Render Tab Labels
-    video_thumbnail_label.config(text=t("No Thumbnail"))
-    video_specs_label.config(text=t("Resolution: N/A\nFPS: N/A"))
-    depth_map_label.config(text=t("Depth Map (3D): None"))
-    audio_tool_button.config(text=t("🎵 Audio Tool"))
-    select_input_video_button.config(text=t("Select Input Video"))
-    select_depth_map_button.config(text=t("Select Depth Map"))
-    select_output_video_button.config(text=t("Select Output Video"))
-    format_button.config(text=t("3D Format"))
-    start_button.config(text=t("Generate 3D Video"))
-    preview_button.config(text=t("Open Preview"))
-    suspend_button.config(text=t("Suspend"))
-    resume_button.config(text=t("Resume"))
-    cancel_button.config(text=t("Cancel"))
-    reset_button.config(text=t("Reset to Defaults"))
-    save_preset_button.config(text=t("Save Preset"))
+    # Depth tab
+    _cfg(selected_model_label, text=t("Model"))
+    _cfg(output_dir_label, text=t("Output Dir: None"))
+    _cfg(output_dir_button, text=t("Choose Directory"))
+    _cfg(colormap_label, text=t("Colormap:"))
+    _cfg(invert_checkbox, text=t("Invert Depth"))
+    _cfg(save_frames_checkbox, text=t("Save Frames"))
+    _cfg(batch_size_label, text=t("Batch Size (Frames):"))
+    _cfg(inference_res_label, text=t("Inference Resolution:"))
+    _cfg(inference_steps_label, text=t("Inference Steps:"))
+    _cfg(status_label, text=t("Ready"))
+    _cfg(offload_mode_label, text=t("CPU Offload Mode"))
+    _cfg(input_label, text=t("Input Image"))
+    _cfg(output_label, text=t("Depth Map"))
+    _cfg(process_image_button, text=t("Process Image"))
+    _cfg(process_image_folder_button, text=t("Process Image Folder"))
+    _cfg(process_video_button, text=t("Process Video"))
+    _cfg(process_video_folder_button, text=t("Process Video Folder"))
 
-    # Sliders
-    fg_shift_label.config(text=t("Foreground Shift"))
-    mg_shift_label.config(text=t("Midground Shift"))
-    bg_shift_label.config(text=t("Background Shift"))
-    sharpness_factor_label.config(text=t("Sharpness Factor"))
-    zero_parallax_strength_label.config(text=t("Zero Parallax Strength"))
-    parallax_balance_label.config(text=t("Parallax Balance"))
-    max_pixel_shift_label.config(text=t("Max Pixel Shift %"))
-    dof_strength_label.config(text=t("DOF Strength"))
-    convergence_strength_label.config(text=t("Convergence Strength"))
+    # 3D Render tab — existing controls
+    _cfg(video_thumbnail_label, text=t("No Thumbnail"))
+    _cfg(video_specs_label, text=t("Resolution: N/A\nFPS: N/A"))
+    _cfg(depth_map_label, text=t("Depth Map (3D): None"))
+    _cfg(audio_tool_button, text=t("🎵 Audio Tool"))
+    _cfg(select_input_video_button, text=t("Select Input Video"))
+    _cfg(select_depth_map_button, text=t("Select Depth Map"))
+    _cfg(select_output_video_button, text=t("Select Output Video"))
+    _cfg(format_button, text=t("3D Format"))
+    _cfg(start_button, text=t("Generate 3D Video"))
+    _cfg(preview_button, text=t("Open Preview"))
+    _cfg(suspend_button, text=t("Suspend"))
+    _cfg(resume_button, text=t("Resume"))
+    _cfg(cancel_button, text=t("Cancel"))
+    _cfg(reset_button, text=t("Reset to Defaults"))
+    _cfg(save_preset_button, text=t("Save Preset"))
 
-    # Toggles and Checkboxes
-    preserve_aspect_checkbox.config(text=t("Preserve Original Aspect Ratio"))
-    auto_crop_checkbox.config(text=t("Auto Crop Black Bars"))
-    use_subject_tracking_checkbox.config(text=t("Stabilize Zero-Parallax (center-depth)"))
-    use_dfw_checkbox.config(text=t("Enable Floating Window (DFW)"))
-    use_ffmpeg_checkbox.config(text=t("Use FFmpeg Renderer"))
-    enable_edge_checkbox.config(text=t("Enable Edge Masking"))
-    enable_feathering_checkbox.config(text=t("Enable Feathering"))
-    skip_blank_frames_checkbox.config(text=t("Skip Blank/White Frames"))
-    enable_dynamic_convergence_checkbox.config(text=t("Enable Dynamic Convergence"))
+    # Parallax/quality sliders (existing)
+    _cfg(fg_shift_label, text=t("Foreground Shift"))
+    _cfg(mg_shift_label, text=t("Midground Shift"))
+    _cfg(bg_shift_label, text=t("Background Shift"))
+    _cfg(sharpness_factor_label, text=t("Sharpness Factor"))
+    _cfg(zero_parallax_strength_label, text=t("Zero Parallax Strength"))
+    _cfg(parallax_balance_label, text=t("Parallax Balance"))
+    _cfg(max_pixel_shift_label, text=t("Max Pixel Shift %"))
+    _cfg(dof_strength_label, text=t("DOF Strength"))
+    _cfg(convergence_strength_label, text=t("Convergence Strength"))
 
-    # Encoding Settings
-    selected_aspect_ratio_label.config(text=t("Aspect Ratio:"))
-    selected_ffmpeg_codec_label.config(text=t("FFmpeg Codec:"))
-    selected_codec_label.config(text=t("Codec:"))
-    crf_value_label.config(text=t("CRF"))
-    nvenc_cq_value_label.config(text=t("NVENC CQ"))
+    # ✅ NEW: “Pop & Subject Controls” group + labels
+    _cfg(pop_gamma_label, text=t("Depth Pop Gamma"))
+    _cfg(pop_mid_label, text=t("Pop Mid (0..1)"))
+    _cfg(stretch_lo_label, text=t("Stretch Lo"))
+    _cfg(stretch_hi_label, text=t("Stretch Hi"))
+    _cfg(fg_pop_label, text=t("FG Pop ×"))
+    _cfg(bg_push_label, text=t("BG Push ×"))
+    _cfg(subj_lock_label, text=t("Subject Lock"))
 
-    encoding_frame.config(text=t("Encoding Settings"))
-    options_frame.config(text=t("Processing Options"))
-    top_widgets_frame.config(text=t("Video Info"))
+    # Toggles / checkboxes (existing)
+    _cfg(preserve_aspect_checkbox, text=t("Preserve Original Aspect Ratio"))
+    _cfg(auto_crop_checkbox, text=t("Auto Crop Black Bars"))
+    _cfg(use_subject_tracking_checkbox, text=t("Stabilize Zero-Parallax (center-depth)"))
+    _cfg(use_dfw_checkbox, text=t("Enable Floating Window (DFW)"))
+    _cfg(use_ffmpeg_checkbox, text=t("Use FFmpeg Renderer"))
+    _cfg(enable_edge_checkbox, text=t("Enable Edge Masking"))
+    _cfg(enable_feathering_checkbox, text=t("Enable Feathering"))
+    _cfg(skip_blank_frames_checkbox, text=t("Skip Blank/White Frames"))
+    _cfg(enable_dynamic_convergence_checkbox, text=t("Enable Dynamic Convergence"))
 
+    # Encoding settings
+    _cfg(selected_aspect_ratio_label, text=t("Aspect Ratio:"))
+    _cfg(selected_ffmpeg_codec_label, text=t("FFmpeg Codec:"))
+    _cfg(selected_codec_label, text=t("Codec:"))
+    _cfg(crf_value_label, text=t("CRF"))
+    _cfg(nvenc_cq_value_label, text=t("NVENC CQ"))
+    _cfg(encoding_frame, text=t("Encoding Settings"))
+    _cfg(options_frame, text=t("Processing Options"))
+    _cfg(top_widgets_frame, text=t("Video Info"))
 
-    # FrameTools Tab
-    extract_frames_button.config(text=t("Extract Frames from Video"))
-    io_frame.config(text=t("Input / Output"))
-    frames_folder_label.config(text=t("Frames Folder:"))
-    browse_button.config(text=t("Browse"))
-    output_video_file_label.config(text=t("Output Video File:"))
-    save_as_button.config(text=t("Save As"))
+    # FrameTools tab
+    _cfg(extract_frames_button, text=t("Extract Frames from Video"))
+    _cfg(io_frame, text=t("Input / Output"))
+    _cfg(frames_folder_label, text=t("Frames Folder:"))
+    _cfg(browse_button, text=t("Browse"))
+    _cfg(output_video_file_label, text=t("Output Video File:"))
+    _cfg(save_as_button, text=t("Save As"))
 
-    proc_frame.config(text=t("⚙️ Processing Options"))
-    RIFE_FPS_button.config(text=t("Enable RIFE Interpolation"))
-    esrgan_button.config(text=t("Enable Real-ESRGAN Upscale"))
+    _cfg(proc_frame, text=t("⚙️ Processing Options"))
+    _cfg(RIFE_FPS_button, text=t("Enable RIFE Interpolation"))
+    _cfg(esrgan_button, text=t("Enable Real-ESRGAN Upscale"))
 
-    out_frame.config(text=t("Output Settings"))
-    resolution_label.config(text=t("Resolution (WxH):"))
-    original_fps_label.config(text=t("Original FPS:"))
-    fps_multi_label.config(text=t("FPS Interpolation Multiplier:"))
-    selected_ffmpeg_codec_frametools_label.config(text=t("FFmpeg Output Codec:"))
+    _cfg(out_frame, text=t("Output Settings"))
+    _cfg(resolution_label, text=t("Resolution (WxH):"))
+    _cfg(original_fps_label, text=t("Original FPS:"))
+    _cfg(fps_multi_label, text=t("FPS Interpolation Multiplier:"))
+    _cfg(selected_ffmpeg_codec_frametools_label, text=t("FFmpeg Output Codec:"))
 
-    esrgan_frame.config(text=t("ESRGAN Settings"))
-    ai_blend_select.config(text=t("AI Blending:"))
-    input_res_pct_label.config(text=t("Input Resolution %:"))
-    model_select.config(text=t("Model Selection:"))
-    start_processing_button.config(text=t("▶ Start Processing"))
+    _cfg(esrgan_frame, text=t("ESRGAN Settings"))
+    _cfg(ai_blend_select, text=t("AI Blending:"))
+    _cfg(input_res_pct_label, text=t("Input Resolution %:"))
+    _cfg(model_select, text=t("Model Selection:"))
+    _cfg(start_processing_button, text=t("▶ Start Processing"))
 
     # ✅ Update tooltip text for active language
     for key, tooltip in tooltip_refs.items():
@@ -2171,7 +2570,6 @@ def get_all_presets():
     return [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(PRESET_DIR, "*.json"))]
 
 preset_menu['values'] = get_all_presets()
-
 def apply_preset(preset_name):
     path = os.path.join(PRESET_DIR, f"{preset_name}.json")
 
@@ -2182,29 +2580,58 @@ def apply_preset(preset_name):
     with open(path, 'r') as f:
         config = json.load(f)
 
-    fg_shift.set(config.get("fg_shift", 8.0))
-    mg_shift.set(config.get("mg_shift", -3.0))
-    bg_shift.set(config.get("bg_shift", -6.0))
-    zero_parallax_strength.set(config.get("zero_parallax_strength", 0.0))
-    max_pixel_shift.set(config.get("max_pixel_shift", 0.02))
-    parallax_balance.set(config.get("parallax_balance", 0.8))
-    sharpness_factor.set(config.get("sharpness_factor", 1.0))
-    dof_strength.set(config.get("dof_strength", 2.0))
-    convergence_strength.set(config.get("convergence_strength", 0.0))
-    
-    use_ffmpeg.set(config.get("use_ffmpeg", False))
-    enable_feathering.set(config.get("enable_feathering", True))
-    enable_edge_masking.set(config.get("enable_edge_masking", True))
-    use_floating_window.set(config.get("use_floating_window", True))
-    auto_crop_black_bars.set(config.get("auto_crop_black_bars", False))
-    skip_blank_frames.set(config.get("skip_blank_frames", False))
-    enable_dynamic_convergence.set(config.get("enable_dynamic_convergence", True))
+    # --- existing ---
+    fg_shift.set(float(config.get("fg_shift", 8.0)))
+    mg_shift.set(float(config.get("mg_shift", -3.0)))
+    bg_shift.set(float(config.get("bg_shift", -6.0)))
+    zero_parallax_strength.set(float(config.get("zero_parallax_strength", 0.0)))
+    max_pixel_shift.set(float(config.get("max_pixel_shift", 0.02)))
+    parallax_balance.set(float(config.get("parallax_balance", 0.8)))
+    sharpness_factor.set(float(config.get("sharpness_factor", 1.0)))
+    dof_strength.set(float(config.get("dof_strength", 2.0)))
+    convergence_strength.set(float(config.get("convergence_strength", 0.0)))
+
+    use_ffmpeg.set(bool(config.get("use_ffmpeg", False)))
+    enable_feathering.set(bool(config.get("enable_feathering", True)))
+    enable_edge_masking.set(bool(config.get("enable_edge_masking", True)))
+    use_floating_window.set(bool(config.get("use_floating_window", True)))
+    auto_crop_black_bars.set(bool(config.get("auto_crop_black_bars", False)))
+    skip_blank_frames.set(bool(config.get("skip_blank_frames", False)))
+    enable_dynamic_convergence.set(bool(config.get("enable_dynamic_convergence", True)))
+
+    # --- NEW: pop & subject controls (with sane clamps) ---
+    def _clamp(v, lo, hi): return max(lo, min(hi, v))
+
+    gamma = float(config.get("depth_pop_gamma", 0.85))
+    depth_pop_gamma.set(_clamp(gamma, 0.70, 1.20))
+
+    mid = float(config.get("depth_pop_mid", 0.50))
+    depth_pop_mid.set(_clamp(mid, 0.0, 1.0))
+
+    lo = float(config.get("depth_stretch_lo", 0.05))
+    hi = float(config.get("depth_stretch_hi", 0.95))
+    lo = _clamp(lo, 0.0, 1.0)
+    hi = _clamp(hi, 0.0, 1.0)
+    if hi <= lo:
+        # keep them valid; fall back to defaults if needed
+        lo, hi = 0.05, 0.95
+    depth_stretch_lo.set(lo)
+    depth_stretch_hi.set(hi)
+
+    fg_mul = float(config.get("fg_pop_multiplier", 1.20))
+    bg_mul = float(config.get("bg_push_multiplier", 1.10))
+    subject_lock = float(config.get("subject_lock_strength", 1.00))
+
+    fg_pop_multiplier.set(_clamp(fg_mul, 0.5, 2.0))
+    bg_push_multiplier.set(_clamp(bg_mul, 0.5, 2.0))
+    subject_lock_strength.set(_clamp(subject_lock, 0.0, 2.0))
 
     print(f"✅ Applied preset: {preset_name}")
 
 
 def save_current_preset(name="custom_preset.json"):
     preset = {
+        # --- existing ---
         "fg_shift": fg_shift.get(),
         "mg_shift": mg_shift.get(),
         "bg_shift": bg_shift.get(),
@@ -2221,6 +2648,15 @@ def save_current_preset(name="custom_preset.json"):
         "dof_strength": dof_strength.get(),
         "convergence_strength": convergence_strength.get(),
         "enable_dynamic_convergence": enable_dynamic_convergence.get(),
+
+        # --- NEW: pop & subject controls ---
+        "depth_pop_gamma": depth_pop_gamma.get(),
+        "depth_pop_mid": depth_pop_mid.get(),
+        "depth_stretch_lo": depth_stretch_lo.get(),
+        "depth_stretch_hi": depth_stretch_hi.get(),
+        "fg_pop_multiplier": fg_pop_multiplier.get(),
+        "bg_push_multiplier": bg_push_multiplier.get(),
+        "subject_lock_strength": subject_lock_strength.get(),
     }
 
     path = os.path.join(PRESET_DIR, name)
