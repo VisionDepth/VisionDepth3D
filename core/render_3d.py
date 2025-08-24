@@ -17,7 +17,6 @@ from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
 from core.ffmpeg_blackdetect import detect_black_white_frames
 import math
 
-
 # Device setup
 #onnx_device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
 torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,6 +72,29 @@ FFMPEG_CODEC_MAP = {
     "VP9 (QSV - Intel GPU)": "vp9_qsv",
     "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
+
+
+def parse_timecode(s: str | None) -> float | None:
+    """
+    'HH:MM:SS', 'MM:SS', 'SS', with optional '.ms'
+    Returns seconds as float, or None if blank/invalid.
+    """
+    if not s or not str(s).strip():
+        return None
+    s = s.strip()
+    # allow H:M:S(.ms) or M:S(.ms) or S(.ms)
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            h = float(parts[0]); m = float(parts[1]); sec = float(parts[2])
+            return h*3600 + m*60 + sec
+        elif len(parts) == 2:
+            m = float(parts[0]); sec = float(parts[1])
+            return m*60 + sec
+        else:
+            return float(s)
+    except Exception:
+        return None
 
 
 
@@ -678,23 +700,17 @@ def pixel_shift_cuda(
     warped_depth_left = F.grid_sample(d_shaped.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
     warped_depth_right = F.grid_sample(d_shaped.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
 
-    focal_depth_left = estimate_subject_depth(warped_depth_left)
-    focal_depth_right = estimate_subject_depth(warped_depth_right)
-
-    left_dof = apply_dof_cuda(warped_left, warped_depth_left, focal_depth_left, max_sigma=dof_strength)
-    right_dof = apply_dof_cuda(warped_right, warped_depth_right, focal_depth_right, max_sigma=dof_strength)
-
     if enable_feathering:
-        left_blended = feather_shift_edges(left_dof, warped_left, warped_depth_left, blur_ksize, feather_strength, enable_feathering)
-        right_blended = feather_shift_edges(right_dof, warped_right, warped_depth_right, blur_ksize, feather_strength, enable_feathering)
+        left_blended  = feather_shift_edges(warped_left,  frame_tensor, warped_depth_left,  blur_ksize, feather_strength, enable_feathering)
+        right_blended = feather_shift_edges(warped_right, frame_tensor, warped_depth_right, blur_ksize, feather_strength, enable_feathering)
     else:
-        left_blended = left_dof
-        right_blended = right_dof
+        left_blended, right_blended = warped_left, warped_right
 
     if return_shift_map:
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
     else:
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
+
 
 # Sharpening
 
@@ -715,64 +731,107 @@ def apply_sharpening(frame, factor=1.0):
     sharpened = cv2.filter2D(frame, -1, kernel)
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
+@torch.no_grad()
+def apply_color_grade(
+    rgb_tensor: torch.Tensor,      # [3,H,W], float32 in [0,1], RGB
+    saturation: float = 1.0,       # 1.0 = no change
+    contrast: float = 1.0,         # 1.0 = no change
+    brightness: float = 0.0        # additive, -0.5..+0.5 recommended
+):
+    """
+    Fast GPU color grading:
+      - saturation: scales chroma around luminance
+      - contrast  : symmetric about 0.5
+      - brightness: additive offset
+    All math in 0..1 RGB space. Clamped at the end.
+    """
+    assert rgb_tensor.dim() == 3 and rgb_tensor.shape[0] == 3
+    # Luminance (Rec.709)
+    r, g, b = rgb_tensor[0], rgb_tensor[1], rgb_tensor[2]
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
 
-def apply_dof_cuda(rgb_tensor, depth_tensor, focal_depth, max_sigma=2.0):
+    # Saturation: lerp between gray(luma) and original by 'saturation'
+    # sat=0 -> gray; sat=1 -> original; sat>1 -> extra chroma
+    rgb_sat = torch.stack([
+        luma + (r - luma) * saturation,
+        luma + (g - luma) * saturation,
+        luma + (b - luma) * saturation,
+    ], dim=0)
+
+    # Contrast around 0.5 mid-gray
+    rgb_con = 0.5 + (rgb_sat - 0.5) * contrast
+
+    # Brightness (additive)
+    rgb_bri = rgb_con + brightness
+
+    return rgb_bri.clamp(0.0, 1.0)
+
+@torch.no_grad()
+def apply_dof_cuda(
+    rgb_tensor: torch.Tensor,
+    depth_tensor: torch.Tensor,
+    focal_depth: float,
+    max_sigma: float = 2.0,
+    focus_width: float = 0.35,
+    num_levels: int = 5,
+):
     """
-    GPU-accelerated Depth of Field using adaptive Gaussian blur with soft interpolation.
-    - rgb_tensor: [3, H, W]
-    - depth_tensor: [1, H, W]
-    - focal_depth: scalar float (0..1)
+    Depth-of-field via level-of-detail Gaussian pyramid + per-pixel interpolation.
+
+    rgb_tensor:   [3, H, W], float32 in [0,1]
+    depth_tensor: [1, H, W], float32 in [0,1]
+    focal_depth:  scalar float or 0-D tensor in [0,1]
     """
-    C, H, W = rgb_tensor.shape
+    assert rgb_tensor.dim() == 3 and rgb_tensor.shape[0] == 3
+    assert depth_tensor.dim() == 3 and depth_tensor.shape[0] == 1
     device = rgb_tensor.device
+    C, H, W = rgb_tensor.shape
 
-    # 1. Compute blur weight map
-    depth_diff = torch.abs(depth_tensor - focal_depth)  # [1, H, W]
-    blur_weights = torch.clamp(depth_diff * 2.0, 0.0, 1.0)  # [1, H, W]
-    
-    # 2. Define blur levels
-    levels = [0.0, 0.5, 1.0, 1.5, 2.0]
+    # --- 1) per-pixel blur weight based on distance from focal plane ---
+    if not torch.is_tensor(focal_depth):
+        focal_depth = torch.tensor(float(focal_depth), device=device)
+    depth_diff   = torch.abs(depth_tensor - focal_depth)                  # [1,H,W]
+    blur_weights = (depth_diff / (focus_width + 1e-6)).clamp(0.0, 1.0)    # [1,H,W]
+
+    # --- 2) build blur levels driven by max_sigma ---
+    # levels[0]=0 means "no blur", then linearly up to max_sigma
+    levels = torch.linspace(0.0, float(max_sigma), steps=num_levels, device=device)
     blurred_versions = []
-    for sigma in levels:
-        if sigma == 0.0:
+    for lvl_idx, sigma in enumerate(levels):
+        if float(sigma) == 0.0:
             blurred_versions.append(rgb_tensor)
         else:
-            ksize = int(2 * math.ceil(2 * sigma) + 1)
-            blurred = tv_gaussian_blur(rgb_tensor, kernel_size=ksize, sigma=sigma)
-            blurred_versions.append(blurred)
+            # kernel size ~= 4*sigma + 1, odd
+            ksize = int(2 * math.ceil(2 * float(sigma)) + 1)
+            blurred_versions.append(tv_gaussian_blur(rgb_tensor, kernel_size=ksize, sigma=float(sigma)))
 
-    # 3. Stack: [N, 3, H, W]
-    stack = torch.stack(blurred_versions)
+    # [N,3,H,W]
+    stack = torch.stack(blurred_versions, dim=0)  # N=num_levels
 
-    # 4. Indexing and alpha for blending
-    blur_idx = blur_weights * (len(levels) - 1)  # [1, H, W]
-    lower_idx = blur_idx.floor().long().clamp(0, len(levels) - 2)  # [1, H, W]
-    upper_idx = lower_idx + 1
-    alpha = (blur_idx - lower_idx.float())  # [1, H, W]
+    # --- 3) pick the two neighboring levels and lerp between them per pixel ---
+    # blur index in [0, N-1]
+    N = num_levels
+    blur_idx  = (blur_weights * (N - 1)).clamp(0, N - 1 - 1e-6)           # [1,H,W]
+    lower_idx = blur_idx.floor().long().clamp(0, N - 2)                   # [1,H,W]
+    upper_idx = lower_idx + 1                                             # [1,H,W]
+    alpha     = (blur_idx - lower_idx.float()).squeeze(0)                # [H,W]
 
-    output = torch.zeros_like(rgb_tensor)
+    # Prepare for gather: move level dimension to the last axis
+    # stack_perm: [3,H,W,N]
+    stack_perm = stack.permute(1, 2, 3, 0)
 
-    # Flatten for vectorized indexing
-    flat_idx = (H * W)
-    lower_idx_flat = lower_idx.view(-1)
-    upper_idx_flat = upper_idx.view(-1)
-    alpha_flat = alpha.view(-1)
+    # Indices for gather must match dst shape; make [3,H,W,1]
+    li = lower_idx.squeeze(0).unsqueeze(0).expand(3, H, W).unsqueeze(-1)
+    ui = upper_idx.squeeze(0).unsqueeze(0).expand(3, H, W).unsqueeze(-1)
 
-    for c in range(3):
-        blended = torch.zeros(H * W, device=device)
-        for i in range(len(levels) - 1):
-            mask = (lower_idx_flat == i)
-            if not mask.any():
-                continue
-            lower_vals = stack[i, c].view(-1)[mask]
-            upper_vals = stack[i + 1, c].view(-1)[mask]
-            a = alpha_flat[mask]
-            blended[mask] = (1 - a) * lower_vals + a * upper_vals
-        output[c] = blended.view(H, W)
+    lower_vals = torch.gather(stack_perm, dim=-1, index=li).squeeze(-1)   # [3,H,W]
+    upper_vals = torch.gather(stack_perm, dim=-1, index=ui).squeeze(-1)   # [3,H,W]
 
-    return output.clamp(0.0, 1.0)
+    # Broadcast alpha to [3,H,W]
+    alpha3 = alpha.unsqueeze(0).expand(3, H, W)
 
-
+    out = (1.0 - alpha3) * lower_vals + alpha3 * upper_vals
+    return out.clamp(0.0, 1.0)
 
 # 3D Formats
 def format_3d_output(left, right, fmt):
@@ -831,6 +890,44 @@ def apply_side_mask(image, side="left", width=40):
     elif side == "right":
         mask[:, w - width:] = 0
     return cv2.bitwise_and(image, mask)
+    
+    
+class FocalDepthTracker:
+    def __init__(self, alpha=0.15, deadband=0.03, max_step=0.02):
+        self.alpha = float(alpha)
+        self.deadband = float(deadband)
+        self.max_step = float(max_step)
+        self.focal = None
+
+    def reset(self, value=None):
+        self.focal = value
+
+    def set_scene_motion(self, motion_metric):
+        # motion_metric in [0..1], 0=still, 1=lots of motion
+        # still -> alpha ~0.10, busy -> alpha ~0.30
+        self.alpha = 0.10 + 0.20 * max(0.0, min(1.0, float(motion_metric)))
+
+    def update(self, candidate):
+        c = float(candidate)
+        if self.focal is None:
+            self.focal = c
+            return self.focal
+        if abs(c - self.focal) < self.deadband:
+            c = self.focal
+        new_focal = (1.0 - self.alpha) * self.focal + self.alpha * c
+        delta = new_focal - self.focal
+        if   delta >  self.max_step: new_focal = self.focal + self.max_step
+        elif delta < -self.max_step: new_focal = self.focal - self.max_step
+        self.focal = max(0.0, min(1.0, new_focal))
+        return self.focal
+
+def compute_motion_metric(prev_d, curr_d):
+    if prev_d is None:
+        return 0.0
+    # mean absolute difference in [0..1] range, clamp for safety
+    mad = torch.mean(torch.abs(curr_d - prev_d)).item()
+    return max(0.0, min(1.0, mad * 4.0))  # scale a bit to feel responsive
+
 
 # Render
 def render_sbs_3d(
@@ -880,19 +977,58 @@ def render_sbs_3d(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=1.00,
-    
+    color_saturation=1.0,
+    color_contrast=1.0,
+    color_brightness=0.0,
+    start_s=None,
+    end_s=None,
 ):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
     if not cap.isOpened() or not dcap.isOpened():
         return
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # base facts
+    total_frames_full = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or fps or 30.0
+    dur_ms = (total_frames_full / max(fps, 1e-6)) * 1000.0
+
+    # resolve clip window
+    start_ms = max(0.0, (start_s or 0.0) * 1000.0)
+    end_ms = dur_ms if (end_s is None) else min(dur_ms, end_s * 1000.0)
+    print(f"[CLIP] start_s={start_s} end_s={end_s}")
+    print(f"[CLIP] resolved: start_ms={start_ms:.1f} end_ms={end_ms:.1f}")
+
+    # Guard: clamp and validate
+    if start_ms < 0: start_ms = 0.0
+    if end_ms > dur_ms: end_ms = dur_ms
+    if start_ms >= end_ms - 0.5:
+        print("⚠️ Invalid clip window; nothing to render.")
+        cap.release(); dcap.release()
+        return
+
+    # sanity
+    if start_ms >= end_ms - 0.5:
+        print("⚠️ Invalid clip window; nothing to render.")
+        cap.release(); dcap.release()
+        return
+
+    # derive clip frame count for progress
+    start_frame_idx = int(round(start_ms / 1000.0 * fps))
+    end_frame_idx   = int(round(end_ms   / 1000.0 * fps))
+    clip_total_frames = max(0, end_frame_idx - start_frame_idx)
     
+    # seek by frames ONCE
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
+    dcap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
+
+    # FIRST READ occurs *after* seeking
     ret1, frame = cap.read()
     ret2, depth = dcap.read()
     if not ret1 or not ret2:
+        cap.release(); dcap.release()
         return
+
 
     global global_session_start_time
     if global_session_start_time is None:
@@ -922,6 +1058,9 @@ def render_sbs_3d(
         except Exception as e:
             print(f"⚠️ Blank frame detection failed: {e}")
             blank_frames = []
+            
+    # 🆕 blank frame indices are absolute — offset them for the clip window
+    blank_offset = start_frame_idx
 
     first_frame_tensor = frame_to_tensor(frame)
 
@@ -1036,9 +1175,20 @@ def render_sbs_3d(
     global temporal_depth_filter
     temporal_depth_filter = TemporalDepthFilter(alpha=0.5)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    dcap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
+    dcap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
     avg_fps = 0
+    prev_depth_tensor = None
+    focal_tracker = FocalDepthTracker(alpha=0.15, deadband=0.03, max_step=0.02)
+    
+    ret1, frame = cap.read()
+    ret2, depth = dcap.read()
+    if not ret1 or not ret2:
+        cap.release(); dcap.release()
+        return
+        
+    # Decide how many frames to process (for loop + progress)
+    total_frames = clip_total_frames if clip_total_frames > 0 else total_frames_full
 
     try:
         for idx in range(total_frames):
@@ -1073,7 +1223,7 @@ def render_sbs_3d(
             ret2, depth = dcap.read()
             if not ret1 or not ret2:
                 break
-
+            
             frame_tensor = frame_to_tensor(frame)
             depth_tensor = depth_to_tensor(depth)
 
@@ -1125,37 +1275,115 @@ def render_sbs_3d(
                 dyn_scale = 1.0
             fg *= dyn_scale; mg *= dyn_scale; bg *= dyn_scale
 
-            if idx in blank_frames:
+            if (blank_offset + idx) in blank_frames:
                 print(f"⏩ Skipping blank frame {idx}")
                 left_frame = frame
                 right_frame = frame
             else:
-                fg *= ipd_factor; mg *= ipd_factor; bg *= ipd_factor
-                left_frame, right_frame = pixel_shift_cuda(
-                    frame_tensor, depth_tensor, resized_width, resized_height,
-                    fg, mg, bg,
-                    blur_ksize=blur_ksize,
-                    feather_strength=feather_strength,
-                    use_subject_tracking=use_subject_tracking,
-                    enable_floating_window=use_floating_window,
-                    return_shift_map=False,
-                    max_pixel_shift_percent=max_pixel_shift_percent,
-                    zero_parallax_strength=zero_parallax_strength,
-                    enable_edge_masking=enable_edge_masking,
-                    enable_feathering=enable_feathering,
-                    dof_strength=dof_strength,
-                    convergence_strength=convergence_strength,
-                    enable_dynamic_convergence=enable_dynamic_convergence,
+                if ipd_factor == 0.0:
+                    left_frame, right_frame = pixel_shift_cuda(
+                        frame_tensor, depth_tensor, resized_width, resized_height,
+                        fg, mg, bg,
+                        blur_ksize=blur_ksize,
+                        feather_strength=feather_strength,
+                        use_subject_tracking=use_subject_tracking,
+                        enable_floating_window=use_floating_window,
+                        return_shift_map=False,
+                        max_pixel_shift_percent=max_pixel_shift_percent,
+                        zero_parallax_strength=zero_parallax_strength,
+                        enable_edge_masking=enable_edge_masking,
+                        enable_feathering=enable_feathering,
+                        dof_strength=dof_strength,
+                        convergence_strength=convergence_strength,
+                        enable_dynamic_convergence=enable_dynamic_convergence,
+                        depth_pop_gamma=0.85,
+                        depth_pop_mid=0.50,
+                        depth_stretch_lo=0.05,
+                        depth_stretch_hi=0.95,
+                        fg_pop_multiplier=1.20,
+                        bg_push_multiplier=1.10,
+                        subject_lock_strength=1.00,
+                    )
+                else:
+                    fg *= ipd_factor; mg *= ipd_factor; bg *= ipd_factor
+                    left_frame, right_frame = pixel_shift_cuda(
+                        frame_tensor, depth_tensor, resized_width, resized_height,
+                        fg, mg, bg,
+                        blur_ksize=blur_ksize,
+                        feather_strength=feather_strength,
+                        use_subject_tracking=use_subject_tracking,
+                        enable_floating_window=use_floating_window,
+                        return_shift_map=False,
+                        max_pixel_shift_percent=max_pixel_shift_percent,
+                        zero_parallax_strength=zero_parallax_strength,
+                        enable_edge_masking=enable_edge_masking,
+                        enable_feathering=enable_feathering,
+                        dof_strength=dof_strength,
+                        convergence_strength=convergence_strength,
+                        enable_dynamic_convergence=enable_dynamic_convergence,
+                        depth_pop_gamma=0.85,
+                        depth_pop_mid=0.50,
+                        depth_stretch_lo=0.05,
+                        depth_stretch_hi=0.95,
+                        fg_pop_multiplier=1.20,
+                        bg_push_multiplier=1.10,
+                        subject_lock_strength=1.00,
+                    )
 
-                    # new pop controls (tweak as you like)
-                    depth_pop_gamma=0.85,       # 0.80–0.95 stronger near/mid pop as it gets smaller
-                    depth_pop_mid=0.50,         # move to 0.52–0.55 to push BG farther
-                    depth_stretch_lo=0.05,
-                    depth_stretch_hi=0.95,
-                    fg_pop_multiplier=1.20,     # 1.3–1.5 = more pop-out
-                    bg_push_multiplier=1.10,    # 1.15–1.25 = BG feels deeper
-                    subject_lock_strength=1.00, # 1.2–1.5 = tighter screen-plane lock
-                )
+                
+                candidate_focal = estimate_subject_depth(depth_tensor)  # 0..1
+                motion_metric   = compute_motion_metric(prev_depth_tensor, depth_tensor)
+                focal_tracker.set_scene_motion(motion_metric)
+                focal_depth     = focal_tracker.update(candidate_focal)
+
+
+                if dof_strength > 0.0:
+                    # tensors from frames
+                    left_t  = frame_to_tensor(left_frame)    # [3,H,W]
+                    right_t = frame_to_tensor(right_frame)
+
+                    # 🔧 match depth to frame size used for DOF
+                    H, W = left_t.shape[1], left_t.shape[2]
+                    depth_for_dof = F.interpolate(
+                        depth_tensor.unsqueeze(0), size=(H, W),
+                        mode='bilinear', align_corners=False
+                    ).squeeze(0)  # -> [1,H,W]
+
+                    # use your stabilized focal_depth (do NOT recompute here)
+                    left_t  = apply_dof_cuda(left_t,  depth_for_dof, focal_depth,
+                                             max_sigma=dof_strength, focus_width=0.35)
+                    right_t = apply_dof_cuda(right_t, depth_for_dof, focal_depth,
+                                             max_sigma=dof_strength, focus_width=0.35)
+                    
+                    lt = frame_to_tensor(left_frame)
+                    rt = frame_to_tensor(right_frame)
+                    
+                    # After DOF:
+                    lt  = apply_color_grade(left_t,  saturation=color_saturation,
+                                                contrast=color_contrast, brightness=color_brightness)
+                    rt = apply_color_grade(right_t, saturation=color_saturation,
+                                                contrast=color_contrast, brightness=color_brightness)
+
+                    # Back to NumPy (BGR uint8) for the rest
+                    left_frame  = tensor_to_frame(lt)
+                    right_frame = tensor_to_frame(rt)
+                    
+                else:
+                    # DOF disabled — still apply color grade
+                    lt = frame_to_tensor(left_frame)
+                    rt = frame_to_tensor(right_frame)
+
+                    lt = apply_color_grade(lt,
+                                           saturation=color_saturation,
+                                           contrast=color_contrast,
+                                           brightness=color_brightness)
+                    rt = apply_color_grade(rt,
+                                           saturation=color_saturation,
+                                           contrast=color_contrast,
+                                           brightness=color_brightness)
+
+                    left_frame  = tensor_to_frame(lt)
+                    right_frame = tensor_to_frame(rt)
 
 
             # floating window mask
@@ -1199,9 +1427,16 @@ def render_sbs_3d(
                     break
             else:
                 out.write(final)
+                
+            if end_s is not None:
+                cur_abs_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                if cur_abs_idx >= end_frame_idx:
+                    break
+
+                
 
             # progress / fps
-            percent = (idx / total_frames) * 100
+            percent = (idx / max(total_frames, 1)) * 100.0
             elapsed = time.time() - global_session_start_time
             elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
 
@@ -1224,7 +1459,8 @@ def render_sbs_3d(
                 progress_label.config(
                     text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
                 )
-
+                
+            prev_depth_tensor = depth_tensor.detach()
             prev_time = curr_time
 
         # ✅ final progress update (inside try)
@@ -1266,60 +1502,6 @@ def render_sbs_3d(
             total_time = time.time() - global_session_start_time
             print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
             global_session_start_time = None
-
-
-
-def start_processing_thread():
-    global process_thread
-    cancel_flag.clear()
-    suspend_flag.clear()
-    process_thread = threading.Thread(
-        target=process_video,
-        args=(  # <-- ADD THIS
-            input_video_path,
-            selected_depth_map,
-            output_sbs_video_path,
-            selected_codec,
-            fg_shift,
-            mg_shift,
-            bg_shift,
-            sharpness_factor,
-            output_format,
-            selected_aspect_ratio,
-            aspect_ratios,
-            feather_strength,
-            blur_ksize,
-            progress,
-            progress_label,
-            suspend_flag,
-            cancel_flag,
-            use_ffmpeg,
-            selected_ffmpeg_codec,
-            crf_value,
-            use_subject_tracking,
-            use_floating_window,
-            max_pixel_shift,
-            auto_crop_black_bars,
-            parallax_balance,
-            preserve_original_aspect,
-            zero_parallax_strength,
-            enable_edge_masking,
-            enable_feathering,
-            skip_blank_frames,
-            dof_strength,
-            convergence_strength,
-            enable_dynamic_convergence,
-            depth_pop_gamma,          # e.g., tk.DoubleVar()
-            depth_pop_mid,            # tk.DoubleVar()
-            depth_stretch_lo,         # tk.DoubleVar()
-            depth_stretch_hi,         # tk.DoubleVar()
-            fg_pop_multiplier,        # tk.DoubleVar()
-            bg_push_multiplier,       # tk.DoubleVar()
-            subject_lock_strength,    # tk.DoubleVar()
-        ),
-        daemon=True
-    )
-    process_thread.start()
 
 
 def select_input_video(
@@ -1440,7 +1622,7 @@ def process_video(
     enable_edge_masking,
     enable_feathering,
     skip_blank_frames,
-    dof_strength,  
+    dof_strength,
     convergence_strength,
     enable_dynamic_convergence,
     depth_pop_gamma,
@@ -1450,7 +1632,14 @@ def process_video(
     fg_pop_multiplier,
     bg_push_multiplier,
     subject_lock_strength,
+    color_saturation,
+    color_contrast,
+    color_brightness,
+    ipd_value=0.0,
+    start_s=None,
+    end_s=None, 
 ):
+
 
     global original_video_width, original_video_height
 
@@ -1463,7 +1652,8 @@ def process_video(
             "Error", "Please select input video, depth map, and output path."
         )
         return
-
+   
+    
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1547,6 +1737,7 @@ def process_video(
             original_video_height=height,
             convergence_strength=convergence_strength.get(),
             enable_dynamic_convergence=enable_dynamic_convergence.get(),
+            ipd_factor=ipd_value,
             depth_pop_gamma=depth_pop_gamma.get(),
             depth_pop_mid=depth_pop_mid.get(),
             depth_stretch_lo=depth_stretch_lo.get(),
@@ -1554,6 +1745,11 @@ def process_video(
             fg_pop_multiplier=fg_pop_multiplier.get(),
             bg_push_multiplier=bg_push_multiplier.get(),
             subject_lock_strength=subject_lock_strength.get(),
+            color_saturation=(color_saturation.get() if hasattr(color_saturation, 'get') else color_saturation),
+            color_contrast=(color_contrast.get() if hasattr(color_contrast, 'get') else color_contrast),
+            color_brightness=(color_brightness.get() if hasattr(color_brightness, 'get') else color_brightness),
+            start_s=start_s,
+            end_s=end_s,
         )   
 
 

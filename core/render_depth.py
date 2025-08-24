@@ -10,6 +10,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import gc
 
+import traceback, datetime
+
 import numpy as np
 import torch
 import cv2
@@ -38,6 +40,233 @@ cancel_requested = threading.Event()
 global_session_start_time = None
 current_warmup_session = {"id": None}
 torch.set_grad_enabled(False)
+
+        
+# --- tiling config ---
+USE_TILED_DEPTH = False   # <- flip off to revert to old behavior
+TILE_SIZE       = 512
+TILE_PAD        = 32
+TILE_DEBUG      = False   # set True to print tile debug info
+
+assert TILE_SIZE > 2*TILE_PAD, "TILE_SIZE must be larger than 2*TILE_PAD"
+
+def _is_depthcrafter():
+    return (globals().get("pipe_type", None) == "depthcrafter") or getattr(globals().get("pipe", None), "_is_depthcrafter", False)
+
+def snap_for_vda(w: int, h: int, base: int = 32):
+    """Round each dim UP to nearest multiple of `base`."""
+    def r(x): return int((int(x) + base - 1) // base * base)
+    return (r(w), r(h))
+
+
+def _hann2d(h, w):
+    wy = np.hanning(max(2, h)); wx = np.hanning(max(2, w))
+    m = np.outer(wy, wx).astype(np.float32)
+    mmax = float(m.max()) if m.size else 1.0
+    return m / (mmax + 1e-8)
+
+def _ensure_depth_np(pred):
+    """
+    Accepts: torch.Tensor [H,W] or [1,H,W], np.ndarray, dict{'predicted_depth': ...}, list[dict]
+    Returns: float32 ndarray [H,W]
+    """
+    # Unwrap dict/list formats first
+    if isinstance(pred, list):
+        pred = pred[0]
+    if isinstance(pred, dict) and "predicted_depth" in pred:
+        pred = pred["predicted_depth"]
+
+    # Convert payload
+    if isinstance(pred, torch.Tensor):
+        arr = pred.detach().cpu().float().numpy()
+    elif isinstance(pred, np.ndarray):
+        arr = pred.astype(np.float32, copy=False)
+    else:
+        raise TypeError(f"Unexpected depth type: {type(pred)}")
+
+    # Squeeze to [H,W]
+    if arr.ndim == 3:
+        if arr.shape[0] in (1, 3):   # [C,H,W]
+            arr = arr[0] if arr.shape[0] == 1 else arr.mean(axis=0)
+        elif arr.shape[2] in (1, 3): # [H,W,C]
+            arr = arr[..., 0] if arr.shape[2] == 1 else arr.mean(axis=-1)
+        else:
+            arr = np.squeeze(arr)
+    elif arr.ndim > 2:
+        arr = np.squeeze(arr)
+
+    if arr.ndim != 2:
+        raise ValueError(f"Depth must be 2D after squeeze; got shape {arr.shape}")
+    return arr.astype(np.float32, copy=False)
+
+def infer_depth_tile(model_call, rgb_np, inference_size, tile=TILE_SIZE, pad=TILE_PAD):
+    """
+    model_call: callable like your 'pipe' that accepts [PIL] and optional inference_size=(W,H)
+    rgb_np: RGB np.array HxWx3
+    """
+    if rgb_np.dtype != np.uint8:
+        rgb_np = rgb_np.astype(np.uint8, copy=False)
+
+    H, W = rgb_np.shape[:2]
+    tgtW, tgtH = (inference_size or (W, H))  # inference_size is (W,H)
+    img = cv2.resize(rgb_np[:, :, ::-1], (tgtW, tgtH),  # convert to BGR for OpenCV resize, then we flip back when making PIL
+                     interpolation=cv2.INTER_AREA if (tgtW < W or tgtH < H) else cv2.INTER_CUBIC)[:, :, ::-1]
+
+    out_accum = np.zeros((tgtH, tgtW), np.float32)
+    w_accum   = np.zeros((tgtH, tgtW), np.float32)
+
+    core = max(1, int(tile) - 2*int(pad))
+    step = core
+    weight_core = _hann2d(core, core)
+
+    for y0 in range(0, tgtH, step):
+        for x0 in range(0, tgtW, step):
+            y1 = min(y0 + tile, tgtH); x1 = min(x0 + tile, tgtW)
+            yp0 = max(0, y0 - pad);    xp0 = max(0, x0 - pad)
+            yp1 = min(tgtH, y1 + pad); xp1 = min(tgtW, x1 + pad)
+
+            crop_rgb = img[yp0:yp1, xp0:xp1, :]  # RGB
+            
+            # ✅ ViT/DINOv2 safe crop size (W,H) = multiples of 14
+            cw, ch = crop_rgb.shape[1], crop_rgb.shape[0]
+            def r14(x): return ((int(x) + 13) // 14) * 14
+            cws, chs = r14(cw), r14(ch)
+            if (cw, ch) != (cws, chs):
+                crop_rgb = cv2.resize(crop_rgb, (cws, chs), interpolation=cv2.INTER_CUBIC)
+
+            
+            pil      = Image.fromarray(crop_rgb)
+
+            # Call the model with the crop size (W,H)
+            try:
+                # pass the ViT-safe crop size to the model
+                res = model_call([pil], inference_size=(cws, chs))
+            except TypeError:
+                res = model_call(pil, inference_size=(cws, chs))
+            pred_np = _ensure_depth_np(res)
+
+            # Center region corresponding to the unpadded core
+            yc0 = y0 - yp0; xc0 = x0 - xp0
+            yc1 = yc0 + (y1 - y0); xc1 = xc0 + (x1 - x0)
+            center = pred_np[max(0,yc0):max(0,yc1), max(0,xc0):max(0,xc1)]
+
+            ch, cw = (y1 - y0), (x1 - x0)
+            if center.shape != (ch, cw):
+                center = cv2.resize(center, (cw, ch), interpolation=cv2.INTER_CUBIC)
+
+            w = weight_core
+            if w.shape != center.shape:
+                w = cv2.resize(w, (cw, ch), interpolation=cv2.INTER_CUBIC)
+
+            out_accum[y0:y1, x0:x1] += center * w
+            w_accum[y0:y1, x0:x1]   += w
+
+            if TILE_DEBUG:
+                print(f"[tile] ({y0}:{y1},{x0}:{x1}) crop={crop_rgb.shape[:2]} center={center.shape} "
+                      f"acc={(out_accum[y0:y1, x0:x1].shape)}")
+
+    # Normalize by weights, guard zeros
+    depth_tiled = out_accum / np.maximum(w_accum, 1e-8)
+    return depth_tiled.astype(np.float32, copy=False)
+
+
+def _normalize_to_u8(depth_f, out_size, invert=False, pclip=(1.0, 99.0)):
+    d = np.asarray(depth_f, dtype=np.float32)
+    if not np.isfinite(d).all():
+        d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+
+    lo = np.percentile(d, pclip[0])
+    hi = np.percentile(d, pclip[1])
+    if hi - lo < 1e-6:
+        # fall back to global min–max, or flat mid-gray if still bad
+        dmin, dmax = float(d.min()), float(d.max())
+        if dmax - dmin < 1e-6:
+            u8 = np.full_like(d, 128, dtype=np.uint8)
+        else:
+            d = (d - dmin) / (dmax - dmin + 1e-6)
+            u8 = (d * 255.0).astype(np.uint8)
+    else:
+        d = np.clip((d - lo) / (hi - lo), 0.0, 1.0)
+        u8 = (d * 255.0).astype(np.uint8)
+
+    if invert:
+        u8 = 255 - u8
+    return cv2.resize(u8, out_size, interpolation=cv2.INTER_CUBIC)
+
+def _pred_to_np(pred):
+    if isinstance(pred, torch.Tensor):
+        return pred.detach().cpu().float().numpy()
+    return np.asarray(pred, dtype=np.float32)
+
+def _run_pipe_or_tile(images_pil, inference_size):
+    """
+    Returns list[{'predicted_depth': ndarray or tensor}]
+    """
+    global pipe, pipe_type
+
+    # --- ONNX special handling: force the warm-up proven size ---
+    if pipe_type == "onnx":
+        # 1) Prefer the size that succeeded during warm-up
+        good = getattr(pipe, "_good_size", None)
+
+        # 2) Pick a base size: good size > user-provided > safe default
+        if good is not None:
+            inf_w, inf_h = good
+        elif inference_size is not None:
+            inf_w, inf_h = int(inference_size[0]), int(inference_size[1])
+        else:
+            # conservative safe default for VDA-style exports
+            inf_w, inf_h = 512, 288
+
+        # 3) Snap to multiples of 32 (keeps all intermediate shapes aligned)
+        inf_w, inf_h = snap_for_vda(inf_w, inf_h, base=32)
+        inference_size = (inf_w, inf_h)
+
+        # 4) Run the ONNX callable
+        try:
+            res = pipe(images_pil, inference_size=inference_size)
+            if isinstance(res, list):
+                return res
+            elif isinstance(res, dict):
+                return [res]
+            else:
+                return [{"predicted_depth": res}]
+        except TypeError:
+            outs = []
+            for img in images_pil:
+                r = pipe(img, inference_size=inference_size)
+                if isinstance(r, list):
+                    r = r[0]
+                outs.append(r if isinstance(r, dict) else {"predicted_depth": r})
+            return outs
+    if USE_TILED_DEPTH:
+        preds = []
+        for img in images_pil:
+            rgb = np.array(img.convert("RGB"))
+            dep = infer_depth_tile(pipe, rgb, inference_size, tile=TILE_SIZE, pad=TILE_PAD)
+            dep_min, dep_max = float(np.nanmin(dep)), float(np.nanmax(dep))
+            print(f"[tile] range min={dep_min:.6f} max={dep_max:.6f}")
+            preds.append({"predicted_depth": dep})
+        return preds
+
+    # Non-tiled
+    try:
+        res = pipe(images_pil, inference_size=inference_size)
+        if isinstance(res, list):
+            return res
+        elif isinstance(res, dict):
+            return [res]
+        else:
+            return [{"predicted_depth": res}]
+    except TypeError:
+        outs = []
+        for img in images_pil:
+            r = pipe(img, inference_size=inference_size)
+            if isinstance(r, list):
+                r = r[0]
+            outs.append(r if isinstance(r, dict) else {"predicted_depth": r})
+        return outs
+
 
 # ---------- Letterbox detection: robust helpers ----------
 # ---- utility metrics that letterbox detection depends on ----
@@ -417,13 +646,31 @@ INFERENCE_RESOLUTIONS = {
     "1024x1024": (1024, 1024),
 
     # ViT/DINOV2-safe resolutions (multiples of 14)
-    "518x518 ([Local] Distill Base)": (518, 518),
-    "896x896 (ViT-safe near 900)": (896, 896),
-    "1008x1008 (ViT-safe)": (1008, 1008),
+    "512x288":  (512, 288),
+    "640x352":  (640, 352),
+    "768x432":  (768, 432),
+    "896x512":  (896, 512),
+    "1024x576": (1024, 576),
+    "1152x640": (1152, 640),
+    "1280x720": (1280, 720),   # OK, both /32
+    "1344x768": (1344, 768),
+    "1536x864": (1536, 864),
+    "1600x896": (1600, 896),
+    "1792x1008":(1792, 1008),
+    "1920x1088":(1920, 1088),  # NOTE: 1088 instead of 1080
+    # Squares / general
+    "256x256":  (256, 256),
+    "384x384":  (384, 384),
+    "512x512":  (512, 512),
+    "640x640":  (640, 640),
+    "768x768":  (768, 768),
+    "896x896":  (896, 896),
+    "1024x1024":(1024, 1024),
 
     # Widescreen & cinematic
     "512x256 (DC-Fastest)": (512, 256),
     "704x384 (DC-Balanced)": (704, 384),
+    "910x518 (Depth Anything)": (910, 518),
     "960x540 (DC-Good Quality)": (960, 540),
     "1024x576 (DC-Max Quality)": (1024, 576),
 
@@ -435,7 +682,6 @@ INFERENCE_RESOLUTIONS = {
     "1280x720 (720p HD)": (1280, 720),
     "1920x1080 (1080p HD)": (1920, 1080),
 }
-
 
 def load_supported_models():
     models = {
@@ -452,6 +698,7 @@ def load_supported_models():
         "Depth Anything V1 Large": "LiheYoung/depth-anything-large-hf",
         "Depth Anything V1 Base": "LiheYoung/depth-anything-base-hf",
         "Depth Anything V1 Small": "LiheYoung/depth-anything-small-hf",
+        "vitl14": "LiheYoung/depth_anything_vitl14",
         "V2-Metric-Indoor-Large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "V2-Metric-Outdoor-Large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
         "DepthPro": "apple/DepthPro-hf",
@@ -459,33 +706,52 @@ def load_supported_models():
         "ZoeDepth": "Intel/zoedepth-nyu-kitti",
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
         "DPT-Large": "Intel/dpt-large",
+        "Manojb - DPT-Large": "Manojb/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
+        "Midas-V2": "qualcomm/Midas-V2",
+        "Video Depth Anything (ONNX)": "videodepthanything:VideoDepthAnything",
+        #    ^ label seen in the dropdown          ^ relative to local_model_dir
     }
 
-    # Add local folders that look like model directories
+    # ✅ auto-add local folders as “[Local] {folder}”
     for folder in os.listdir(local_model_dir):
         folder_path = os.path.join(local_model_dir, folder)
         if os.path.isdir(folder_path):
-            has_config = os.path.exists(os.path.join(folder_path, "config.json"))
-            has_onnx = os.path.exists(os.path.join(folder_path, "model.onnx"))
-            
-            if has_config or has_onnx:
+            if (os.path.exists(os.path.join(folder_path, "config.json")) or
+                os.path.exists(os.path.join(folder_path, "model.onnx"))):
                 models[f"[Local] {folder}"] = folder_path
 
-
     return models
-    
+
 supported_models = load_supported_models()
 
 def ensure_model_downloaded(checkpoint):
     """
     Handles both Hugging Face checkpoints and local ONNX directories.
     """
+    # --- Custom alias: videodepthanything:<relative-or-abs-path> ---
+    if isinstance(checkpoint, str) and checkpoint.startswith("videodepthanything:"):
+        rel = checkpoint.split(":", 1)[1].strip()
+        model_dir = rel if os.path.isabs(rel) else os.path.join(local_model_dir, rel)
+        provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
+        print(f"🧠 Resolving VDA ONNX at: {model_dir} (provider={provider})")
+        return load_onnx_model(model_dir, device=provider)
+
+    # (optional) generic onnx: prefix
+    if isinstance(checkpoint, str) and checkpoint.startswith("onnx:"):
+        rel = checkpoint.split(":", 1)[1].strip()
+        model_dir = rel if os.path.isabs(rel) else os.path.join(local_model_dir, rel)
+        provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
+        return load_onnx_model(model_dir, device=provider)
+
+    
     if os.path.isdir(checkpoint):
         # Local ONNX model detection
         if os.path.exists(os.path.join(checkpoint, "model.onnx")):
-            print(f"🧠 Detected ONNX model in {checkpoint}")
-            return load_onnx_model(checkpoint)
+            provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
+            print(f"🧠 Detected ONNX model in {checkpoint} (provider={provider})")
+            return load_onnx_model(checkpoint, device=provider)
+
 
         # Local Hugging Face model
         try:
@@ -529,10 +795,24 @@ def ensure_model_downloaded(checkpoint):
         except Exception as e:
             print(f"❌ Failed to load diffusion depth model: {e}")
             return None, None
-    
+        
     if checkpoint.startswith("depthcrafter:"):
         model_id = checkpoint.replace("depthcrafter:", "")
-        return load_depthcrafter_adapter(model_id)
+        if not os.path.isdir(model_id):
+            print(f"❌ DepthCrafter folder not found: {model_id}")
+            return None, None
+        try:
+            dc_pipe, dc_meta = load_depthcrafter_adapter(model_id)
+            if not isinstance(dc_meta, dict):
+                dc_meta = {}
+            setattr(dc_pipe, "_is_depthcrafter", True)
+            dc_meta.update({"is_depthcrafter": True, "is_diffusion": True})
+            print(f"🧩 DepthCrafter adapter loaded: {model_id}")
+            return dc_pipe, dc_meta
+        except Exception as e:
+            print(f"❌ Failed to load DepthCrafter adapter: {e}")
+            return None, None
+
 
 
     
@@ -550,14 +830,53 @@ def ensure_model_downloaded(checkpoint):
 
 
 def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
+    import onnxruntime as ort
     model_path = os.path.join(model_dir, "model.onnx")
     if not os.path.exists(model_path):
         print(f"❌ ONNX model not found: {model_path}")
         return None, None
 
     print(f"🧠 Loading ONNX model from: {model_path}")
-    session = ort.InferenceSession(model_path, providers=[device, "CPUExecutionProvider"])
 
+    # Try with ALL graph optimizations disabled (prevents bad rename/fusion issues)
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    # Optional: make behavior more deterministic
+    so.intra_op_num_threads = 1
+    so.inter_op_num_threads = 1
+
+    # Build provider list
+    providers = []
+    if device == "CUDAExecutionProvider" and "CUDAExecutionProvider" in ort.get_available_providers():
+        providers.append("CUDAExecutionProvider")
+    providers.append("CPUExecutionProvider")
+
+    # Attempt 1: disabled opts + chosen providers
+    try:
+        session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+    except Exception as e1:
+        print(f"⚠️ ORT init failed (opts disabled, {providers}): {e1}")
+        # Attempt 2: CPU only, still with opts disabled
+        try:
+            session = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
+        except Exception as e2:
+            print(f"💥 ORT CPU fallback failed (opts disabled): {e2}")
+            # As a last resort, try default options (may still fail on bad exports)
+            try:
+                session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            except Exception as e3:
+                print(f"💥 ORT final fallback failed: {e3}")
+                return None, None
+
+    # Introspect IO (handy if the export expects multiple inputs)
+    try:
+        in_names = [i.name for i in session.get_inputs()]
+        out_names = [o.name for o in session.get_outputs()]
+        print(f"🔎 Inputs={in_names} | Outputs={out_names}")
+    except Exception:
+        pass
+
+    # Pull basic shape info from the FIRST input (your current runner assumes 1 input)
     input_info = session.get_inputs()[0]
     output_info = session.get_outputs()[0]
 
@@ -566,45 +885,73 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
     input_shape = input_info.shape
     input_rank = len(input_shape)
 
-    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank}")
+    # ImageNet normalization for VDA / DINOv2
+    IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+    # Detect fixed T for video models (e.g., [1, 32, 3, H, W])
+    fixed_T = None
+    try:
+        if input_rank >= 2 and isinstance(input_shape[1], int):
+            fixed_T = int(input_shape[1])
+    except Exception:
+        fixed_T = None
+
+    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank} | fixed_T={fixed_T}")
+
+    def _prep_images(images, inference_size):
+        arrs = []
+        for img in images:
+            if inference_size:
+                img = img.resize(inference_size, Image.BICUBIC)
+            x = np.asarray(img, dtype=np.float32) / 255.0  # HWC
+            x = ((x - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).copy()  # CHW
+            arrs.append(x)
+        return arrs
 
     def run_onnx(images, inference_size=None):
         if inference_size is None:
             raise ValueError("❌ Must provide inference_size for ONNX.")
 
-        img_batch = [
-            np.array(img.resize(inference_size)).astype(np.float32).transpose(2, 0, 1) / 255.0
-            for img in images
-        ]
+        # 🔧 VDA stride safety: snap both dims to /32 and even
+        W, H = int(inference_size[0]), int(inference_size[1])
+        W, H = snap_for_vda(W, H, base=32)
+        inference_size = (W, H)
 
-        # Support Rank 5 input (e.g. [1, 32, 3, H, W])
+        img_batch = _prep_images(images, inference_size)
+
         if input_rank == 5:
-            if len(img_batch) != 32:
-                print(f"⚠️ Padding to 32 frames (got {len(img_batch)})")
-                img_batch += [img_batch[-1]] * (32 - len(img_batch))
-            input_tensor = np.stack(img_batch)[None, ...]  # Shape: [1, 32, 3, H, W]
-
-        # Support Rank 4 input (e.g. [B, 3, H, W])
+            T = len(img_batch)
+            if fixed_T is not None and T != fixed_T:
+                if T < fixed_T:
+                    img_batch += [img_batch[-1]] * (fixed_T - T)
+                else:
+                    img_batch = img_batch[:fixed_T]
+                T = fixed_T
+            input_tensor = np.stack(img_batch, axis=0)[None, ...]  # [1, T, 3, H, W]
         elif input_rank == 4:
-            input_tensor = np.stack(img_batch)  # Shape: [B, 3, H, W]
-
+            input_tensor = np.stack(img_batch, axis=0)             # [B, 3, H, W]
         else:
             raise ValueError(f"❌ Unsupported ONNX input rank: {input_rank}")
 
         output = session.run([output_name], {input_name: input_tensor})[0]
+        if input_rank == 5 and output.ndim == 4 and output.shape[0] == 1:
+            output = output.squeeze(0)
 
-        # Convert to tensor list
-        output = output.squeeze(0) if input_rank == 5 else output
-        return [{"predicted_depth": torch.tensor(depth)} for depth in output]
+        if input_rank == 5:
+            return [{"predicted_depth": torch.tensor(output[t])} for t in range(output.shape[0])]
+        else:
+            return [{"predicted_depth": torch.tensor(output[b])} for b in range(output.shape[0])]
+
 
     run_onnx._is_marigold = False
     return run_onnx, {
         "input_rank": input_rank,
+        "fixed_T": fixed_T,
         "session": session,
-        "provider": device,
+        "provider": providers[0] if providers else "CPUExecutionProvider",
         "is_onnx": True
     }
-
 
 spinner_states = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
 def start_spinner(widget, message="Warming up model..."):
@@ -650,76 +997,109 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
                 status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up ONNX model..."))
 
+                # --- Robust ONNX warm-up (handles stride quirks & fixed T) ---
                 try:
                     input_rank = processor_or_metadata.get("input_rank", 4)
-                    dummy_res = parse_inference_resolution(inference_res_var.get(), fallback=(518, 518))
+                    fixed_T    = processor_or_metadata.get("fixed_T", None)
+                    warmup_T   = int(fixed_T) if fixed_T is not None else 8
 
-                    if dummy_res is None:
-                        dummy_res = (518, 518)  # fallback if user selected "Original" or invalid value
+                    # Pull user pref (if any), then snap for VDA (/32)
+                    user_res = parse_inference_resolution(inference_res_var.get(), fallback=(512, 288))
+                    if user_res is None:
+                        user_res = (512, 288)
+                    uW, uH = snap_for_vda(user_res[0], user_res[1], base=32)
 
-                    dummy_res = tuple(round_to_multiple_of_8(x) for x in dummy_res)
+                    # Known good, /32-aligned options (stop at first that runs)
+                    candidates = [
+                        (uW, uH),            # user's snapped choice first
+                        (512, 288),
+                        (640, 360),
+                        (768, 432),
+                        (896, 504),
+                        (960, 544),
+                        (1024, 576),
+                        (1152, 648),
+                        (1280, 720),
+                        (1536, 864),
+                        (512, 512),          # square options if the net allows
+                        (640, 640),
+                        (768, 768),
+                    ]
 
-                    dummy_batch = [Image.new("RGB", dummy_res, (127, 127, 127))] * (32 if input_rank == 5 else 1)
+                    seen, sizes = set(), []
+                    for s in candidates:
+                        s = snap_for_vda(s[0], s[1], base=32)
+                        if s not in seen:
+                            sizes.append(s); seen.add(s)
 
-                    _ = pipe(dummy_batch, inference_size=dummy_res)
-                    print("🔥 ONNX model warmed up.")
+                    last_err = None
+                    warmed = False
+                    for (W, H) in sizes:
+                        try:
+                            if input_rank == 5:
+                                dummy_batch = [Image.new("RGB", (W, H), (127, 127, 127)) for _ in range(warmup_T)]
+                            else:
+                                dummy_batch = [Image.new("RGB", (W, H), (127, 127, 127))]
+                            _ = pipe(dummy_batch, inference_size=(W, H))
+                            print(f"🔥 ONNX model warmed up. Size={(W, H)}, T={warmup_T if input_rank==5 else 1}")
+                            warmed = True
+                            # (Optional) remember a good size for runtime defaults:
+                            processor_or_metadata["good_size"] = (W, H)
+                            break
+                        except Exception as err:
+                            last_err = err
+                            print(f"⚠️ Warm-up trial failed at {(W, H)}: {err}")
+
+                    if not warmed:
+                        raise RuntimeError(f"ONNX warm-up failed for all tried sizes {sizes}. Last error: {last_err}")
+
                 except Exception as e:
                     print(f"⚠️ ONNX warm-up failed: {e}")
 
-                status_label_widget.after(0, lambda: stop_spinner(
-                    status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (on {'CUDA' if device == 0 else 'CPU'})"))
 
+
+                dev_str = "CUDA" if str(device).lower() in ("cuda", "0", "gpu") else "CPU"
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (on {dev_str})"))
 
             elif is_diffusion:
-                if hasattr(model_callable, "__call__") and hasattr(model_callable, "original_pipe"):
-                    status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up DepthCrafter model..."))
-                    print("📦 Loading DepthCrafter model with custom params...")
+                is_dc = (isinstance(processor_or_metadata, dict) and processor_or_metadata.get("is_depthcrafter", False)) \
+                        or getattr(model_callable, "_is_depthcrafter", False)
 
+                if is_dc:
+                    pipe = model_callable
+                    pipe_type = "depthcrafter"
+
+                    status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Getting DepthCrafter ready..."))
                     try:
-                        inference_steps = int(inference_steps_entry.get().strip())
-                    except:
-                        inference_steps = 5
-
-                    try:
-                        res_str = inference_res_var.get().split(" ")[0]
-                        w, h = [int(x) for x in res_str.split("x")]
-                        inference_size = (w, h)
-                    except Exception:
-                        inference_size = (512, 256)
-
-                    offload_mode = offload_mode_dropdown.get()
-
-                    pipe = load_depthcrafter_adapter(get_weights_dir)
-                    pipe_type = "diffusion"
-
-                    # ✅ Skip real inference to avoid PIL shape issues
-                    print("🔥 DepthCrafter model loaded (inference will run during actual processing)")
-
-                    status_label_widget.after(0, lambda: stop_spinner(
-                        status_label_widget,
-                        f"✅ DepthCrafter model loaded: {selected_checkpoint} (inference steps: {inference_steps}, {inference_size}, offload: {offload_mode})"
-                    ))
+                        # No real inference here — DC expects sequences; just verify object shape minimally
+                        assert callable(pipe), "DepthCrafter pipe is not callable"
+                        print("🔥 DepthCrafter ready (will run during video processing)")
+                        status_label_widget.after(0, lambda: stop_spinner(
+                            status_label_widget,
+                            f"✅ DepthCrafter loaded: {selected_checkpoint} (device: {'CUDA' if device == 0 else 'CPU'})"
+                        ))
+                    except Exception as e:
+                        msg = f"❌ DepthCrafter init failed: {e}"
+                        print(msg)
+                        status_label_widget.after(0, lambda: stop_spinner(status_label_widget, msg))
                     return
 
-                else:
-                    # ✅ Other diffusion model (e.g. Marigold)
-                    pipe = model_callable
-                    pipe_type = "diffusion"
+                # Other diffusion models (e.g., Marigold)
+                pipe = model_callable
+                pipe_type = "diffusion"
+                status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up diffusion model..."))
+                try:
+                    dummy = Image.new("RGB", (518, 518), (127, 127, 127))
+                    _ = pipe(dummy)
+                    print("🔥 Diffusion model warmed up with dummy image")
+                except Exception as e:
+                    print(f" Diffusion warm-up skipped: {e}")
+                status_label_widget.after(0, lambda: stop_spinner(
+                    status_label_widget,
+                    f"✅ Diffusion model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
+                ))
 
-                    status_label_widget.after(0, lambda: start_spinner(
-                        status_label_widget, "🔄 Warming up diffusion model..."))
-
-                    try:
-                        dummy = Image.new("RGB", (518, 518), (127, 127, 127))
-                        _ = pipe(dummy)
-                        print("🔥 Diffusion model warmed up with dummy image")
-                    except Exception as e:
-                        print(f" Diffusion warm-up skipped: Silent Fail{e}")
-
-                    status_label_widget.after(0, lambda: stop_spinner(
-                        status_label_widget,
-                        f"✅ Diffusion model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"
-                    ))
 
             else:
                 processor = processor_or_metadata
@@ -751,10 +1131,10 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     status_label_widget, f"✅ HF model loaded: {selected_checkpoint} (Running on {'CUDA' if device == 0 else 'CPU'})"))
 
         except Exception as e:
-            err_msg = str(e)
-            print(f"❌ Model loading failed: {e}")
-            status_label_widget.after(0, lambda: stop_spinner(
-                status_label_widget, f"❌ Model loading failed: {err_msg}"))
+            tb = "".join(traceback.format_exc())
+            print(tb)
+            msg = f"💥 Init error: {e}"
+            status_label_widget.after(0, lambda m=msg: stop_spinner(status_label_widget, m))
 
 
     threading.Thread(target=warmup_thread, daemon=True).start()
@@ -807,6 +1187,10 @@ def save_depthcrafter_outputs(depth: np.ndarray, out_path: str, fps: int = 24):
 
 def round_to_multiple_of_8(x):
     return (x + 7) // 8 * 8
+    
+def round_to_multiple_of_14(x):
+    return ((int(x) + 13) // 14) * 14
+
 
 
 def parse_inference_resolution(res_string, fallback=(384, 384)):
@@ -900,14 +1284,10 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
         for file in batch_files:
             img = Image.open(file).convert("RGB")
             original_sizes.append(img.size)
-            if inference_size:
-                images.append(img.resize(inference_size, Image.BICUBIC))
-            else:
-                images.append(img)
+            images.append(img)  # let the tiler/pipe handle resizing
 
         print(f"🚀 Running batch of {len(images)} images at {inference_size}")
-        predictions = pipe(images, inference_size)
-
+        predictions = _run_pipe_or_tile(images, inference_size)
 
         for j, prediction in enumerate(predictions):
             if cancel_requested.is_set():
@@ -918,45 +1298,36 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
             orig_w, orig_h = original_sizes[j]
 
             try:
-                depth_tensor = prediction["predicted_depth"]
+                depth_pred = prediction["predicted_depth"]
 
-                # 🔄 Check for Marigold 16-bit support
-                if getattr(pipe, "_is_marigold", False):
-                    # ✅ Save 16-bit PNG from Marigold
-                    depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
-                    depth_image = depth_image.resize((orig_w, orig_h), Image.BICUBIC)
-
-                    if invert_var.get():
-                        print("🌀 Inverting 16-bit depth for:", file_path)
-                        depth_array = np.array(depth_image, dtype=np.uint16)
-                        depth_array = 65535 - depth_array  # Manual inversion
-                        depth_image = Image.fromarray(depth_array, mode="I;16")
-
-                else:
-                    # 🧠 Fallback to 8-bit normalized path
-                    depth_norm = (depth_tensor - depth_tensor.min()) / (depth_tensor.max() - depth_tensor.min())
-
-                    if isinstance(depth_tensor, np.ndarray):
-                        depth_np = (depth_norm.squeeze() * 255).astype(np.uint8)
-                    else:
-                        depth_np = (depth_norm.squeeze() * 255).cpu().numpy().astype(np.uint8)
-
-                    if invert_var.get():
-                        print("🌀 Inverting 8-bit depth for:", file_path)
-                        depth_np = 255 - depth_np
-
-                    depth_np = cv2.resize(depth_np, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+                if USE_TILED_DEPTH:
+                    # tiler returns float32 ndarray 
+                    depth_np = _normalize_to_u8(depth_pred, (orig_w, orig_h), invert=invert_var.get())
                     depth_image = Image.fromarray(depth_np)
+                else:
+                    # original behavior
+                    if getattr(pipe, "_is_marigold", False):
+                        depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
+                        depth_image = depth_image.resize((orig_w, orig_h), Image.BICUBIC)
+                        if invert_var.get():
+                            arr = np.array(depth_image, dtype=np.uint16)
+                            depth_image = Image.fromarray(65535 - arr, mode="I;16")
+                    else:
+                        depth_norm = (depth_pred - depth_pred.min()) / (depth_pred.max() - depth_pred.min() + 1e-6)
+                        depth_np = (depth_norm.squeeze() * 255).astype(np.uint8) if isinstance(depth_pred, np.ndarray) \
+                                   else (depth_norm.squeeze().cpu().numpy() * 255).astype(np.uint8)
+                        if invert_var.get(): depth_np = 255 - depth_np
+                        depth_np = cv2.resize(depth_np, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+                        depth_image = Image.fromarray(depth_np)
 
-                # 💾 Save
                 image_name = os.path.splitext(os.path.basename(file_path))[0]
                 output_filename = f"{image_name}_depth.png"
                 file_save_path = os.path.join(output_dir, output_filename)
                 depth_image.save(file_save_path)
-
             except Exception as e:
                 print(f"❌ Error processing {file_path}: {e}")
                 continue
+
 
             elapsed_time = time.time() - start_time
             fps = (i + j + 1) / elapsed_time if elapsed_time > 0 else 0
@@ -985,70 +1356,67 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
     original_size = image.size
 
     inference_size = parse_inference_resolution(inference_res_var.get())
-    image_resized = image.resize(inference_size, Image.BICUBIC) if inference_size else image.copy()
     
     print("📏 Using inference size:", inference_size)
-    predictions = pipe([image], inference_size)
-    
+    predictions = _run_pipe_or_tile([image], inference_size)
     if not (isinstance(predictions, list) and "predicted_depth" in predictions[0]):
         raise ValueError("❌ Unexpected prediction format from depth model.")
 
-    depth_tensor = predictions[0]["predicted_depth"]
-
     try:
+        depth_pred = predictions[0]["predicted_depth"]
         colormap_name = colormap_var.get().strip().lower()
 
-        if getattr(pipe, "_is_marigold", False):
-            if colormap_name == "default":
-                # Export raw 16-bit grayscale
-                depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_tensor)[0]
-            else:
-                # Export colorized RGB image
-                try:
-                    depth_image = pipe.image_processor.visualize_depth(depth_tensor, color_map=colormap_name)[0]
-                except Exception as e:
-                    print(f"⚠️ Failed to apply colormap '{colormap_name}', using default colormap. Error: {e}")
-                    depth_image = pipe.image_processor.visualize_depth(depth_tensor)[0]
+        if USE_TILED_DEPTH:
 
-            depth_image = depth_image.resize(original_size, Image.BICUBIC)
-
-            if invert_var.get():
-                print("🌀 Inverting Marigold depth image")
-                depth_array = np.array(depth_image)
-                if depth_image.mode == "I;16":
-                    depth_array = 65535 - depth_array
-                    depth_image = Image.fromarray(depth_array, mode="I;16")
-                else:
-                    depth_array = 255 - depth_array
-                    depth_image = Image.fromarray(depth_array.astype(np.uint8))
-
-        else:
-            # === Fallback for other models ===
-            depth_norm = (depth_tensor - depth_tensor.min()) / (depth_tensor.max() - depth_tensor.min())
-            depth_tensor = depth_norm.squeeze()
-
-            if isinstance(depth_tensor, torch.Tensor):
-                depth_np = (depth_tensor * 255).cpu().numpy().astype(np.uint8)
-            else:
-                depth_np = (depth_tensor * 255).astype(np.uint8)
-
-            if invert_var.get():
-                print("🌀 Inverting 8-bit depth for single image")
-                depth_np = 255 - depth_np
-
-            depth_np = cv2.resize(depth_np, original_size, interpolation=cv2.INTER_CUBIC)
-
+            depth_np = _normalize_to_u8(depth_pred, image.size, invert=invert_var.get())
             if colormap_name == "default":
                 depth_image = Image.fromarray(depth_np)
             else:
                 try:
                     cmap = cm.get_cmap(colormap_name)
-                    colored = cmap(depth_np.astype(np.float32) / 255.0)
-                    colored = (colored[:, :, :3] * 255).astype(np.uint8)
+                    colored = (cmap(depth_np.astype(np.float32)/255.0)[:, :, :3] * 255).astype(np.uint8)
                     depth_image = Image.fromarray(colored)
-                except ValueError:
-                    print(f"⚠️ Unknown colormap: {colormap_name}, defaulting to grayscale.")
+                except Exception:
                     depth_image = Image.fromarray(depth_np)
+
+        else:
+            # === Marigold special path ===
+            if getattr(pipe, "_is_marigold", False):
+                if colormap_name == "default":
+                    depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
+                else:
+                    try:
+                        depth_image = pipe.image_processor.visualize_depth(depth_pred, color_map=colormap_name)[0]
+                    except Exception as e:
+                        print(f"⚠️ Failed to apply colormap '{colormap_name}', using default. {e}")
+                        depth_image = pipe.image_processor.visualize_depth(depth_pred)[0]
+
+                depth_image = depth_image.resize(original_size, Image.BICUBIC)
+                if invert_var.get():
+                    arr = np.array(depth_image)
+                    if depth_image.mode == "I;16":
+                        depth_image = Image.fromarray(65535 - arr, mode="I;16")
+                    else:
+                        depth_image = Image.fromarray(255 - arr.astype(np.uint8))
+
+            # === Other HF/ONNX models ===
+            else:
+                d = _pred_to_np(depth_pred).squeeze()
+                d = (d - d.min()) / (d.max() - d.min() + 1e-6)
+                depth_np = (d * 255).astype(np.uint8)
+                if invert_var.get(): depth_np = 255 - depth_np
+                depth_np = cv2.resize(depth_np, original_size, interpolation=cv2.INTER_CUBIC)
+
+                if colormap_name == "default":
+                    depth_image = Image.fromarray(depth_np)
+                else:
+                    try:
+                        cmap = cm.get_cmap(colormap_name)
+                        colored = (cmap(depth_np.astype(np.float32)/255.0)[:, :, :3] * 255).astype(np.uint8)
+                        depth_image = Image.fromarray(colored)
+                    except ValueError:
+                        print(f"⚠️ Unknown colormap '{colormap_name}', defaulting to grayscale.")
+                        depth_image = Image.fromarray(depth_np)
 
     except Exception as e:
         print(f"❌ Error extracting depth: {e}")
@@ -1114,6 +1482,16 @@ def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_va
         filetypes=[("Image Files", "*.jpeg;*.jpg;*.png")]
     )
     if file_path:
+        if file_path:
+            # DepthCrafter is video-only
+            if _is_depthcrafter():
+                messagebox.showwarning(
+                    "DepthCrafter is video-only",
+                    "DepthCrafter expects a sequence of frames.\nUse the Video mode instead."
+                )
+                status_label_widget.config(text="⚠️ DepthCrafter is video-only. Use Video.")
+                return
+
         cancel_requested.clear()  # ✅ Reset before starting
         status_label_widget.config(text="🔄 Processing image...")
         progress_bar_widget.start(10)
@@ -1449,8 +1827,8 @@ def process_video2(
                 break
             
                 
-            if pipe_type == "diffusion":
-                # Frame stride (optional)
+            if _is_depthcrafter():
+                # === DepthCrafter sequence inference ===
                 if target_fps != -1 and fps > target_fps:
                     stride = max(1, round(fps / target_fps))
                     print(f"🎚️ Frame stride enabled: {stride}")
@@ -1458,21 +1836,13 @@ def process_video2(
                 else:
                     frames_input = frames_batch
 
-                print("Running DepthCrafter inference with:")
-                print(f"    input frames: {len(frames_input)}")
-
                 if len(frames_input) < window_size:
-                    print(f"⚠️ Adjusting window_size to {len(frames_input)} due to short clip")
                     window_size = len(frames_input)
+                    print(f"⚠️ Adjusting window_size to {window_size} due to short batch")
 
-                print(f"    steps={inference_steps}")
-                print(f"    resolution={inference_size}")
-                print(f"    seed={seed}")
-                print(f"    window_size={window_size}")
-                print(f"    overlap={overlap}")
-                print(f"    offload_mode={offload_mode}")
-                print(f"    [VRAM] Allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
-                print(f"    [VRAM] Reserved : {torch.cuda.memory_reserved() / 1e6:.1f} MB")
+                print("Running DepthCrafter inference with:")
+                print(f"  frames={len(frames_input)}  steps={inference_steps}")
+                print(f"  resolution={inference_size}  window_size={window_size} overlap={overlap}")
 
                 predictions = run_depthcrafter_inference(
                     pipe,
@@ -1483,7 +1853,6 @@ def process_video2(
                     overlap=overlap,
                     offload_mode=offload_mode
                 )
-
                 if predictions is None or len(predictions) == 0:
                     print("❌ Inference failed. No depth frames collected.")
                     return frame_count
@@ -1492,18 +1861,22 @@ def process_video2(
                     print("🛑 Cancelled before saving.")
                     return frame_count
 
-                # Save + progress
                 name, _ = os.path.splitext(os.path.basename(file_path))
-                save_depthcrafter_outputs(predictions, os.path.join(output_dir, name), target_fps if target_fps > 0 else int(fps))
+                save_depthcrafter_outputs(
+                    predictions,
+                    os.path.join(output_dir, name),
+                    target_fps if target_fps > 0 else int(fps)
+                )
 
+                # progress UI
                 for i in range(predictions.shape[0]):
                     progress = int(((frames_processed_all + total_processed_frames + i + 1) / total_frames_all) * 100)
                     progress_bar["value"] = progress
                     progress_bar.update_idletasks()
 
                     elapsed = time.time() - global_session_start_time
-                    avg_fps = (frames_processed_all + total_processed_frames + i + 1) / elapsed
-                    eta = (total_frames_all - (frames_processed_all + total_processed_frames + i + 1)) / avg_fps if avg_fps > 0 else 0
+                    avg_fps = (frames_processed_all + total_processed_frames + i + 1) / max(elapsed, 1e-6)
+                    eta = (total_frames_all - (frames_processed_all + total_processed_frames + i + 1)) / max(avg_fps, 1e-6)
 
                     status_label.config(
                         text=f"🎬 {frames_processed_all + total_processed_frames + i + 1}/{total_frames_all} frames | "
@@ -1513,11 +1886,12 @@ def process_video2(
                     status_label.update_idletasks()
 
                 total_processed_frames += predictions.shape[0]
+                frames_batch.clear()
                 continue
 
 
             else:
-                predictions = pipe(frames_batch, inference_size=inference_size)
+                predictions = _run_pipe_or_tile(frames_batch, inference_size)
 
 
             assert isinstance(predictions, list), "Expected list of predictions from pipeline"
@@ -1532,82 +1906,49 @@ def process_video2(
 
                 try:
                     raw_depth = prediction["predicted_depth"]
-                    # Process list of frames or single frame
-                    if isinstance(raw_depth, list):
-                        for depth_frame_tensor in raw_depth:
-                            gray = convert_depth_to_grayscale(depth_frame_tensor)                            
-                            if invert_var.get():
-                                gray = 255 - gray
-                            
-                            if ignore_letterbox_bars and (bars_top or bars_bottom):
-                                core_h = original_height - bars_top - bars_bottom
-                                if core_h <= 0:
-                                    bars_top = bars_bottom = 0
-                                    core_h = original_height
-                                # Resize depth to core area size (full width, cropped height)
-                                gray_core = cv2.resize(gray, (original_width, core_h), interpolation=cv2.INTER_CUBIC)
-                                
-                                # Use scene-median as neutral depth for the bars (prevents bars “popping”)
-                                neutral = int(np.median(gray_core)) if gray_core.size else 0
-                                full_gray = np.full((original_height, original_width), neutral, dtype=np.uint8)
-                                full_gray[bars_top:bars_top+core_h, :] = gray_core
-
-                                bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
-                            else:
-                                # No bars ignored → normal path
-                                bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                                bgr = cv2.resize(bgr, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
-
-                            out.write(bgr)
-                            
-                            to_save = full_gray if (ignore_letterbox_bars and (bars_top or bars_bottom)) else gray
-                            if save_frames:
-                                frame_filename = os.path.join(frame_output_dir, f"frame_{write_index:05d}.png")
-                                cv2.imwrite(frame_filename, to_save)
-                            write_index += 1
-
-                            total_processed_frames += 1
+                    # Convert to uint8 depth (full frame or tiler)
+                    if USE_TILED_DEPTH or isinstance(raw_depth, np.ndarray):
+                        depth_u8 = _normalize_to_u8(raw_depth, (original_width, original_height), invert=invert_var.get())
                     else:
-                        gray = convert_depth_to_grayscale(raw_depth)
+                        # old path: tensor/other -> grayscale (your helper)
+                        depth_u8 = convert_depth_to_grayscale(raw_depth)
                         if invert_var.get():
-                            gray = 255 - gray
-                            
-                        if ignore_letterbox_bars and (bars_top or bars_bottom):
-                            core_h = original_height - bars_top - bars_bottom
-                            if core_h <= 0:
-                                bars_top = bars_bottom = 0
-                                core_h = original_height
-                            gray_core = cv2.resize(gray, (original_width, core_h), interpolation=cv2.INTER_CUBIC)
+                            depth_u8 = 255 - depth_u8
+                        depth_u8 = cv2.resize(depth_u8, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
 
-                            # Use scene-median as neutral depth for the bars (prevents bars “popping”)
-                            neutral = int(np.median(gray_core)) if gray_core.size else 0
-                            full_gray = np.full((original_height, original_width), neutral, dtype=np.uint8)
-                            full_gray[bars_top:bars_top+core_h, :] = gray_core
+                    # letterbox handling (unchanged)
+                    if ignore_letterbox_bars and (bars_top or bars_bottom):
+                        core_h = original_height - bars_top - bars_bottom
+                        if core_h <= 0:
+                            bars_top = bars_bottom = 0
+                            core_h = original_height
+                        gray_core = cv2.resize(depth_u8, (original_width, core_h), interpolation=cv2.INTER_CUBIC)
+                        neutral = int(np.median(gray_core)) if gray_core.size else 0
+                        full_gray = np.full((original_height, original_width), neutral, dtype=np.uint8)
+                        full_gray[bars_top:bars_top+core_h, :] = gray_core
+                        bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
+                        to_save = full_gray
+                    else:
+                        bgr = cv2.cvtColor(depth_u8, cv2.COLOR_GRAY2BGR)
+                        to_save = depth_u8
 
-                            bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
-                        else:
-                            # No bars ignored → normal path
-                            bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                            bgr = cv2.resize(bgr, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
+                    out.write(bgr)
+                    if save_frames:
+                        frame_filename = os.path.join(frame_output_dir, f"frame_{write_index:05d}.png")
+                        cv2.imwrite(frame_filename, to_save)
+                    write_index += 1
+                    total_processed_frames += 1
 
-                        out.write(bgr)
-
-                        to_save = full_gray if (ignore_letterbox_bars and (bars_top or bars_bottom)) else gray
-                        if save_frames:
-                            frame_filename = os.path.join(frame_output_dir, f"frame_{write_index:05d}.png")
-                            cv2.imwrite(frame_filename, to_save)
-                        write_index += 1
-
-
-                        total_processed_frames += 1
 
                 except Exception as e:
                     print(f"⚠️ Depth processing error: {e}")
             
             if frame_count % 100 == 0:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
                 gc.collect()
+
 
             frames_batch.clear()
 
@@ -1629,9 +1970,11 @@ def process_video2(
 
     cap.release()
     out.release()
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
     gc.collect()
+
 
 
     if cancel_requested.is_set():
@@ -1730,3 +2073,18 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             "ignore_letterbox_bars": True,
         }
     ).start()
+
+def _log_ex(exctype, value, tb):
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    with open("vd3d_crash.log", "a", encoding="utf-8") as f:
+        f.write(f"\n=== {ts} ===\n")
+        traceback.print_exception(exctype, value, tb, file=f)
+    print("💥 Unhandled exception; see vd3d_crash.log")
+
+sys.excepthook = _log_ex
+
+# Python 3.8+: catch in threads too
+if hasattr(threading, "excepthook"):
+    def _thread_hook(args):
+        _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
+    threading.excepthook = _thread_hook
