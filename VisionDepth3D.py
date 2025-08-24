@@ -72,6 +72,11 @@ translations = {}
 current_language = "en"
 tooltip_refs = {}
 
+
+def _val(v):
+    # Only call .get() on actual tk.Variable instances; otherwise return as-is.
+    return v.get() if isinstance(v, tk.Variable) else v
+
 def rendering_in_progress():
     return is_rendering
 
@@ -177,7 +182,7 @@ def reset_settings():
     selected_depth_map.set("")
     output_sbs_video_path.set("")
     selected_codec.set("mp4v")
-    selected_ffmpeg_codec.set("H.264 / AVC (libx264)")
+    selected_ffmpeg_codec.set("H.264 / AVC (libx264 - CPU)")
     output_format.set("Full-SBS")
 
     # 🧠 3D Shifting Parameters
@@ -220,6 +225,13 @@ def reset_settings():
 
     # 🎥 CRF for FFmpeg
     crf_value.set(23)
+    
+    # 🎨 Color Grading
+    saturation.set(1.00)   # 0.00..2.00
+    contrast.set(1.00)     # 0.00..2.00
+    brightness.set(0.00)   # -0.50..+0.50
+
+    
 
     # 🖼️ UI Resets
     try:
@@ -234,6 +246,46 @@ def reset_settings():
         update_aspect_preview()
     except Exception as e:
         print(f"⚠️ Aspect preview reset skipped: {e}")
+        
+    # --- IPD controls ---
+    ipd_enabled_var.set(True)      # or False if you want it off by default
+    ipd_factor_var.set(1.00)
+    try:
+        ipd_readout.config(text=f"{ipd_factor_var.get():.2f}x" if ipd_enabled_var.get() else "OFF")
+    except Exception:
+        pass
+
+    # --- Clip window (start/end) ---
+    try:
+        clip_start_var.set("")     # clears the UI entries
+        clip_end_var.set("")
+    except Exception:
+        pass
+
+    # --- Toggles that weren’t reset yet ---
+    use_ffmpeg.set(False)              # you currently don’t reset this
+    enable_edge_masking.set(True)      # whichever default you want
+    enable_feathering.set(True)        # whichever default you want
+
+    # --- Aspect ratio choice (if you expose it in UI) ---
+    try:
+        selected_aspect_ratio.set("Default (16:9)")
+    except Exception:
+        pass
+
+    # --- Progress & flags ---
+    progress["value"] = 0
+    progress_label.config(text="0%")
+    cancel_flag.clear()
+    suspend_flag.clear()
+
+    # --- Original video dims cache (if these are tk variables in your UI) ---
+    try:
+        original_video_width.set(0)
+        original_video_height.set(0)
+    except Exception:
+        pass
+
 
     messagebox.showinfo("Settings Reset", "✅ All settings and preview panels reset to default!")
 
@@ -263,71 +315,6 @@ def resume_processing():
     print("▶ Processing Resumed!")
 
 is_rendering = False  # Make sure this is defined globally at the top of your script
-def handle_generate_3d():
-    global process_thread, is_rendering
-
-    try:
-        if process_thread is None or not process_thread.is_alive():
-            print("🚀 Starting new 3D processing thread...")
-            cancel_flag.clear()
-            suspend_flag.clear()
-            is_rendering = True  # Set rendering flag to True before starting
-
-            def run_and_clear_flag():
-                try:
-                    process_video(
-                        input_video_path,
-                        selected_depth_map,
-                        output_sbs_video_path,
-                        selected_codec,
-                        fg_shift,
-                        mg_shift,
-                        bg_shift,
-                        sharpness_factor,
-                        output_format,
-                        selected_aspect_ratio,
-                        aspect_ratios,
-                        feather_strength,
-                        blur_ksize,
-                        progress,
-                        progress_label,
-                        suspend_flag,
-                        cancel_flag,
-                        use_ffmpeg,
-                        selected_ffmpeg_codec,
-                        crf_value,
-                        use_subject_tracking,
-                        use_floating_window,
-                        max_pixel_shift,
-                        auto_crop_black_bars,
-                        parallax_balance,
-                        preserve_original_aspect,
-                        zero_parallax_strength,
-                        enable_edge_masking,
-                        enable_feathering,
-                        skip_blank_frames,
-                        dof_strength,
-                        convergence_strength,
-                        enable_dynamic_convergence,
-                        depth_pop_gamma,
-                        depth_pop_mid,
-                        depth_stretch_lo,
-                        depth_stretch_hi,
-                        fg_pop_multiplier,
-                        bg_push_multiplier,
-                        subject_lock_strength
-                    )
-                except Exception as e:
-                    print(f"❌ Error during 3D processing: {e}")
-                finally:
-                    is_rendering = False  # Always clear the flag when done
-
-            process_thread = threading.Thread(target=run_and_clear_flag, daemon=True)
-            process_thread.start()
-        else:
-            print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
-    except Exception as e:
-        print(f"❌ Error starting 3D processing: {e}")
 
 def grab_frame_from_video(video_path, frame_idx=0):
     cap = cv2.VideoCapture(video_path)
@@ -368,19 +355,24 @@ def update_aspect_preview(*args):
         print(f"[Aspect Preview Error] {e}")
 
 
+# replace your CreateToolTip with this version
 class CreateToolTip:
-    def __init__(self, widget, text, delay=500, wraplength=250):
+    def __init__(self, widget, text_or_fn, delay=500, wraplength=250):
         self.widget = widget
-        self.text = text
-        self.delay = delay  # Delay before showing (ms)
+        self._text_or_fn = text_or_fn  # can be str or a zero-arg function
+        self.delay = delay
         self.wraplength = wraplength
         self.tip_window = None
         self.id = None
-        self.alpha = 0.0  # For fade effect
+        self.alpha = 0.0
 
-        self.widget.bind("<Enter>", self.schedule_show)
-        self.widget.bind("<Leave>", self.hide_tooltip)
-        self.widget.bind("<ButtonPress>", self.hide_tooltip)
+        # NOTE: add="+" prevents clobbering existing binds
+        self.widget.bind("<Enter>", self.schedule_show, add="+")
+        self.widget.bind("<Leave>", self.hide_tooltip, add="+")
+        self.widget.bind("<ButtonPress>", self.hide_tooltip, add="+")
+
+    def _get_text(self):
+        return self._text_or_fn() if callable(self._text_or_fn) else (self._text_or_fn or "")
 
     def schedule_show(self, event=None):
         self.unschedule()
@@ -392,44 +384,26 @@ class CreateToolTip:
             self.id = None
 
     def show_tooltip(self, event=None):
-        if self.tip_window or not self.text:
+        txt = self._get_text()
+        if self.tip_window or not txt:
             return
-        
-        # Positioning
         x, y, _, _ = self.widget.bbox("insert") if self.widget.bbox("insert") else (0, 0, 0, 0)
         x += self.widget.winfo_rootx() + 25
         y += self.widget.winfo_rooty() + 25
-
-        # Create window
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-
-        # Drop shadow effect using an extra frame
-        shadow = tk.Frame(tw, bg="#999999")
-        shadow.pack(padx=2, pady=2)
-
-        label = tk.Label(
-            shadow, 
-            text=self.text, 
-            justify='left',
-            background="#ffffe0",
-            relief='solid',
-            borderwidth=1,
-            wraplength=self.wraplength,
-            font=("Segoe UI", 9, "normal")
-        )
+        shadow = tk.Frame(tw, bg="#999999"); shadow.pack(padx=2, pady=2)
+        label = tk.Label(shadow, text=txt, justify='left', background="#ffffe0",
+                         relief='solid', borderwidth=1, wraplength=self.wraplength,
+                         font=("Segoe UI", 9, "normal"))
         label.pack(ipadx=6, ipady=4)
-
         self.alpha = 0.0
         self.fade_in()
 
     def fade_in(self):
-        """Gradually make tooltip visible for a nicer feel."""
         if self.tip_window:
-            self.alpha += 0.1
-            if self.alpha >= 1.0:
-                self.alpha = 1.0
+            self.alpha = min(1.0, self.alpha + 0.1)
             self.tip_window.attributes("-alpha", self.alpha)
             if self.alpha < 1.0:
                 self.tip_window.after(15, self.fade_in)
@@ -575,7 +549,7 @@ class ScrollableFrame(ttk.Frame):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.4")
+root.title("VisionDepth3D v3.5")
 root.geometry("897x786+514+45")
 root.resizable(True, False)
 
@@ -653,9 +627,9 @@ def build_dark_header(root, on_language_change):
         command=lambda: messagebox.showinfo(
             "About VisionDepth3D",
             (
-                "VisionDepth3D v3.4\n"
+                "VisionDepth3D v3.5\n"
                 "----------------------------\n"
-                "A real-time 2D-to-3D conversion suite for cinema and VR.\n\n"
+                "A hybrid real-time 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
                 " • 25+ AI depth estimation models\n"
                 " • Depth-weighted parallax shifting\n"
@@ -734,8 +708,7 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
         "Marigold Depth (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-#        "DepthCrafter (Diffusers)": "tencent/DepthCrafter",
-#        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
+        "DepthCrafter (Custom)": "depthcrafter:weights/DepthCrafter",
         "Distil-Any-Depth-Large": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distil-Any-Depth-Small": "xingyang1/Distill-Any-Depth-Small-hf",
         "keetrap-Distil-Any-Depth-Large": "keetrap/Distil-Any-Depth-Large-hf",
@@ -750,7 +723,6 @@ def load_supported_models():
         "V2-Metric-Indoor-Large": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "V2-Metric-Outdoor-Large": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
         "DepthPro": "apple/DepthPro-hf",
-#        "Prompt Depth Anything": "depth-anything/prompt-depth-anything-vitl-hf",
         "marigold-depth-v1-0": "prs-eth/marigold-depth-v1-0",
         "ZoeDepth": "Intel/zoedepth-nyu-kitti",
         "MiDaS 3.0": "Intel/dpt-hybrid-midas",
@@ -758,25 +730,20 @@ def load_supported_models():
         "Manojb - DPT-Large": "Manojb/dpt-large",
         "dpt-beit-large-512": "Intel/dpt-beit-large-512",
         "Midas-V2": "qualcomm/Midas-V2",
-        
+        "Video Depth Anything (ONNX)": "videodepthanything:VideoDepthAnything",
+        #    ^ label seen in the dropdown          ^ relative to local_model_dir
     }
 
-    # ✅ Add local models from weights directory
-    for folder_name in os.listdir(local_model_dir):
-        folder_path = os.path.join(local_model_dir, folder_name)
+    # ✅ auto-add local folders as “[Local] {folder}”
+    for folder in os.listdir(local_model_dir):
+        folder_path = os.path.join(local_model_dir, folder)
         if os.path.isdir(folder_path):
-            has_config = os.path.exists(os.path.join(folder_path, "config.json"))
-            has_onnx = os.path.exists(os.path.join(folder_path, "model.onnx"))
-
-            if has_config or has_onnx:
-                display_name = f"[Local] {folder_name}"
-                models[display_name] = folder_path
-
+            if (os.path.exists(os.path.join(folder_path, "config.json")) or
+                os.path.exists(os.path.join(folder_path, "model.onnx"))):
+                models[f"[Local] {folder}"] = folder_path
 
     return models
 
-
-# Load models at start
 supported_models = load_supported_models()
 
 selected_model = tk.StringVar(root, value="-- Select Model --")
@@ -803,9 +770,26 @@ INFERENCE_RESOLUTIONS = {
     "1024x1024": (1024, 1024),
 
     # ViT/DINOV2-safe resolutions (multiples of 14)
-    "518x518 ([Local] models)": (518, 518),
-    "896x896 (ViT-safe near 900)": (896, 896),
-    "1008x1008 (ViT-safe)": (1008, 1008),
+    "512x288":  (512, 288),
+    "640x352":  (640, 352),
+    "768x432":  (768, 432),
+    "896x512":  (896, 512),
+    "1024x576": (1024, 576),
+    "1152x640": (1152, 640),
+    "1280x720": (1280, 720),   # OK, both /32
+    "1344x768": (1344, 768),
+    "1536x864": (1536, 864),
+    "1600x896": (1600, 896),
+    "1792x1008":(1792, 1008),
+    "1920x1088":(1920, 1088),  # NOTE: 1088 instead of 1080
+    # Squares / general
+    "256x256":  (256, 256),
+    "384x384":  (384, 384),
+    "512x512":  (512, 512),
+    "640x640":  (640, 640),
+    "768x768":  (768, 768),
+    "896x896":  (896, 896),
+    "1024x1024":(1024, 1024),
 
     # Widescreen & cinematic
     "512x256 (DC-Fastest)": (512, 256),
@@ -991,10 +975,10 @@ status_label = tk.Label(
 )
 status_label.pack(pady=5)
 
-cancel_button = tk.Button(
+cancel_depth_button = tk.Button(
     sidebar, text=t("Cancel"), command=cancel_processing, bg="red", fg="white"
 )
-cancel_button.pack(pady=5)
+cancel_depth_button.pack(pady=5)
 
 # --- Depth Content: Image previews ---
 # --- Top Frame: For the original image ---
@@ -1428,7 +1412,7 @@ delay_time = tk.DoubleVar(value=1 / 30)
 output_format = tk.StringVar(value="Full-SBS")
 blur_ksize = tk.IntVar(value=1)
 feather_strength = tk.DoubleVar(value=0.0)
-selected_ffmpeg_codec = tk.StringVar(value="H.264 / AVC (libx264 - CPU)")
+selected_ffmpeg_codec = tk.StringVar(value="h264_nvenc")
 crf_value = tk.IntVar(value=23)
 use_ffmpeg = tk.BooleanVar(value=False)
 use_subject_tracking = tk.BooleanVar(value=True)
@@ -1457,6 +1441,17 @@ depth_stretch_hi      = tk.DoubleVar(value=0.95)
 fg_pop_multiplier     = tk.DoubleVar(value=1.20)
 bg_push_multiplier    = tk.DoubleVar(value=1.10)
 subject_lock_strength = tk.DoubleVar(value=1.00)
+saturation = tk.DoubleVar(value=1.00)   # 0.00..2.00
+contrast   = tk.DoubleVar(value=1.00)   # 0.00..2.00
+brightness = tk.DoubleVar(value=0.00)   # -0.50..+0.50
+# --- Clip range (optional) ---
+clip_start_var = tk.StringVar(value="")   # e.g. "00:01:23.500" or "83.5"
+clip_end_var   = tk.StringVar(value="")   # leave blank to go to end
+
+# --- IPD UI state ---
+ipd_enabled_var = tk.BooleanVar(value=True)   # toggle
+ipd_factor_var  = tk.DoubleVar(value=1.00)    # 0.5..1.5 typical
+
 
 
 
@@ -1556,9 +1551,120 @@ gui_variables = {
     "fg_pop_multiplier": fg_pop_multiplier,
     "bg_push_multiplier": bg_push_multiplier,
     "subject_lock_strength": subject_lock_strength,
+    "saturation": saturation,
+    "contrast": contrast,
+    "brightness": brightness,
+    # --- IPD controls ---
+    "ipd_enabled_var": ipd_enabled_var,
+    "ipd_factor_var": ipd_factor_var,
+
+    # --- Clip window (start/end) ---
+    "clip_start_var": clip_start_var,
+    "clip_end_var": clip_end_var,
     
 
 }
+
+def handle_generate_3d():
+    global process_thread, is_rendering
+
+    try:
+        if process_thread is None or not process_thread.is_alive():
+            print("🚀 Starting new 3D processing thread...")
+            cancel_flag.clear()
+            suspend_flag.clear()
+            is_rendering = True  # Set rendering flag to True before starting
+            
+            # Read/parse clip window on the GUI thread
+            def _get_time(v):
+                try:
+                    s = v.get().strip()
+                    return parse_timecode(s) if s else None
+                except Exception:
+                    return None
+
+            start_s = _get_time(clip_start_var) if 'clip_start_var' in globals() else None
+            end_s   = _get_time(clip_end_var)   if 'clip_end_var'   in globals() else None
+
+            # Allow "end" as duration (e.g., Start=00:52:26, End=00:00:30)
+            if start_s is not None and end_s is not None:
+                if end_s <= start_s:
+                    end_s = start_s + end_s  # interpret end as length
+                if end_s <= start_s:         # still guard against zero-length
+                    end_s = start_s + 0.001
+
+            print(f"[UI] clip window: {start_s}..{end_s}")
+
+            
+            # --- read UI vars on main thread (Tk-safe) ---
+            sat = (color_saturation.get() if 'color_saturation' in globals() else saturation.get())
+            con = (color_contrast.get()   if 'color_contrast'   in globals() else contrast.get())
+            bri = (color_brightness.get() if 'color_brightness' in globals() else brightness.get())
+            ipd_value = ipd_factor_var.get() if ipd_enabled_var.get() else 0.0
+            
+
+            def run_and_clear_flag():
+                try:
+                    process_video(
+                        input_video_path,
+                        selected_depth_map,
+                        output_sbs_video_path,
+                        selected_codec,
+                        fg_shift,
+                        mg_shift,
+                        bg_shift,
+                        sharpness_factor,
+                        output_format,
+                        selected_aspect_ratio,
+                        aspect_ratios,
+                        feather_strength,
+                        blur_ksize,
+                        progress,
+                        progress_label,
+                        suspend_flag,
+                        cancel_flag,
+                        use_ffmpeg,
+                        selected_ffmpeg_codec,
+                        crf_value,
+                        use_subject_tracking,
+                        use_floating_window,
+                        max_pixel_shift,
+                        auto_crop_black_bars,
+                        parallax_balance,
+                        preserve_original_aspect,
+                        zero_parallax_strength,
+                        enable_edge_masking,
+                        enable_feathering,
+                        skip_blank_frames,
+                        dof_strength,
+                        convergence_strength,
+                        enable_dynamic_convergence,
+                        depth_pop_gamma,
+                        depth_pop_mid,
+                        depth_stretch_lo,
+                        depth_stretch_hi,
+                        fg_pop_multiplier,
+                        bg_push_multiplier,
+                        subject_lock_strength,
+                        sat,
+                        con,
+                        bri,
+                        ipd_value,
+                        start_s,
+                        end_s,     
+                    )
+                except Exception as e:
+                    print(f"❌ Error during 3D processing: {e}")
+                finally:
+                    is_rendering = False  # Always clear the flag when done
+
+            process_thread = threading.Thread(target=run_and_clear_flag, daemon=True)
+            process_thread.start()
+        else:
+            print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
+    except Exception as e:
+        print(f"❌ Error starting 3D processing: {e}")
+
 
 
 # Layout frames
@@ -1709,7 +1815,6 @@ enable_dynamic_convergence_checkbox = tk.Checkbutton(
 enable_dynamic_convergence_checkbox.grid(row=2, column=2, sticky="w", padx=5)
 
 
-
 # Row 2
 fg_shift_label = tk.Label(
     options_frame,
@@ -1853,6 +1958,55 @@ tk.Scale(
     bg="#1c1c1c", fg="white"
 ).grid(row=6, column=3, sticky="ew")
 
+# --- Row 7 : IPD Scale (match existing tk widgets/theme) ---
+ipd_label = tk.Label(
+    options_frame,
+    text=t("Stereo Scaling (IPD)"),
+    bg="#1c1c1c", fg="white"
+)
+ipd_label.grid(row=7, column=0, sticky="w")
+
+ipd_slider = tk.Scale(
+    options_frame,
+    from_=0.50, to=1.50,
+    resolution=0.01,
+    orient=tk.HORIZONTAL,
+    variable=ipd_factor_var,
+    length=200,
+    bg="#1c1c1c", fg="white"
+)
+ipd_slider.grid(row=7, column=1, sticky="ew")
+
+ipd_toggle = tk.Checkbutton(
+    options_frame,
+    text=t("Enable Stereo Scaling (IPD)"),
+    variable=ipd_enabled_var,
+    bg="#1c1c1c", fg="white",
+    selectcolor="#2b2b2b",
+    activebackground="#1c1c1c",
+    activeforeground="white",
+    highlightthickness=0
+)
+ipd_toggle.grid(row=7, column=2, sticky="w", padx=5)
+
+ipd_readout = tk.Label(
+    options_frame,
+    text="1.00x",
+    bg="#1c1c1c", fg="white"
+)
+ipd_readout.grid(row=7, column=3, sticky="e")
+
+def _ipd_update(*_):
+    # Keep slider enabled so color/style matches other sliders
+    ipd_readout.config(
+        text=(f"{ipd_factor_var.get():.2f}x" if ipd_enabled_var.get() else "OFF")
+    )
+
+ipd_factor_var.trace_add("write", _ipd_update)
+ipd_enabled_var.trace_add("write", _ipd_update)
+_ipd_update()
+
+
 
 pop_frame = tk.LabelFrame(
     visiondepth_content_frame,
@@ -1932,8 +2086,14 @@ def _commit_pop_entries():
     except ValueError:
         messagebox.showwarning(t("Invalid Input"), t("Use numeric values for Mid/Lo/Hi (0..1)."))
 
-apply_entries_btn = tk.Button(pop_frame, text=t("Apply Entries"), command=_commit_pop_entries,
-                              bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white")
+apply_entries_btn = tk.Button(
+    pop_frame,
+    text=t("Apply Entries"),
+    command=_commit_pop_entries,
+                              bg="#2c2c2c", fg="white",
+                              activebackground="#444444",
+                              activeforeground="white"
+)
 apply_entries_btn.grid(row=3, column=3, sticky="e")
 
 # (optional) Enter-to-commit
@@ -1942,251 +2102,63 @@ stretch_lo_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 
 
-# --- Mode Toggle ---
-mode = tk.StringVar(value="Single")
-tk.Label(visiondepth_content_frame, text="Mode:", bg="#1e1e1e", fg="white").grid(row=3, column=0, sticky="w")
-ttk.Combobox(visiondepth_content_frame, textvariable=mode, values=["Single", "Batch"]).grid(row=3, column=1, pady=5, padx=5)
-
-# --- Frame Containers ---
-single_frame = tk.Frame(visiondepth_content_frame, bg="#1e1e1e")
-batch_frame = tk.Frame(visiondepth_content_frame, bg="#1e1e1e")
-single_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
-batch_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
-batch_frame.grid_remove()
-
-# --- Single Input Fields ---
-select_input_video_button = tk.Button(
-    single_frame, text=t("Select Input Video"),
-    command=lambda:
-        select_input_video(input_video_path,
-        video_thumbnail_label, video_specs_label,
-        update_aspect_preview, original_video_width,
-        original_video_height), bg="#2c2c2c", fg="white",
-        activebackground="#444444", activeforeground="white",
-        relief="groove", bd=2)
-select_input_video_button.grid(row=0, column=0, pady=5, sticky="ew")
-    
-tk.Entry(single_frame, textvariable=input_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=0, column=1, pady=5, padx=5)
-select_depth_map_button = tk.Button(
-    single_frame, text=t("Select Depth Map"),
-    command=lambda:
-        select_depth_map(selected_depth_map,
-        depth_map_label), bg="#2c2c2c", fg="white",
-        activebackground="#444444", activeforeground="white",
-        relief="groove", bd=2)
-select_depth_map_button.grid(row=1, column=0, pady=5, sticky="ew")
-
-tk.Entry(single_frame, textvariable=selected_depth_map, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=1, column=1, pady=5, padx=5)
-select_output_video_button = tk.Button(
-    single_frame, text=t("Select Output Video"),
-    command=lambda:
-        select_output_video(output_sbs_video_path),
-        bg="#2c2c2c", fg="white", activebackground="#444444",
-        activeforeground="white", relief="groove", bd=2)
-select_output_video_button.grid(row=2, column=0, pady=5, sticky="ew")
-
-tk.Entry(single_frame, textvariable=output_sbs_video_path, width=50, bg="#2c2c2c", fg="white", insertbackground="white", relief="groove", bd=2).grid(row=2, column=1, pady=5, padx=5)
-
-# --- Batch Input Fields ---
-def add_to_listbox(listbox, filetypes):
-    files = filedialog.askopenfilenames(filetypes=filetypes)
-    for f in files:
-        listbox.insert(tk.END, f)
-
-input_video_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
-input_video_listbox.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
-tk.Button(batch_frame, text="+ Add Video", command=lambda: add_to_listbox(input_video_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=0, column=0, pady=5, sticky="ew")
-
-depth_map_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
-depth_map_listbox.grid(row=1, column=1, pady=5, padx=5, sticky="ew")
-tk.Button(batch_frame, text="+ Add Depth Map", command=lambda: add_to_listbox(depth_map_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]), bg="#2c2c2c", fg="white", activebackground="#444444", activeforeground="white", relief="groove", bd=2).grid(row=1, column=0, pady=5, sticky="ew")
-
-# --- Toggle Mode Visibility ---
-def toggle_mode(*args):
-    if mode.get() == "Single":
-        batch_frame.grid_remove()
-        single_frame.grid()
-    else:
-        single_frame.grid_remove()
-        batch_frame.grid()
-
-mode.trace_add("write", toggle_mode)
-toggle_mode()  # Init toggle on startup
-
-output_batch_folder = ""
-
-def select_output_batch_folder():
-    global output_batch_folder
-    folder = filedialog.askdirectory(title="Select Output Folder for 3D Batch")
-    if folder:
-        output_batch_folder = folder
-    else:
-        messagebox.showerror("Error", "You must select an output folder to proceed.")
-
-batch_queue = []
-
-def start_batch_processing():
-    global batch_queue
-
-    if input_video_listbox.size() != depth_map_listbox.size():
-        messagebox.showerror("Mismatch", "Videos and depth maps must match in count.")
-        return
-
-    select_output_batch_folder()
-    if not output_batch_folder:
-        return  # Cancelled
-
-    video_paths = input_video_listbox.get(0, tk.END)
-    depth_paths = depth_map_listbox.get(0, tk.END)
-
-    batch_queue = list(zip(video_paths, depth_paths))
-    process_next_in_batch()
-
-
-def process_next_in_batch():
-    global is_rendering, batch_queue, output_batch_folder
-
-    if not batch_queue:
-        print("✅ All batch renders complete.")
-        return
-
-    if not is_render_done():
-        # Still rendering the current video, check again in 1 second
-        visiondepth_content_frame.after(1000, process_next_in_batch)
-        return
-
-    # Load next item from queue
-    video, depth = batch_queue.pop(0)
-
-    input_video_path.set(video)
-    selected_depth_map.set(depth)
-
-    # Generate generic output filename
-    scene_num = len(input_video_listbox.get(0, tk.END)) - len(batch_queue)
-    output_name = f"sbs-scene-{scene_num:03}.mkv"
-    output_path = os.path.join(output_batch_folder, output_name)
-    output_sbs_video_path.set(output_path)
-
-    print(f"🎬 Rendering {output_name}...")
-
-    handle_generate_3d()  # Starts a threaded render
-
-    # Check again in 1 second to see if render is done
-    visiondepth_content_frame.after(1000, process_next_in_batch)
-
-
-# Frame to Hold Buttons and Format Selection in a Single Row
-button_frame = tk.Frame(visiondepth_content_frame, bg="#1c1c1c")
-button_frame.grid(row=7, column=0, columnspan=5, pady=10, sticky="w")
-
-# 3D Format Label and Dropdown (Inside button_frame)
-format_button = tk.Label(
-    button_frame, text=t("3D Format"),
+dof_strength_label = tk.Label(
+    options_frame,
+    text=t("DoF Strength"),
     bg="#1c1c1c", fg="white"
 )
-format_button.pack(side="left", padx=5)
+dof_strength_label.grid(row=6, column=2, sticky="w")
 
-option_menu = tk.OptionMenu(
-    button_frame,
-    output_format,
-    "Full-SBS",
-    "Half-SBS",
-    "VR",
-    "Red-Cyan Anaglyph",
-    "Passive Interlaced",
+color_frame = tk.LabelFrame(
+    visiondepth_content_frame,
+    text=t("Color Grading"),
+    bg="#1c1c1c", fg="white",
+    font=("Segoe UI", 10, "bold"),
+    labelanchor="nw", padx=10, pady=10
 )
-option_menu.config(width=10)  # Adjust width to keep consistent look
-option_menu.pack(side="left", padx=5)
+color_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="nsew")
+for i in range(4): color_frame.columnconfigure(i, weight=1)
 
-# Buttons Inside button_frame to Keep Everything on One Line
-start_button = tk.Button(
-    button_frame,
-    text=t("Generate 3D Video"),
-    bg="green",
-    fg="white",
-    command=lambda: (
-        save_settings(),
-        handle_generate_3d()
-    )
+# Saturation
+saturation_label = tk.Label(
+    color_frame, text=t("Saturation"),
+    bg="#1c1c1c", fg="white")
+saturation_label.grid(row=0, column=0, sticky="w")
+
+tk.Scale(color_frame, from_=0.0, to=2.0, resolution=0.05, orient=tk.HORIZONTAL,
+         variable=saturation, bg="#1c1c1c", fg="white").grid(row=0, column=1, sticky="ew")
+
+# Contrast
+contrast_label = tk.Label(
+    color_frame,text=t("Contrast"),
+    bg="#1c1c1c", fg="white")
+contrast_label.grid(row=0, column=2, sticky="w")
+
+tk.Scale(color_frame, from_=0.0, to=2.0, resolution=0.05, orient=tk.HORIZONTAL,
+         variable=contrast, bg="#1c1c1c", fg="white").grid(row=0, column=3, sticky="ew")
+
+# Brightness
+brightness_label = tk.Label(
+    color_frame, text=t("Brightness"),
+    bg="#1c1c1c", fg="white")
+brightness_label.grid(row=1, column=0, sticky="w")
+
+tk.Scale(color_frame, from_=-0.5, to=0.5, resolution=0.01, orient=tk.HORIZONTAL,
+         variable=brightness, bg="#1c1c1c", fg="white").grid(row=1, column=1, sticky="ew")
+
+# Optional reset
+def _reset_color_grade():
+    saturation.set(1.00); contrast.set(1.00); brightness.set(0.00)
+color_reset_button = tk.Button(
+    color_frame,
+    text=t("Reset"),
+    command=_reset_color_grade,
+          bg="#2c2c2c",
+          fg="white",
+          activebackground="#444444",
+          activeforeground="white"
 )
-
-start_button.pack(side="left", padx=5)
-
-batch_start_button = tk.Button(
-    button_frame,
-    text=t("Start Batch Render"),
-    bg="purple",
-    fg="white",
-    command=lambda: (
-        save_settings(),
-        start_batch_processing()
-    )
-)
-batch_start_button.pack(side="left", padx=5)
-
-
-preview_button = tk.Button(
-    button_frame,
-    text=t("Open Preview"),
-    command=lambda: open_3d_preview_window(
-        input_video_path,
-        selected_depth_map,
-        fg_shift,
-        mg_shift,
-        bg_shift,
-        blur_ksize,
-        feather_strength,
-        use_subject_tracking,
-        use_floating_window,
-        zero_parallax_strength,
-        parallax_balance,
-        enable_edge_masking,
-        enable_feathering,
-        sharpness_factor,
-        max_pixel_shift,
-        dof_strength,
-        convergence_strength,
-        enable_dynamic_convergence,
-        depth_pop_gamma,
-        depth_pop_mid,
-        depth_stretch_lo,
-        depth_stretch_hi,
-        fg_pop_multiplier,
-        bg_push_multiplier,
-        subject_lock_strength,
-
-    )
-
-)
-
-preview_button.pack(side="left", padx=5)
-
-suspend_button = tk.Button(
-    button_frame, text=t("Suspend"), command=suspend_processing, bg="orange", fg="black"
-)
-suspend_button.pack(side="left", padx=5)
-
-resume_button = tk.Button(
-    button_frame, text=t("Resume"), command=resume_processing, bg="blue", fg="white"
-)
-resume_button.pack(side="left", padx=5)
-
-cancel_button = tk.Button(
-    button_frame, text=t("Cancel"), command=cancel_processing, bg="red", fg="white"
-)
-cancel_button.pack(side="left", padx=5)
-
-# Row 7 - Reset button centered
-reset_button = tk.Button(
-    button_frame, text=t("Reset to Defaults"), command=reset_settings, bg="#8B0000", fg="white"
-)
-reset_button.pack(side="left", padx=5)
-
-save_preset_button = tk.Button(
-    button_frame, text=t("Save Preset"), bg="#1c1c1c", fg="white",
-    command=prompt_and_save_preset
-)
-save_preset_button.pack(side="left", padx=5)
+color_reset_button.grid(row=1, column=3, sticky="e")
 
 
 # 🔲 Encoding Settings Group
@@ -2200,7 +2172,7 @@ encoding_frame = tk.LabelFrame(
     padx=10,
     pady=10
 )
-encoding_frame.grid(row=8, column=0, columnspan=5, padx=10, pady=10, sticky="ew")
+encoding_frame.grid(row=4, column=0, columnspan=5, padx=10, pady=10, sticky="ew")
 
 # Make columns evenly resize
 for i in range(6):
@@ -2294,6 +2266,327 @@ tk.Scale(
     troughcolor="#444"
 ).grid(row=1, column=4, columnspan=2, sticky="ew", padx=5)
 
+# --- Clip Range UI ---
+#clip_frame = tk.LabelFrame(
+#    visiondepth_content_frame,
+#    text="Clip Range (optional)",
+#    bg="#1c1c1c",
+#    fg="white",
+#    font=("Segoe UI", 10, "bold"),
+#    labelanchor="nw",
+#    padx=10,
+#    pady=10
+#)
+#clip_frame.grid(row=8, column=0, padx=8, pady=8, sticky="we")  # adjust placement
+
+
+
+#def _time_validate(s: str) -> bool:
+#    """
+#    Allow digits, colon, dot, spaces so users can type 'HH:MM:SS(.ms)', 'MM:SS(.ms)', or 'SS(.ms)'.
+#    Actual parsing is done by parse_timecode(); this just keeps the entry clean-ish.
+#    """
+#    return bool(re.match(r'^[0-9:\.\s]*$', s))
+
+#vcmd = (clip_frame.register(_time_validate), "%P")
+
+#tk.Label(clip_frame, text="Start (HH:MM:SS[.ms] or seconds):").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+#start_entry = tk.Entry(clip_frame, textvariable=clip_start_var, width=18, validate="key", validatecommand=vcmd)
+#start_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
+
+#tk.Label(clip_frame, text="End (HH:MM:SS[.ms] or seconds):").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+#end_entry = tk.Entry(clip_frame, textvariable=clip_end_var, width=18, validate="key", validatecommand=vcmd)
+#end_entry.grid(row=1, column=1, sticky="w", padx=6, pady=4)
+
+#btns = tk.Frame(clip_frame)
+#btns.grid(row=0, column=2, rowspan=2, padx=6, pady=4, sticky="e")
+#tk.Button(btns, text="Clear", command=clear_clip).grid(row=0, column=0, padx=4)
+
+# ── INPUT SOURCES (own frame) ──────────────────────────────────────────────
+inputs_frame = tk.LabelFrame(
+    visiondepth_content_frame,
+    text=t("Input Sources"),
+    bg="#1c1c1c",
+    fg="white",
+    font=("Segoe UI", 10, "bold"),
+    labelanchor="nw",
+    padx=10, pady=10
+)
+# pick a free row; adjust as needed in your layout
+inputs_frame.grid(row=9, column=0, columnspan=6, padx=10, pady=10, sticky="ew")
+
+for i in range(6):
+    inputs_frame.columnconfigure(i, weight=1)
+
+# --- Mode Toggle (inside inputs_frame) ---
+mode = tk.StringVar(value="Single")
+mode_label = tk.Label(
+    inputs_frame,
+    text="Mode:",
+    bg="#1e1e1e",
+    fg="white"
+)
+mode_label.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+ttk.Combobox(inputs_frame, textvariable=mode, values=["Single", "Batch"])\
+  .grid(row=0, column=1, pady=5, padx=5, sticky="w")
+
+# --- Frame Containers (children of inputs_frame) ---
+single_frame = tk.Frame(inputs_frame, bg="#1e1e1e")
+batch_frame  = tk.Frame(inputs_frame, bg="#1e1e1e")
+single_frame.grid(row=1, column=0, columnspan=6, sticky="ew")
+batch_frame.grid(row=1, column=0, columnspan=6, sticky="ew")
+batch_frame.grid_remove()
+
+# --- Single Input Fields ---
+select_input_video_button = tk.Button(
+    single_frame, text=t("Select Input Video"),
+    command=lambda: select_input_video(
+        input_video_path, video_thumbnail_label, video_specs_label,
+        update_aspect_preview, original_video_width, original_video_height
+    ),
+    bg="#2c2c2c", fg="white", activebackground="#444444",
+    activeforeground="white", relief="groove", bd=2
+)
+select_input_video_button.grid(row=0, column=0, pady=5, sticky="ew")
+
+tk.Entry(
+    single_frame, textvariable=input_video_path, width=50,
+    bg="#2c2c2c", fg="white", insertbackground="white",
+    relief="groove", bd=2
+).grid(row=0, column=1, pady=5, padx=5, sticky="ew")
+
+select_depth_map_button = tk.Button(
+    single_frame, text=t("Select Depth Map"),
+    command=lambda: select_depth_map(selected_depth_map, depth_map_label),
+    bg="#2c2c2c", fg="white", activebackground="#444444",
+    activeforeground="white", relief="groove", bd=2
+)
+select_depth_map_button.grid(row=1, column=0, pady=5, sticky="ew")
+
+tk.Entry(
+    single_frame, textvariable=selected_depth_map, width=50,
+    bg="#2c2c2c", fg="white", insertbackground="white",
+    relief="groove", bd=2
+).grid(row=1, column=1, pady=5, padx=5, sticky="ew")
+
+select_output_video_button = tk.Button(
+    single_frame, text=t("Select Output Video"),
+    command=lambda: select_output_video(output_sbs_video_path),
+    bg="#2c2c2c", fg="white", activebackground="#444444",
+    activeforeground="white", relief="groove", bd=2
+)
+select_output_video_button.grid(row=2, column=0, pady=5, sticky="ew")
+
+tk.Entry(
+    single_frame, textvariable=output_sbs_video_path, width=50,
+    bg="#2c2c2c", fg="white", insertbackground="white",
+    relief="groove", bd=2
+).grid(row=2, column=1, pady=5, padx=5, sticky="ew")
+
+# --- Batch Input Fields ---
+def add_to_listbox(listbox, filetypes):
+    files = filedialog.askopenfilenames(filetypes=filetypes)
+    for f in files:
+        listbox.insert(tk.END, f)
+
+input_video_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
+input_video_listbox.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
+
+batch_video_button = tk.Button(
+    batch_frame, text="+ Add Video",
+    command=lambda: add_to_listbox(input_video_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]),
+    bg="#2c2c2c", fg="white", activebackground="#444444",
+    activeforeground="white", relief="groove", bd=2
+)
+batch_video_button.grid(row=0, column=0, pady=5, sticky="ew")
+
+depth_map_listbox = tk.Listbox(batch_frame, selectmode=tk.SINGLE, height=5, bg="#1e1e1e", fg="white")
+depth_map_listbox.grid(row=1, column=1, pady=5, padx=5, sticky="ew")
+
+batch_depth_button = tk.Button(
+    batch_frame, text="+ Add Depth Map",
+    command=lambda: add_to_listbox(depth_map_listbox, filetypes=[("Video files", "*.mp4 *.mkv *.mov")]),
+    bg="#2c2c2c", fg="white", activebackground="#444444",
+    activeforeground="white", relief="groove", bd=2
+)
+batch_depth_button.grid(row=1, column=0, pady=5, sticky="ew")
+
+# --- Toggle Mode Visibility ---
+def toggle_mode(*args):
+    if mode.get() == "Single":
+        batch_frame.grid_remove()
+        single_frame.grid()
+    else:
+        single_frame.grid_remove()
+        batch_frame.grid()
+
+mode.trace_add("write", toggle_mode)
+toggle_mode()  # Init
+
+# --- Batch helpers (unchanged; can stay here) ---
+output_batch_folder = ""
+
+def select_output_batch_folder():
+    global output_batch_folder
+    folder = filedialog.askdirectory(title="Select Output Folder for 3D Batch")
+    if folder:
+        output_batch_folder = folder
+    else:
+        messagebox.showerror("Error", "You must select an output folder to proceed.")
+
+batch_queue = []
+
+def start_batch_processing():
+    global batch_queue
+    if input_video_listbox.size() != depth_map_listbox.size():
+        messagebox.showerror("Mismatch", "Videos and depth maps must match in count.")
+        return
+    select_output_batch_folder()
+    if not output_batch_folder:
+        return
+    video_paths = input_video_listbox.get(0, tk.END)
+    depth_paths = depth_map_listbox.get(0, tk.END)
+    batch_queue = list(zip(video_paths, depth_paths))
+    process_next_in_batch()
+
+def process_next_in_batch():
+    global is_rendering, batch_queue, output_batch_folder
+    if not batch_queue:
+        print("✅ All batch renders complete.")
+        return
+    if not is_render_done():
+        # use the top-level container to schedule; either works
+        visiondepth_content_frame.after(1000, process_next_in_batch)
+        return
+    video, depth = batch_queue.pop(0)
+    input_video_path.set(video)
+    selected_depth_map.set(depth)
+    scene_num = len(input_video_listbox.get(0, tk.END)) - len(batch_queue)
+    output_name = f"sbs-scene-{scene_num:03}.mkv"
+    output_path = os.path.join(output_batch_folder, output_name)
+    output_sbs_video_path.set(output_path)
+    print(f"🎬 Rendering {output_name}...")
+    handle_generate_3d()
+    visiondepth_content_frame.after(1000, process_next_in_batch)
+
+
+
+# Frame to Hold Buttons and Format Selection in a Single Row
+button_frame = tk.Frame(visiondepth_content_frame, bg="#1c1c1c")
+button_frame.grid(row=10, column=0, columnspan=5, pady=10, sticky="w")
+
+# 3D Format Label and Dropdown (Inside button_frame)
+format_button = tk.Label(
+    button_frame, text=t("3D Format"),
+    bg="#1c1c1c", fg="white"
+)
+format_button.pack(side="left", padx=5)
+
+option_menu = tk.OptionMenu(
+    button_frame,
+    output_format,
+    "Full-SBS",
+    "Half-SBS",
+    "VR",
+    "Red-Cyan Anaglyph",
+    "Passive Interlaced",
+)
+option_menu.config(width=10)  # Adjust width to keep consistent look
+option_menu.pack(side="left", padx=5)
+
+# Buttons Inside button_frame to Keep Everything on One Line
+start_button = tk.Button(
+    button_frame,
+    text=t("Generate 3D Video"),
+    bg="green",
+    fg="white",
+    command=lambda: (
+        save_settings(),
+        handle_generate_3d()
+    )
+)
+
+start_button.pack(side="left", padx=5)
+
+batch_start_button = tk.Button(
+    button_frame,
+    text=t("Start Batch Render"),
+    bg="purple",
+    fg="white",
+    command=lambda: (
+        save_settings(),
+        start_batch_processing()
+    )
+)
+batch_start_button.pack(side="left", padx=5)
+
+
+preview_button = tk.Button(
+    button_frame,
+    text=t("Open Preview"),
+    command=lambda: open_3d_preview_window(
+        input_video_path,
+        selected_depth_map,
+        fg_shift,
+        mg_shift,
+        bg_shift,
+        blur_ksize,
+        feather_strength,
+        use_subject_tracking,
+        use_floating_window,
+        zero_parallax_strength,
+        parallax_balance,
+        enable_edge_masking,
+        enable_feathering,
+        sharpness_factor,
+        max_pixel_shift,
+        dof_strength,
+        convergence_strength,
+        enable_dynamic_convergence,
+        depth_pop_gamma,
+        depth_pop_mid,
+        depth_stretch_lo,
+        depth_stretch_hi,
+        fg_pop_multiplier,
+        bg_push_multiplier,
+        subject_lock_strength,
+        # NEW: color vars from main UI
+        saturation,
+        contrast,
+        brightness,
+
+    )
+
+)
+
+preview_button.pack(side="left", padx=5)
+
+suspend_button = tk.Button(
+    button_frame, text=t("Suspend"), command=suspend_processing, bg="orange", fg="black"
+)
+suspend_button.pack(side="left", padx=5)
+
+resume_button = tk.Button(
+    button_frame, text=t("Resume"), command=resume_processing, bg="blue", fg="white"
+)
+resume_button.pack(side="left", padx=5)
+
+cancel_button = tk.Button(
+    button_frame, text=t("Cancel"), command=cancel_processing, bg="red", fg="white"
+)
+cancel_button.pack(side="left", padx=5)
+
+# Row 7 - Reset button centered
+reset_button = tk.Button(
+    button_frame, text=t("Reset to Defaults"), command=reset_settings, bg="#8B0000", fg="white"
+)
+reset_button.pack(side="left", padx=5)
+
+save_preset_button = tk.Button(
+    button_frame, text=t("Save Preset"), bg="#1c1c1c", fg="white",
+    command=prompt_and_save_preset
+)
+save_preset_button.pack(side="left", padx=5)
 
 # Row 9 – Icon Buttons + Audio Tool
 def open_github():
@@ -2324,7 +2617,7 @@ CheatSheet_icon_tk = ImageTk.PhotoImage(CheatSheet_icon)
 
 # 🔹 Combine GitHub, Cheat Sheet, and Audio Tool into one frame
 bottom_links_frame = tk.Frame(visiondepth_content_frame, bg="#1c1c1c")
-bottom_links_frame.grid(row=9, column=0, columnspan=6, sticky="w", padx=10, pady=10)
+bottom_links_frame.grid(row=11, column=0, columnspan=6, sticky="w", padx=10, pady=10)
 
 # GitHub Button
 github_button = tk.Button(
@@ -2353,7 +2646,7 @@ CheatSheet_button.pack(side="left", padx=5)
 # 🎵 Audio Tool Button (text button next to icons)
 audio_tool_button = tk.Button(
     bottom_links_frame,
-    text=t("🎵 Audio Tool"), bg="#1c1c1c", fg="white",
+    text=t("Audio Tool"), bg="#1c1c1c", fg="white",
     command=launch_audio_gui
 )
 audio_tool_button.pack(side="left", padx=10)
@@ -2366,83 +2659,102 @@ preset_menu.bind("<<ComboboxSelected>>", lambda e: apply_preset(preset_var.get()
 preset_menu.pack(side="left", padx=10)
 
 # -- Depth Estimation Tab --
-tooltip_refs["Model"] = CreateToolTip(model_dropdown, t("Tooltip.Model"))
-tooltip_refs["OutputDirLabel"] = CreateToolTip(output_dir_label, t("Tooltip.OutputDirLabel"))
-tooltip_refs["OutputDirButton"] = CreateToolTip(output_dir_button, t("Tooltip.OutputDirButton"))
-tooltip_refs["ColormapLabel"] = CreateToolTip(colormap_label, t("Tooltip.ColormapLabel"))
-tooltip_refs["ColormapDropdown"] = CreateToolTip(colormap_dropdown, t("Tooltip.ColormapDropdown"))
-tooltip_refs["InvertCheckbox"] = CreateToolTip(invert_checkbox, t("Tooltip.InvertCheckbox"))
-tooltip_refs["SaveFramesCheckbox"] = CreateToolTip(save_frames_checkbox, t("Tooltip.SaveFramesCheckbox"))
-tooltip_refs["BatchSizeEntry"] = CreateToolTip(batch_size_entry, t("Tooltip.BatchSizeEntry"))
-tooltip_refs["InputLabel"] = CreateToolTip(input_label, t("Tooltip.InputLabel"))
-tooltip_refs["InferenceSteps"] = CreateToolTip(inference_steps_label, t("Tooltip.InferenceSteps"))
-tooltip_refs["DepthLabel"] = CreateToolTip(output_label, t("Tooltip.DepthLabel"))
-tooltip_refs["CPUMode"] = CreateToolTip(offload_mode_label, t("Tooltip.CPUMode"))
-tooltip_refs["ProcessImage"] = CreateToolTip(process_image_button, t("Tooltip.ProcessImage"))
-tooltip_refs["ProcessImageFolder"] = CreateToolTip(process_image_folder_button, t("Tooltip.ProcessImageFolder"))
-tooltip_refs["ProcessVideo"] = CreateToolTip(process_video_button, t("Tooltip.ProcessVideo"))
-tooltip_refs["ProcessVideoFolder"] = CreateToolTip(process_video_folder_button, t("Tooltip.ProcessVideoFolder"))
+tooltip_refs["Model"] = CreateToolTip(model_dropdown, lambda: t("Tooltip.Model"))
+tooltip_refs["OutputDirLabel"] = CreateToolTip(output_dir_label, lambda: t("Tooltip.OutputDirLabel"))
+tooltip_refs["OutputDirButton"] = CreateToolTip(output_dir_button, lambda: t("Tooltip.OutputDirButton"))
+tooltip_refs["ColormapLabel"] = CreateToolTip(colormap_label, lambda: t("Tooltip.ColormapLabel"))
+tooltip_refs["ColormapDropdown"] = CreateToolTip(colormap_dropdown, lambda: t("Tooltip.ColormapDropdown"))
+tooltip_refs["InvertCheckbox"] = CreateToolTip(invert_checkbox, lambda: t("Tooltip.InvertCheckbox"))
+tooltip_refs["SaveFramesCheckbox"] = CreateToolTip(save_frames_checkbox, lambda: t("Tooltip.SaveFramesCheckbox"))
+tooltip_refs["BatchSizeEntry"] = CreateToolTip(batch_size_entry, lambda: t("Tooltip.BatchSizeEntry"))
+tooltip_refs["InputLabel"] = CreateToolTip(input_label, lambda: t("Tooltip.InputLabel"))
+tooltip_refs["InferenceSteps"] = CreateToolTip(inference_steps_label, lambda: t("Tooltip.InferenceSteps"))
+tooltip_refs["DepthLabel"] = CreateToolTip(output_label, lambda: t("Tooltip.DepthLabel"))
+tooltip_refs["CPUMode"] = CreateToolTip(offload_mode_label, lambda: t("Tooltip.CPUMode"))
+tooltip_refs["ProcessImage"] = CreateToolTip(process_image_button, lambda: t("Tooltip.ProcessImage"))
+tooltip_refs["ProcessImageFolder"] = CreateToolTip(process_image_folder_button, lambda: t("Tooltip.ProcessImageFolder"))
+tooltip_refs["ProcessVideo"] = CreateToolTip(process_video_button, lambda: t("Tooltip.ProcessVideo"))
+tooltip_refs["ProcessVideoFolder"] = CreateToolTip(process_video_folder_button, lambda: t("Tooltip.ProcessVideoFolder"))
 
 
 # -- 3D Render Tab --
-tooltip_refs["StartButton"] = CreateToolTip(start_button, t("Tooltip.StartButton"))
-tooltip_refs["PreviewButton"] = CreateToolTip(preview_button, t("Tooltip.PreviewButton"))
-tooltip_refs["suspend_button"] = CreateToolTip(suspend_button, t("Tooltip.SuspendButton"))
-tooltip_refs["SuspendButton"] = CreateToolTip(resume_button, t("Tooltip.ResumeButton"))
-tooltip_refs["ResumeButton"] = CreateToolTip(cancel_button, t("Tooltip.CancelButton"))
-tooltip_refs["ResetButton"] = CreateToolTip(reset_button, t("Tooltip.ResetButton"))
+tooltip_refs["StartButton"] = CreateToolTip(start_button, lambda: t("Tooltip.StartButton"))
+tooltip_refs["PreviewButton"] = CreateToolTip(preview_button, lambda: t("Tooltip.PreviewButton"))
+tooltip_refs["Suspendbutton"] = CreateToolTip(suspend_button, lambda: t("Tooltip.SuspendButton"))
+tooltip_refs["ResumeButton"] = CreateToolTip(resume_button, lambda: t("Tooltip.ResumeButton"))
+tooltip_refs["CancelButton"] = CreateToolTip(cancel_button, lambda: t("Tooltip.CancelButton"))
+tooltip_refs["ResetButton"] = CreateToolTip(reset_button, lambda: t("Tooltip.ResetButton"))
+tooltip_refs["ColorResetButton"] = CreateToolTip(color_reset_button, lambda: t("Tooltip.ColorResetButton"))
 
-tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, t("Tooltip.OptionMenu"))
-tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, t("Tooltip.AspectPreview"))
+tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, lambda: t("Tooltip.OptionMenu"))
+tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, lambda: t("Tooltip.AspectPreview"))
 
 # Sliders
-tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, t("Tooltip.FGShift"))
-tooltip_refs["MGShift"] = CreateToolTip(mg_shift_label, t("Tooltip.MGShift"))
-tooltip_refs["BGShift"] = CreateToolTip(bg_shift_label, t("Tooltip.BGShift"))
-tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, t("Tooltip.Sharpness"))
-tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, t("Tooltip.ZeroParallaxStrength"))
-tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, t("Tooltip.ParallaxBalance"))
-tooltip_refs["MaxPixelShift"] = CreateToolTip(max_pixel_shift_label, t("Tooltip.MaxPixelShift"))
-tooltip_refs["DOFStrength"] = CreateToolTip(dof_strength_label, t("Tooltip.DOFStrength"))
-tooltip_refs["ConvergenceStrength"] = CreateToolTip(convergence_strength_label, t("Tooltip.ConvergenceStrength"))
+tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, lambda: t("Tooltip.FGShift"))
+tooltip_refs["MGShift"] = CreateToolTip(mg_shift_label, lambda: t("Tooltip.MGShift"))
+tooltip_refs["BGShift"] = CreateToolTip(bg_shift_label, lambda: t("Tooltip.BGShift"))
+tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, lambda: t("Tooltip.Sharpness"))
+tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, lambda: t("Tooltip.ZeroParallaxStrength"))
+tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, lambda: t("Tooltip.ParallaxBalance"))
+tooltip_refs["MaxPixelShift"] = CreateToolTip(max_pixel_shift_label, lambda: t("Tooltip.MaxPixelShift"))
+tooltip_refs["DOFStrength"] = CreateToolTip(dof_strength_label, lambda: t("Tooltip.DOFStrength"))
+tooltip_refs["ConvergenceStrength"] = CreateToolTip(convergence_strength_label, lambda: t("Tooltip.ConvergenceStrength"))
 
 # Checkboxes
-tooltip_refs["PreserveAspect"] = CreateToolTip(preserve_aspect_checkbox, t("Tooltip.PreserveAspect"))
-tooltip_refs["AutoCrop"] = CreateToolTip(auto_crop_checkbox, t("Tooltip.AutoCrop"))
-tooltip_refs["SubjectTracking"] = CreateToolTip(use_subject_tracking_checkbox, t("Tooltip.SubjectTracking"))
-tooltip_refs["FloatingWindow"] = CreateToolTip(use_dfw_checkbox, t("Tooltip.FloatingWindow"))
-tooltip_refs["EdgeMasking"] = CreateToolTip(enable_edge_checkbox, t("Tooltip.EdgeMasking"))
-tooltip_refs["Feathering"] = CreateToolTip(enable_feathering_checkbox, t("Tooltip.Feathering"))
-tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, t("Tooltip.SkipBlankFrames"))
-tooltip_refs["UseFFmpeg"] = CreateToolTip(use_ffmpeg_checkbox, t("Tooltip.UseFFmpeg"))
-tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, t("Tooltip.EnableDynConvergence"))
+tooltip_refs["PreserveAspect"]  = CreateToolTip(preserve_aspect_checkbox, lambda: t("Tooltip.PreserveAspect"))
+tooltip_refs["AutoCrop"]        = CreateToolTip(auto_crop_checkbox, lambda: t("Tooltip.AutoCrop"))
+tooltip_refs["SubjectTracking"] = CreateToolTip(use_subject_tracking_checkbox, lambda: t("Tooltip.SubjectTracking"))
+tooltip_refs["FloatingWindow"]  = CreateToolTip(use_dfw_checkbox, lambda: t("Tooltip.FloatingWindow"))
+tooltip_refs["EdgeMasking"]     = CreateToolTip(enable_edge_checkbox, lambda: t("Tooltip.EdgeMasking"))
+tooltip_refs["Feathering"]      = CreateToolTip(enable_feathering_checkbox, lambda: t("Tooltip.Feathering"))
+tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, lambda: t("Tooltip.SkipBlankFrames"))
+tooltip_refs["UseFFmpeg"]       = CreateToolTip(use_ffmpeg_checkbox, lambda: t("Tooltip.UseFFmpeg"))
+tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, lambda: t("Tooltip.EnableDynConvergence"))
 
-tooltip_refs["PopGamma"]        = CreateToolTip(pop_gamma_label, t("Tooltip.PopGamma"))
-tooltip_refs["PopMid"]          = CreateToolTip(pop_mid_label,   t("Tooltip.PopMid"))
-tooltip_refs["StretchLo"]       = CreateToolTip(stretch_lo_label, t("Tooltip.StretchLo"))
-tooltip_refs["StretchHi"]       = CreateToolTip(stretch_hi_label, t("Tooltip.StretchHi"))
-tooltip_refs["FGPop"]           = CreateToolTip(fg_pop_label,    t("Tooltip.FGPop"))
-tooltip_refs["BGPush"]          = CreateToolTip(bg_push_label,   t("Tooltip.BGPush"))
-tooltip_refs["SubjectLock"]     = CreateToolTip(subj_lock_label, t("Tooltip.SubjectLock"))
+tooltip_refs["PopGamma"]        = CreateToolTip(pop_gamma_label, lambda: t("Tooltip.PopGamma"))
+tooltip_refs["PopMid"]          = CreateToolTip(pop_mid_label,   lambda: t("Tooltip.PopMid"))
+tooltip_refs["StretchLo"]       = CreateToolTip(stretch_lo_label, lambda: t("Tooltip.StretchLo"))
+tooltip_refs["StretchHi"]       = CreateToolTip(stretch_hi_label, lambda: t("Tooltip.StretchHi"))
+tooltip_refs["FGPop"]           = CreateToolTip(fg_pop_label,    lambda: t("Tooltip.FGPop"))
+tooltip_refs["BGPush"]          = CreateToolTip(bg_push_label,   lambda: t("Tooltip.BGPush"))
+tooltip_refs["SubjectLock"]     = CreateToolTip(subj_lock_label, lambda: t("Tooltip.SubjectLock"))
+tooltip_refs["ApplyEntries"] = CreateToolTip(apply_entries_btn, lambda: t("Tooltip.ApplyEntries"))
 
+tooltip_refs["Saturation"] = CreateToolTip(saturation_label, lambda: t("Tooltip.Saturation"))
+tooltip_refs["Contrast"]   = CreateToolTip(contrast_label,   lambda: t("Tooltip.Contrast"))
+tooltip_refs["Brightness"] = CreateToolTip(brightness_label, lambda: t("Tooltip.Brightness"))
 
+apply_entries_btn
 # Encoding
-tooltip_refs["CRF"] = CreateToolTip(crf_value_label, t("Tooltip.CRF"))
-tooltip_refs["NVENCCQ"] = CreateToolTip(nvenc_cq_value_label, t("Tooltip.NVENCCQ"))
-tooltip_refs["SelectedCodec"] = CreateToolTip(selected_codec_label, t("Tooltip.SelectedCodec"))
-tooltip_refs["FFmpegCodec"] = CreateToolTip(selected_ffmpeg_codec_label, t("Tooltip.FFmpegCodec"))
-tooltip_refs["AspectRatio"] = CreateToolTip(selected_aspect_ratio_label, t("Tooltip.AspectRatio"))
+tooltip_refs["CRF"] = CreateToolTip(crf_value_label, lambda: t("Tooltip.CRF"))
+tooltip_refs["NVENCCQ"] = CreateToolTip(nvenc_cq_value_label, lambda: t("Tooltip.NVENCCQ"))
+tooltip_refs["SelectedCodec"] = CreateToolTip(selected_codec_label, lambda: t("Tooltip.SelectedCodec"))
+tooltip_refs["FFmpegCodec"] = CreateToolTip(selected_ffmpeg_codec_label, lambda: t("Tooltip.FFmpegCodec"))
+tooltip_refs["AspectRatio"] = CreateToolTip(selected_aspect_ratio_label, lambda: t("Tooltip.AspectRatio"))
+
+# --- IPD Controls ---
+tooltip_refs["IPDShift"] = CreateToolTip(ipd_label, lambda: t("Tooltip.IPDShift"))
+tooltip_refs["EnableIPD"] = CreateToolTip(ipd_toggle, lambda: t("Tooltip.EnableIPD"))
+
+tooltip_refs["AddVideo"] = CreateToolTip(batch_video_button, lambda: t("Tooltip.AddVideo"))
+tooltip_refs["AddDepthMap"] = CreateToolTip(batch_depth_button, lambda: t("Tooltip.AddDepthMap"))
+tooltip_refs["StartBatchRender"] = CreateToolTip(batch_start_button, lambda: t("Tooltip.StartBatchRender"))
+tooltip_refs["ModeSelect"] = CreateToolTip(mode_label, lambda: t("Tooltip.ModeSelect"))
 
 # -- FrameTool Tips --
-tooltip_refs["ExtractFrames"] = CreateToolTip(extract_frames_button, t("Tooltip.ExtractFrames"))
-tooltip_refs["RIFE"] = CreateToolTip(RIFE_FPS_button, t("Tooltip.RIFE"))
-tooltip_refs["ESRGAN"] = CreateToolTip(esrgan_button, t("Tooltip.ESRGAN"))
-tooltip_refs["Resolution"] = CreateToolTip(resolution_label, t("Tooltip.Resolution"))
-tooltip_refs["OriginalFPS"] = CreateToolTip(original_fps_label, t("Tooltip.OriginalFPS"))
-tooltip_refs["FPSMultiplier"] = CreateToolTip(fps_multi_label, t("Tooltip.FPSMultiplier"))
-tooltip_refs["AIBlend"] = CreateToolTip(ai_blend_select, t("Tooltip.AIBlend"))
-tooltip_refs["InputResPct"] = CreateToolTip(input_res_pct_label, t("Tooltip.InputResPct"))
-tooltip_refs["ModelSelect"] = CreateToolTip(model_select, t("Tooltip.ModelSelect"))
+tooltip_refs["ExtractFrames"] = CreateToolTip(extract_frames_button, lambda: t("Tooltip.ExtractFrames"))
+tooltip_refs["RIFE"] = CreateToolTip(RIFE_FPS_button, lambda: t("Tooltip.RIFE"))
+tooltip_refs["ESRGAN"] = CreateToolTip(esrgan_button, lambda: t("Tooltip.ESRGAN"))
+tooltip_refs["Resolution"] = CreateToolTip(resolution_label, lambda: t("Tooltip.Resolution"))
+tooltip_refs["OriginalFPS"] = CreateToolTip(original_fps_label, lambda: t("Tooltip.OriginalFPS"))
+tooltip_refs["FPSMultiplier"] = CreateToolTip(fps_multi_label, lambda: t("Tooltip.FPSMultiplier"))
+tooltip_refs["AIBlend"] = CreateToolTip(ai_blend_select, lambda: t("Tooltip.AIBlend"))
+tooltip_refs["InputResPct"] = CreateToolTip(input_res_pct_label, lambda: t("Tooltip.InputResPct"))
+tooltip_refs["ModelSelect"] = CreateToolTip(model_select, lambda: t("Tooltip.ModelSelect"))
+tooltip_refs["SceneDetect"] = CreateToolTip(scene_detect_label,        lambda: t("Tooltip.SceneDetect"))
+tooltip_refs["SceneDetectThreshold"] = CreateToolTip(scene_detect_threshold, lambda: t("Tooltip.SceneDetectThreshold"))
+tooltip_refs["DetectScenesExtract"] = CreateToolTip(detect_scenes_button,     lambda: t("Tooltip.DetectScenesExtract"))
+
 
 PRESET_DIR = "presets"
 os.makedirs(PRESET_DIR, exist_ok=True)
@@ -2489,12 +2801,21 @@ def refresh_ui_labels():
     _cfg(select_output_video_button, text=t("Select Output Video"))
     _cfg(format_button, text=t("3D Format"))
     _cfg(start_button, text=t("Generate 3D Video"))
+    _cfg(batch_start_button, text=t("Start Batch Render"))
     _cfg(preview_button, text=t("Open Preview"))
     _cfg(suspend_button, text=t("Suspend"))
     _cfg(resume_button, text=t("Resume"))
     _cfg(cancel_button, text=t("Cancel"))
+    _cfg(cancel_depth_button, text=t("Cancel"))
     _cfg(reset_button, text=t("Reset to Defaults"))
+    _cfg(color_reset_button, text=t("Reset"))
+    _cfg(inputs_frame, text=t("Input Sources"))
+    _cfg(mode_label, text=t("Mode:"))
+    
     _cfg(save_preset_button, text=t("Save Preset"))
+    _cfg(batch_video_button, text=t("+ Add Video"))
+    _cfg(batch_depth_button, text=t("+ Add Depth Map"))
+    
 
     # Parallax/quality sliders (existing)
     _cfg(fg_shift_label, text=t("Foreground Shift"))
@@ -2515,6 +2836,7 @@ def refresh_ui_labels():
     _cfg(fg_pop_label, text=t("FG Pop ×"))
     _cfg(bg_push_label, text=t("BG Push ×"))
     _cfg(subj_lock_label, text=t("Subject Lock"))
+    _cfg(apply_entries_btn, text=t("Apply Entries"))
 
     # Toggles / checkboxes (existing)
     _cfg(preserve_aspect_checkbox, text=t("Preserve Original Aspect Ratio"))
@@ -2545,7 +2867,7 @@ def refresh_ui_labels():
     _cfg(output_video_file_label, text=t("Output Video File:"))
     _cfg(save_as_button, text=t("Save As"))
 
-    _cfg(proc_frame, text=t("⚙️ Processing Options"))
+    _cfg(proc_frame, text=t("Processing Options"))
     _cfg(RIFE_FPS_button, text=t("Enable RIFE Interpolation"))
     _cfg(esrgan_button, text=t("Enable Real-ESRGAN Upscale"))
 
@@ -2560,16 +2882,30 @@ def refresh_ui_labels():
     _cfg(input_res_pct_label, text=t("Input Resolution %:"))
     _cfg(model_select, text=t("Model Selection:"))
     _cfg(start_processing_button, text=t("▶ Start Processing"))
-
-    # ✅ Update tooltip text for active language
-    for key, tooltip in tooltip_refs.items():
-        if tooltip:
-            tooltip.text = t(f"Tooltip.{key}")
+    _cfg(merged_status, text=t("Waiting to start..."))
+    
+    _cfg(scene_detect_label, text=t("🎥 Scene Detection (PySceneDetect)"))
+    _cfg(scene_detect_threshold, text=t("Sensitivity Threshold (lower = more cuts):"))
+    _cfg(detect_scenes_button, text=t("🎩 Detect Scenes & Extract"))
+    
+    # 🎨 Color Grading (new group)
+    _cfg(color_frame, text=t("Color Grading"))
+    _cfg(saturation_label, text=t("Saturation"))
+    _cfg(contrast_label,   text=t("Contrast"))
+    _cfg(brightness_label, text=t("Brightness"))
+       
+        # 🔀 Stereo Separation (IPD)
+    _cfg(ipd_toggle, text=t("Enable Stereo Scaling (IPD)"))
+    _cfg(ipd_label, text=t("Stereo Scaling (IPD)"))
+ 
+    _cfg(pop_frame, text=t("Pop & Subject Controls"))    
+    _cfg(ipd_label, text=t("Stereo Scaling (IPD)"))    
 
 def get_all_presets():
     return [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(PRESET_DIR, "*.json"))]
 
 preset_menu['values'] = get_all_presets()
+
 def apply_preset(preset_name):
     path = os.path.join(PRESET_DIR, f"{preset_name}.json")
 
@@ -2613,7 +2949,6 @@ def apply_preset(preset_name):
     lo = _clamp(lo, 0.0, 1.0)
     hi = _clamp(hi, 0.0, 1.0)
     if hi <= lo:
-        # keep them valid; fall back to defaults if needed
         lo, hi = 0.05, 0.95
     depth_stretch_lo.set(lo)
     depth_stretch_hi.set(hi)
@@ -2621,10 +2956,52 @@ def apply_preset(preset_name):
     fg_mul = float(config.get("fg_pop_multiplier", 1.20))
     bg_mul = float(config.get("bg_push_multiplier", 1.10))
     subject_lock = float(config.get("subject_lock_strength", 1.00))
-
     fg_pop_multiplier.set(_clamp(fg_mul, 0.5, 2.0))
     bg_push_multiplier.set(_clamp(bg_mul, 0.5, 2.0))
     subject_lock_strength.set(_clamp(subject_lock, 0.0, 2.0))
+
+    # --- NEW: color grading (backward compatible defaults) ---
+    sat = float(config.get("saturation", 1.0))
+    con = float(config.get("contrast",   1.0))
+    bri = float(config.get("brightness", 0.0))
+    saturation.set(_clamp(sat, 0.0, 2.0))
+    contrast.set(_clamp(con, 0.0, 2.0))
+    brightness.set(_clamp(bri, -0.5, 0.5))
+    
+        # --- NEW: IPD / stereo separation (backward compatible) ---
+    try:
+        ipd_on  = bool(config.get("ipd_enabled", False))
+        ipd_val = float(config.get("ipd_factor", 1.00))
+
+        # clamp to your slider's range
+        def _clamp(v, lo, hi): return max(lo, min(hi, v))
+        ipd_val = _clamp(ipd_val, 0.50, 1.50)
+
+        # set vars if they exist
+        if 'ipd_enabled_var' in globals(): ipd_enabled_var.set(ipd_on)
+        if 'ipd_factor_var'  in globals(): ipd_factor_var.set(ipd_val)
+
+        # update UI bits if present
+        try:
+            if 'ipd_slider' in globals():
+                ipd_slider.config(state=('normal' if ipd_on else 'disabled'))
+            if 'ipd_value_lbl' in globals():
+                ipd_value_lbl.config(text=f"{ipd_val:.2f}x")
+            # if you wired a trace callback like _on_ipd_slider(), call it:
+            if '_on_ipd_slider' in globals():
+                _on_ipd_slider()
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"⚠️ IPD restore skipped: {e}")
+
+    # 🧽 Sync entry fields (if present) so UI reflects loaded preset immediately
+    try:
+        pop_mid_entry.delete(0, tk.END);      pop_mid_entry.insert(0, f"{depth_pop_mid.get():.2f}")
+        stretch_lo_entry.delete(0, tk.END);   stretch_lo_entry.insert(0, f"{depth_stretch_lo.get():.2f}")
+        stretch_hi_entry.delete(0, tk.END);   stretch_hi_entry.insert(0, f"{depth_stretch_hi.get():.2f}")
+    except Exception:
+        pass
 
     print(f"✅ Applied preset: {preset_name}")
 
@@ -2649,7 +3026,7 @@ def save_current_preset(name="custom_preset.json"):
         "convergence_strength": convergence_strength.get(),
         "enable_dynamic_convergence": enable_dynamic_convergence.get(),
 
-        # --- NEW: pop & subject controls ---
+        # --- pop & subject controls ---
         "depth_pop_gamma": depth_pop_gamma.get(),
         "depth_pop_mid": depth_pop_mid.get(),
         "depth_stretch_lo": depth_stretch_lo.get(),
@@ -2657,6 +3034,19 @@ def save_current_preset(name="custom_preset.json"):
         "fg_pop_multiplier": fg_pop_multiplier.get(),
         "bg_push_multiplier": bg_push_multiplier.get(),
         "subject_lock_strength": subject_lock_strength.get(),
+
+        # --- color grading ---
+        "saturation": saturation.get(),
+        "contrast":   contrast.get(),
+        "brightness": brightness.get(),
+        
+        # --- IPD / stereo separation ---
+        "ipd_enabled": ipd_enabled_var.get(),
+        "ipd_factor":  ipd_factor_var.get(),
+
+
+        # Optional: version tag helps future migrations
+        "preset_version": "3.5"
     }
 
     path = os.path.join(PRESET_DIR, name)
@@ -2666,6 +3056,7 @@ def save_current_preset(name="custom_preset.json"):
     print(f"💾 Preset saved: {name}")
     preset_menu['values'] = get_all_presets()
     preset_menu.set(os.path.splitext(name)[0])
+
 
 
 def load_settings():
