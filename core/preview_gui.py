@@ -17,6 +17,7 @@ from core.render_3d import (
     tensor_to_frame,
     pad_to_aspect_ratio,
     format_3d_output,
+    apply_color_grade,   # color grading
 )
 from core.preview_utils import grab_frame_from_video, generate_preview_image
 
@@ -56,24 +57,20 @@ def open_3d_preview_window(
     dof_strength,
     convergence_strength,
     enable_dynamic_convergence,
-    depth_pop_gamma_var=None,
-    depth_pop_mid_var=None,
-    depth_stretch_lo_var=None,
-    depth_stretch_hi_var=None,
-    fg_pop_multiplier_var=None,
-    bg_push_multiplier_var=None,
-    subject_lock_strength_var=None,
-        
+    # pop/subject vars (use main UI vars directly)
+    depth_pop_gamma,
+    depth_pop_mid,
+    depth_stretch_lo,
+    depth_stretch_hi,
+    fg_pop_multiplier,
+    bg_push_multiplier,
+    subject_lock_strength,
+    # color vars (use main UI vars directly)
+    saturation,
+    contrast,
+    brightness,
 ):
     settings = load_settings()
-    # --- New pop controls: state (restored from settings or defaults)
-    depth_pop_gamma = tk.DoubleVar(value=float(settings.get('depth_pop_gamma', 0.85)))
-    depth_pop_mid = tk.DoubleVar(value=float(settings.get('depth_pop_mid', 0.50)))
-    depth_stretch_lo = tk.DoubleVar(value=float(settings.get('depth_stretch_lo', 0.05)))
-    depth_stretch_hi = tk.DoubleVar(value=float(settings.get('depth_stretch_hi', 0.95)))
-    fg_pop_multiplier = tk.DoubleVar(value=float(settings.get('fg_pop_multiplier', 1.20)))
-    bg_push_multiplier = tk.DoubleVar(value=float(settings.get('bg_push_multiplier', 1.10)))
-    subject_lock_strength = tk.DoubleVar(value=float(settings.get('subject_lock_strength', 1.00)))
 
     preview_win = tk.Toplevel()
     preview_win.title("Live 3D Preview")
@@ -84,14 +81,11 @@ def open_3d_preview_window(
     frame = None
     depth = None
     preview_cap = cv2.VideoCapture(input_video_path.get())
-    # NEW: persistent depth capture
     depth_cap = cv2.VideoCapture(selected_depth_map.get())
 
     input_total  = int(preview_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if preview_cap.isOpened() else 0
     depth_total  = int(depth_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if depth_cap.isOpened() else 0
 
-    # If depth couldn’t be opened (e.g., image or 16-bit stream not supported),
-    # fall back to input length but we’ll guard per-frame below.
     if input_total <= 0:
         input_total = 1
     total_frames = min(v for v in (input_total, depth_total) if v > 0) if (input_total > 0 and depth_total > 0) else input_total
@@ -108,15 +102,14 @@ def open_3d_preview_window(
     # Top area: reserved image holder + frame slider
     top_area = tk.Frame(paned)
     top_area.columnconfigure(0, weight=1)
-    paned.add(top_area, minsize=280)  # keep space for preview
+    paned.add(top_area, minsize=280)
 
-    # Reserve height so image never overlaps the slider
     initial_w = int(settings.get('width', '960')) if str(settings.get('width', '960')).isdigit() else 960
     initial_h = int(settings.get('height', '540')) if str(settings.get('height', '540')).isdigit() else 540
 
     img_holder = tk.Frame(top_area, height=initial_h + 8)
     img_holder.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
-    img_holder.pack_propagate(False)  # label inside won't change holder height
+    img_holder.pack_propagate(False)
 
     preview_canvas = tk.Label(img_holder, bg="#111", bd=1, relief="flat", width=initial_w, height=initial_h)
     preview_canvas.pack(anchor="center")
@@ -127,7 +120,7 @@ def open_3d_preview_window(
     )
     frame_slider.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
 
-    # Auto-fit slider length to window width
+    # Auto-fit slider length
     def _resize_slider(ev=None):
         try:
             w = top_area.winfo_width()
@@ -159,12 +152,11 @@ def open_3d_preview_window(
             self.rowconfigure(0, weight=1)
             self.columnconfigure(0, weight=1)
 
-            # Make inner frame follow canvas width
             def _resize_inner(event):
                 self.canvas.itemconfig(self._win, width=event.width)
             self.canvas.bind("<Configure>", _resize_inner)
 
-            # Mouse wheel scrolling (Win/mac/X11)
+            # Mouse wheel
             def _on_wheel(event):
                 delta = event.delta
                 if delta == 0 and hasattr(event, "num"):  # X11
@@ -177,7 +169,6 @@ def open_3d_preview_window(
     scroll = ScrollableFrame(bottom_area)
     scroll.pack(fill="both", expand=True)
 
-    # Use this as the parent for all your controls below
     control_container = scroll.inner
 
     top_controls_frame = tk.LabelFrame(control_container, text="Preview Controls", padx=10, pady=5)
@@ -200,7 +191,7 @@ def open_3d_preview_window(
         nonlocal preview_job
         if preview_job is not None:
             preview_win.after_cancel(preview_job)
-        preview_job = preview_win.after(150, update_preview_now)  # 150ms debounce
+        preview_job = preview_win.after(150, update_preview_now)  # debounce
 
     def apply_size():
         try:
@@ -209,10 +200,8 @@ def open_3d_preview_window(
         except ValueError:
             messagebox.showerror("Input Error", "Invalid width or height.")
             return
-        # Reserve space for the image and size the label itself
         img_holder.configure(height=preview_height + 8)
         preview_canvas.config(width=preview_width, height=preview_height)
-        # Let the slider auto-fit via <Configure> binding; still nudge once
         _resize_slider()
         update_preview_debounced()
 
@@ -271,15 +260,15 @@ def open_3d_preview_window(
     sharpness_slider.grid(row=0, column=1, sticky="w")
 
     tk.Label(feather_frame, text="Max Pixel Shift (%)").grid(row=0, column=2, sticky="w")
-    max_shift_slider = tk.Entry(feather_frame, width=8)
-    max_shift_slider.insert(0, str(max_pixel_shift.get()))
-    max_shift_slider.grid(row=0, column=3, sticky="w")
+    max_shift_entry = tk.Entry(feather_frame, width=8)
+    max_shift_entry.insert(0, str(max_pixel_shift.get()))
+    max_shift_entry.grid(row=0, column=3, sticky="w")
 
     # Row 1
     tk.Label(feather_frame, text="DoF Strength").grid(row=1, column=0, sticky="w")
-    dof_strength_slider = tk.Entry(feather_frame, width=8)
-    dof_strength_slider.insert(0, str(dof_strength.get()))
-    dof_strength_slider.grid(row=1, column=1, sticky="w")
+    dof_strength_entry = tk.Entry(feather_frame, width=8)
+    dof_strength_entry.insert(0, str(dof_strength.get()))
+    dof_strength_entry.grid(row=1, column=1, sticky="w")
 
     tk.Label(feather_frame, text="Convergence Strength").grid(row=1, column=2, sticky="w")
     convergence_slider = tk.Scale(
@@ -351,13 +340,41 @@ def open_3d_preview_window(
                                 command=lambda _: update_preview_debounced())
     subj_lock_slider.grid(row=3, column=1, padx=8, sticky="w")
 
+    # --- Color Grading UI ---
+    color_frame = tk.LabelFrame(control_container, text="Color Grading", padx=10, pady=8)
+    color_frame.pack(pady=(0, 10), anchor="center")
+    color_frame.columnconfigure((0,1,2,3), weight=1)
+
+    tk.Label(color_frame, text="Saturation").grid(row=0, column=0, sticky="w")
+    sat_slider = tk.Scale(
+        color_frame, from_=0.0, to=2.0, resolution=0.05, orient="horizontal",
+        variable=saturation, length=180,
+        command=lambda _=None: update_preview_debounced()
+    )
+    sat_slider.grid(row=0, column=1, padx=8, sticky="w")
+
+    tk.Label(color_frame, text="Contrast").grid(row=0, column=2, sticky="w")
+    con_slider = tk.Scale(
+        color_frame, from_=0.0, to=2.0, resolution=0.05, orient="horizontal",
+        variable=contrast, length=180,
+        command=lambda _=None: update_preview_debounced()
+    )
+    con_slider.grid(row=0, column=3, padx=8, sticky="w")
+
+    tk.Label(color_frame, text="Brightness").grid(row=1, column=0, sticky="w")
+    bri_slider = tk.Scale(
+        color_frame, from_=-0.5, to=0.5, resolution=0.01, orient="horizontal",
+        variable=brightness, length=180,
+        command=lambda _=None: update_preview_debounced()
+    )
+    bri_slider.grid(row=1, column=1, padx=8, sticky="w")
+
     # Commit button for the Entry fields
     def _commit_pop_entries():
         try:
             depth_pop_mid.set(float(pop_mid_entry.get()))
             lo = float(stretch_lo_entry.get())
             hi = float(stretch_hi_entry.get())
-            # simple guardrails
             lo = max(0.0, min(1.0, lo))
             hi = max(0.0, min(1.0, hi))
             if hi <= lo:
@@ -373,39 +390,15 @@ def open_3d_preview_window(
 
     def update_max_shift(*_):
         try:
-            val = float(max_shift_slider.get())
+            val = float(max_shift_entry.get())
             max_pixel_shift.set(val)
             update_preview_debounced()
         except ValueError:
             messagebox.showwarning("Invalid Input", "Please enter a valid float for max pixel shift.")
 
-    def update_feather_strength(*_):
-        try:
-            val = float(feather_strength.get())
-            feather_strength.set(val)
-            update_preview_debounced()
-        except ValueError:
-            messagebox.showwarning("Invalid Input", "Please enter a valid float for feather strength.")
-
-    def update_blur_ksize(*_):
-        try:
-            val = int(blur_ksize.get())
-            blur_ksize.set(val)
-            update_preview_debounced()
-        except ValueError:
-            messagebox.showwarning("Invalid Input", "Please enter a valid integer for feather blur size.")
-
-    def update_sharpness(*_):
-        try:
-            val = float(sharpness_factor.get())
-            sharpness_factor.set(val)  # normalize any string → float
-            update_preview_debounced()
-        except ValueError:
-            messagebox.showwarning("Invalid Input", "Please enter a valid float for sharpness.")
-
     def update_dof_strength(*_):
         try:
-            val = float(dof_strength_slider.get())
+            val = float(dof_strength_entry.get())
             dof_strength.set(val)
             update_preview_debounced()
         except ValueError:
@@ -413,36 +406,30 @@ def open_3d_preview_window(
 
     def save_preview(image_to_save):
         nonlocal frame, depth
-
         if image_to_save is None or frame is None or depth is None:
             messagebox.showinfo("No Preview", "Nothing to save yet.")
             return
 
-        # Build default name from preview mode and timestamp
         preview_type = preview_type_var.get().replace(" ", "_")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name = f"preview_{preview_type}_{timestamp}"
 
-        # Let user choose where to save
         save_dir = filedialog.askdirectory(title="Select folder to save preview and references")
         if not save_dir:
             return
 
-        # Build full paths
         preview_path = os.path.join(save_dir, base_name + "_preview.png")
         input_path   = os.path.join(save_dir, base_name + "_input.png")
         depth_path   = os.path.join(save_dir, base_name + "_depth.png")
 
-        # Save all three images
         cv2.imwrite(preview_path, image_to_save)
         cv2.imwrite(input_path, frame)
         cv2.imwrite(depth_path, depth)
-
         messagebox.showinfo("Saved", f"Files saved to:\n{save_dir}")
 
-    dof_strength_slider.bind("<KeyRelease>", update_dof_strength)
-    sharpness_slider.bind("<KeyRelease>", update_sharpness)
-    max_shift_slider.bind("<KeyRelease>", update_max_shift)
+    dof_strength_entry.bind("<KeyRelease>", update_dof_strength)
+    sharpness_slider.bind("<KeyRelease>", lambda _e: update_preview_debounced())
+    max_shift_entry.bind("<KeyRelease>", update_max_shift)
 
     def update_convergence_strength(*_):
         try:
@@ -471,10 +458,8 @@ def open_3d_preview_window(
 
         frame = get_frame(preview_cap, frame_idx)
 
-        # depth frame from persistent cap
         depth = None
         if depth_cap and depth_cap.isOpened():
-            # clamp just in case someone typed a bigger index programmatically
             if depth_total > 0 and frame_idx >= depth_total:
                 frame_idx = depth_total - 1
             depth = get_frame(depth_cap, frame_idx)
@@ -491,10 +476,10 @@ def open_3d_preview_window(
         depth_tensor = F.interpolate(depth_to_tensor(depth).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False).squeeze(0)
 
         try:
-            max_pixel_shift_val = float(max_shift_slider.get())
+            max_pixel_shift_val = float(max_pixel_shift.get())
             zero_parallax_strength_val = float(zero_parallax_strength.get())
             parallax_balance_val = float(parallax_balance.get())
-            dof_strength_val = float(dof_strength_slider.get())
+            dof_strength_val = float(dof_strength.get())
             sharpness_val = float(sharpness_factor.get())
             convergence_strength_val = float(convergence_strength.get())
             dynamic_convergence_enabled = enable_dynamic_convergence.get()
@@ -502,7 +487,7 @@ def open_3d_preview_window(
             messagebox.showwarning("Input Error", "One or more numeric settings are invalid.")
             return
 
-        # Call pixel_shift_cuda with convergence params
+        # Call pixel_shift_cuda with convergence and pop controls
         left_tensor, right_tensor, shift_map = pixel_shift_cuda(
             frame_tensor, depth_tensor, w, h,
             fg_shift.get(), mg_shift.get(), bg_shift.get(),
@@ -517,8 +502,7 @@ def open_3d_preview_window(
             dof_strength=dof_strength_val,
             convergence_strength=convergence_strength_val,
             enable_dynamic_convergence=dynamic_convergence_enabled,
-
-            # NEW pop controls
+            # pop controls
             depth_pop_gamma=depth_pop_gamma.get(),
             depth_pop_mid=depth_pop_mid.get(),
             depth_stretch_lo=depth_stretch_lo.get(),
@@ -532,15 +516,39 @@ def open_3d_preview_window(
         left_frame = tensor_to_frame(left_tensor) if isinstance(left_tensor, torch.Tensor) else left_tensor
         right_frame = tensor_to_frame(right_tensor) if isinstance(right_tensor, torch.Tensor) else right_tensor
 
-        # Apply sharpening per-eye
+        # Sharpen per-eye
         left_frame = apply_sharpening(left_frame, sharpness_val)
         right_frame = apply_sharpening(right_frame, sharpness_val)
+
+        # Color grade per-eye
+        lt = frame_to_tensor(left_frame)   # [3,H,W] float 0..1
+        rt = frame_to_tensor(right_frame)
+
+        lt = apply_color_grade(
+            lt,
+            saturation=saturation.get(),
+            contrast=contrast.get(),
+            brightness=brightness.get()
+        )
+        rt = apply_color_grade(
+            rt,
+            saturation=saturation.get(),
+            contrast=contrast.get(),
+            brightness=brightness.get()
+        )
+
+        left_frame  = tensor_to_frame(lt)
+        right_frame = tensor_to_frame(rt)
 
         # Format output
         preview_mode = preview_type_var.get()
         if preview_mode in ("HSBS", "Half-SBS"):
             preview_img = format_3d_output(left_frame, right_frame, "Half-SBS")
-        elif preview_mode in ("Red-Blue Anaglyph", "Passive Interlaced", "Overlay Arrows", "Shift Heatmap",  "Shift Heatmap (Abs)", "Shift Heatmap (Clipped ±5px)", "Feather Mask", "Feather Blend", "Left-Right Diff", "Shift Map Grayscale", ):
+        elif preview_mode in (
+            "Red-Blue Anaglyph", "Passive Interlaced", "Overlay Arrows",
+            "Shift Heatmap",  "Shift Heatmap (Abs)", "Shift Heatmap (Clipped ±5px)",
+            "Feather Mask", "Feather Blend", "Left-Right Diff", "Shift Map Grayscale",
+        ):
             preview_img = generate_preview_image(preview_mode, left_frame, right_frame, shift_map, w, h)
         else:
             preview_img = generate_preview_image(preview_mode, left_tensor, right_tensor, shift_map, w, h)
@@ -576,7 +584,7 @@ def open_3d_preview_window(
             'enable_edge_masking': enable_edge_masking.get(),
             'enable_feathering': enable_feathering.get(),
             'dof_strength': dof_strength.get(),
-            'convergence_strength':convergence_strength.get(),
+            'convergence_strength': convergence_strength.get(),
             'enable_dynamic_convergence': enable_dynamic_convergence.get(),
             'depth_pop_gamma': depth_pop_gamma.get(),
             'depth_pop_mid': depth_pop_mid.get(),
@@ -585,6 +593,10 @@ def open_3d_preview_window(
             'fg_pop_multiplier': fg_pop_multiplier.get(),
             'bg_push_multiplier': bg_push_multiplier.get(),
             'subject_lock_strength': subject_lock_strength.get(),
+            # persist color grade
+            'saturation': saturation.get(),
+            'contrast':   contrast.get(),
+            'brightness': brightness.get(),
         }
         save_settings(settings)
         try:
@@ -597,6 +609,7 @@ def open_3d_preview_window(
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
 
+    # Reactive bindings
     frame_slider.config(command=update_preview_debounced)
     fg_slider.config(command=update_preview_debounced)
     mg_slider.config(command=update_preview_debounced)
@@ -613,10 +626,11 @@ def open_3d_preview_window(
     fg_pop_multiplier.trace_add("write", lambda *_: update_preview_debounced())
     bg_push_multiplier.trace_add("write", lambda *_: update_preview_debounced())
     subject_lock_strength.trace_add("write", lambda *_: update_preview_debounced())
+    # color vars already trigger updates via their Scale command callbacks
+
     pop_mid_entry.bind("<Return>", lambda _e: _commit_pop_entries())
     stretch_lo_entry.bind("<Return>", lambda _e: _commit_pop_entries())
     stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 
-    # Nudge sizing once so holder + slider lengths are correct on open
     _resize_slider()
     apply_size()
