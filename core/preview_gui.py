@@ -71,6 +71,10 @@ def open_3d_preview_window(
     brightness,
 ):
     settings = load_settings()
+    # --- IPD preview state ---
+    ipd_enabled = tk.BooleanVar(value=bool(settings.get("ipd_enabled", True)))
+    ipd_scale   = tk.DoubleVar(value=float(settings.get("ipd_scale", 1.00)))
+
 
     preview_win = tk.Toplevel()
     preview_win.title("Live 3D Preview")
@@ -294,6 +298,19 @@ def open_3d_preview_window(
     )
     parallax_balance_slider.grid(row=2, column=2, columnspan=2, sticky="w")
 
+    # --- Stereo Separation (IPD) ---
+    ipd_frame = tk.LabelFrame(control_container, text="Stereo Separation (IPD)", padx=10, pady=8)
+    ipd_frame.pack(pady=(0, 10), anchor="center")
+
+    ipd_chk = tk.Checkbutton(ipd_frame, text="Enable Stereo Scaling (IPD)", variable=ipd_enabled,
+                             command=lambda: update_preview_debounced())
+    ipd_chk.grid(row=0, column=0, sticky="w", padx=4)
+
+    tk.Label(ipd_frame, text="Stereo Scaling (IPD)").grid(row=0, column=1, sticky="w", padx=(12,4))
+    ipd_slider = tk.Scale(ipd_frame, from_=0.50, to=1.50, resolution=0.01, orient="horizontal",
+                          variable=ipd_scale, length=220, command=lambda _=None: update_preview_debounced())
+    ipd_slider.grid(row=0, column=2, sticky="w", padx=4)
+
     pop_frame = tk.LabelFrame(control_container, text="Pop & Subject Controls", padx=10, pady=8)
     pop_frame.pack(pady=(0, 10), anchor="center")
 
@@ -486,11 +503,20 @@ def open_3d_preview_window(
         except ValueError:
             messagebox.showwarning("Input Error", "One or more numeric settings are invalid.")
             return
+        # Build IPD-aware layer shifts
+        fg_val = float(fg_shift.get())
+        mg_val = float(mg_shift.get())
+        bg_val = float(bg_shift.get())
 
+        if ipd_enabled.get():
+            factor = float(ipd_scale.get())
+            fg_val *= factor
+            mg_val *= factor
+            bg_val *= factor
         # Call pixel_shift_cuda with convergence and pop controls
         left_tensor, right_tensor, shift_map = pixel_shift_cuda(
             frame_tensor, depth_tensor, w, h,
-            fg_shift.get(), mg_shift.get(), bg_shift.get(),
+            fg_val, mg_val, bg_val, 
             return_shift_map=True,
             use_subject_tracking=use_subject_tracking.get(),
             enable_floating_window=use_floating_window.get(),
@@ -597,6 +623,9 @@ def open_3d_preview_window(
             'saturation': saturation.get(),
             'contrast':   contrast.get(),
             'brightness': brightness.get(),
+            'ipd_enabled': ipd_enabled.get(),
+            'ipd_scale':   ipd_scale.get(),
+
         }
         save_settings(settings)
         try:
@@ -626,6 +655,9 @@ def open_3d_preview_window(
     fg_pop_multiplier.trace_add("write", lambda *_: update_preview_debounced())
     bg_push_multiplier.trace_add("write", lambda *_: update_preview_debounced())
     subject_lock_strength.trace_add("write", lambda *_: update_preview_debounced())
+    ipd_enabled.trace_add("write", lambda *_: update_preview_debounced())
+    ipd_scale.trace_add("write",   lambda *_: update_preview_debounced())
+
     # color vars already trigger updates via their Scale command callbacks
 
     pop_mid_entry.bind("<Return>", lambda _e: _commit_pop_entries())
