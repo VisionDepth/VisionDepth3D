@@ -59,7 +59,13 @@
     }
     .nav-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; }
     .brand { display: flex; gap: 10px; align-items: center; font-weight: 700; letter-spacing: 0.3px; }
-    .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 0 25px rgba(57,198,255,0.35); }
+    .logo {
+      width: 32px;  /* matches nav height */
+      height: 32px;
+      background: url("assets/logo.png") center/contain no-repeat;
+      border-radius: 6px;
+      box-shadow: none;
+    }
     .nav-links { display: flex; gap: 18px; align-items: center; }
     .nav-links a { color: var(--fg); opacity: 0.85; font-size: 14px; }
     .nav-links a:hover { opacity: 1; }
@@ -438,4 +444,5 @@
   </script>
 </body>
 </html>
+
 
