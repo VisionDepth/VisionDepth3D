@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VisionDepth3D - AI 2D to 3D for Cinema and VR</title>
+  <meta name="description" content="VisionDepth3D - GPU accelerated 2D to 3D video conversion with AI depth maps, real time parallax, cinema and VR exports." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="VisionDepth3D - AI 2D to 3D" />
+  <meta property="og:description" content="GPU accelerated 2D to 3D video conversion with AI depth maps and cinema ready exports." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="" />
+  <meta property="og:image" content="" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="VisionDepth3D - AI 2D to 3D" />
+  <meta name="twitter:description" content="GPU accelerated 2D to 3D video conversion with AI depth maps and cinema ready exports." />
+  <meta name="twitter:image" content="" />
+
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --bg-soft: #10161f;
+      --surface: #121a24;
+      --card: #0f1520;
+      --fg: #e6eef8;
+      --muted: #9ab0c9;
+      --accent: #39c6ff;
+      --accent-2: #7cffc6;
+      --ring: rgba(57,198,255,0.35);
+      --shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: radial-gradient(1200px 800px at 80% -10%, rgba(60,155,255,0.2), transparent),
+                  radial-gradient(1000px 700px at -10% 20%, rgba(124,255,198,0.12), transparent),
+                  var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { width: min(1200px, 92%); margin: 0 auto; }
+
+    /* Nav */
+    .nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(1.2) blur(8px);
+      background: linear-gradient(to bottom, rgba(11,15,20,0.85), rgba(11,15,20,0.55));
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; }
+    .brand { display: flex; gap: 10px; align-items: center; font-weight: 700; letter-spacing: 0.3px; }
+    .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 0 25px rgba(57,198,255,0.35); }
+    .nav-links { display: flex; gap: 18px; align-items: center; }
+    .nav-links a { color: var(--fg); opacity: 0.85; font-size: 14px; }
+    .nav-links a:hover { opacity: 1; }
+    .theme { margin-left: 10px; }
+
+    .btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 18px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.12); background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); color: var(--fg); text-decoration: none; font-weight: 600; box-shadow: var(--shadow); transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s; }
+    .btn:hover { transform: translateY(-1px); border-color: rgba(57,198,255,0.55); box-shadow: 0 14px 30px rgba(57,198,255,0.15); text-decoration: none; }
+    .btn.primary { background: radial-gradient(1000px 1000px at 0% 0%, rgba(57,198,255,0.12), transparent), linear-gradient(180deg, rgba(57,198,255,0.15), rgba(57,198,255,0.08)); border-color: rgba(57,198,255,0.55); }
+    .btn.ghost { background: transparent; border-color: rgba(255,255,255,0.18); }
+    .btn .icon { width: 18px; height: 18px; }
+
+    /* Hero */
+    .hero { padding: 64px 0 36px; position: relative; overflow: hidden; }
+    .title { font-size: clamp(36px, 3.6vw, 56px); line-height: 1.05; margin: 12px 0; }
+    .subtitle { color: var(--muted); font-size: clamp(16px, 1.5vw, 20px); max-width: 48ch; }
+    .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+    .stats { display: flex; gap: 22px; margin-top: 18px; color: var(--muted); font-size: 14px; }
+    .stat-pill { padding: 8px 12px; border: 1px solid rgba(255,255,255,0.10); border-radius: 999px; background: rgba(255,255,255,0.03); }
+
+    .hero-art { margin-top: 36px; border-radius: 22px; border: 1px solid rgba(255,255,255,0.09); background:
+      radial-gradient(600px 160px at 30% 0%, rgba(57,198,255,0.25), transparent),
+      radial-gradient(400px 200px at 80% 20%, rgba(124,255,198,0.18), transparent),
+      linear-gradient(180deg, rgba(16,22,31,0.95), rgba(16,22,31,0.85));
+      padding: 22px; box-shadow: var(--shadow); }
+    .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; }
+    .hero-grid img, .mock { width: 100%; height: 320px; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); background: linear-gradient(135deg, #0f1520, #0c1118); display: block; position: relative; }
+    .mock::after { content: "Preview placeholder"; position: absolute; bottom: 12px; left: 12px; font-size: 12px; color: var(--muted); }
+
+    /* Sections */
+    section { padding: 64px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+    .section-title { font-size: 28px; margin: 0 0 12px; }
+    .section-lead { color: var(--muted); max-width: 70ch; margin-bottom: 26px; }
+
+    /* Cards grid */
+    .grid { display: grid; gap: 16px; }
+    .grid.cards { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    .card { background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
+    .card h3 { font-size: 16px; margin: 0 0 6px; }
+    .card p { color: var(--muted); font-size: 14px; margin: 0; }
+
+    .list { margin: 0; padding-left: 18px; }
+    .list li { margin: 8px 0; }
+
+    /* Method bullets */
+    .bullets { columns: 2; column-gap: 26px; }
+    @media (max-width: 800px) { .bullets { columns: 1; } .hero-grid { grid-template-columns: 1fr; } }
+
+    /* Download */
+    .download-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 18px; }
+    @media (max-width: 900px) { .download-grid { grid-template-columns: 1fr; } }
+
+    /* FAQ */
+    .faq { border-top: 1px solid rgba(255,255,255,0.1); }
+    details { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 14px 16px; margin: 10px 0; }
+    summary { cursor: pointer; font-weight: 600; }
+    details p { color: var(--muted); margin: 10px 0 0; }
+
+    /* Footer */
+    footer { padding: 40px 0; color: var(--muted); font-size: 14px; }
+
+    /* Toggles */
+    .theme-toggle { cursor: pointer; padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.04); }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <div class="brand"><span class="logo" aria-hidden="true"></span> <span>VisionDepth3D</span></div>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#method">Method</a>
+        <a href="#tools">Tools</a>
+        <a href="#download">Download</a>
+        <a href="#faq">FAQ</a>
+        <button id="themeToggle" class="theme-toggle theme" aria-label="Toggle theme">Toggle theme</button>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="container">
+      <p class="stat-pill" style="display:inline-block">Open source • Windows first • CUDA ready</p>
+      <h1 class="title">AI powered 2D to 3D conversion for cinema and VR</h1>
+      <p class="subtitle">VisionDepth3D brings pixel accurate, real time parallax shifting to your 2D videos. Built for creators who want clean depth, natural convergence, and flexible export targets.</p>
+
+      <div class="hero-cta">
+        <a class="btn primary" href="#download">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l4-4m-4 4l-4-4"/><path d="M4 14v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn" href="#" id="itchLink">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18v12H3z"/><path d="M7 6v12M17 6v12"/></svg>
+          Get it on Itch.io
+        </a>
+        <a class="btn ghost" href="#" id="ghLink">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5a12 12 0 00-3.79 23.4c.6.1.82-.26.82-.58v-2.1c-3.34.72-4.04-1.6-4.04-1.6-.55-1.4-1.34-1.77-1.34-1.77-1.1-.76.08-.74.08-.74 1.22.08 1.87 1.26 1.87 1.26 1.08 1.86 2.83 1.32 3.52 1.01.1-.78.43-1.32.78-1.62-2.66-.3-5.46-1.34-5.46-5.97 0-1.32.47-2.4 1.25-3.25-.13-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.24a11.44 11.44 0 016 0c2.3-1.56 3.3-1.24 3.3-1.24.66 1.64.25 2.86.12 3.16.78.85 1.25 1.93 1.25 3.25 0 4.64-2.8 5.66-5.47 5.96.44.38.83 1.12.83 2.27v3.36c0 .32.22.69.83.58A12 12 0 0012 .5"/></svg>
+          Star on GitHub
+        </a>
+      </div>
+
+      <div class="stats">
+        <span class="stat-pill">1.1k+ downloads</span>
+        <span class="stat-pill">40+ GitHub stars</span>
+        <span class="stat-pill">VR and cinema ready</span>
+      </div>
+
+      <div class="hero-art">
+        <div class="hero-grid">
+          <div class="mock" aria-label="App preview left"></div>
+          <div class="mock" aria-label="App preview right"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="features">
+      <div class="container">
+        <h2 class="section-title">Highlights</h2>
+        <p class="section-lead">Core capabilities designed for clean depth and comfortable viewing. Every feature is built to help creators ship better 3D faster.</p>
+
+        <div class="grid cards">
+          <div class="card">
+            <h3>Per pixel parallax</h3>
+            <p>GPU accelerated depth weighted shifting for precise stereo alignment and minimal artifacts.</p>
+          </div>
+          <div class="card">
+            <h3>Zero parallax tracking</h3>
+            <p>Subject aware zero parallax to keep the focus natural during cuts and complex motion.</p>
+          </div>
+          <div class="card">
+            <h3>Edge aware masking</h3>
+            <p>Suppresses ghosting by protecting edges with smart shift masks and pixel healing.</p>
+          </div>
+          <div class="card">
+            <h3>Scene aware dampening</h3>
+            <p>Smooths rapid parallax changes to maintain comfortable depth across scenes.</p>
+          </div>
+          <div class="card">
+            <h3>Floating window control</h3>
+            <p>Simple controls for windowing to reduce divergence and improve screen edge comfort.</p>
+          </div>
+          <div class="card">
+            <h3>Flexible export</h3>
+            <p>Half SBS, Full SBS, VR180, anaglyph, and interlaced outputs for your target device.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="method">
+      <div class="container">
+        <h2 class="section-title">The VisionDepth3D Method</h2>
+        <p class="section-lead">A proprietary workflow for real time 2D to 3D conversion, tuned for cinema and VR.</p>
+        <ul class="list bullets">
+          <li>Depth weighted continuous parallax shifting</li>
+          <li>Subject aware zero parallax tracking</li>
+          <li>Edge aware shift masking to reduce ghosting</li>
+          <li>Floating window stabilization</li>
+          <li>Scene aware parallax dampening</li>
+          <li>CUDA accelerated stereo warping</li>
+          <li>Depth of field simulation with pixel healing</li>
+        </ul>
+        <p class="section-lead" style="margin-top:18px; font-size:14px">Documentation is provided for learning. Redistribution of the method text or derivative use is not allowed.</p>
+      </div>
+    </section>
+
+    <section id="tools">
+      <div class="container">
+        <h2 class="section-title">Built in tools</h2>
+        <p class="section-lead">Everything you need to go from flat footage to clean 3D. Pick your models, preview in real time, and export.</p>
+        <div class="grid cards">
+          <div class="card"><h3>Depth estimation</h3><p>25+ models supported including DPT, ZoeDepth, Depth Anything v2, Marigold, and more.</p></div>
+          <div class="card"><h3>Upscaling</h3><p>Real ESRGAN based upscaling for crisp final output. Custom model support included.</p></div>
+          <div class="card"><h3>Interpolation</h3><p>RIFE based frame interpolation to push smoother motion when you need it.</p></div>
+          <div class="card"><h3>GPU pipeline</h3><p>CUDA and ONNX runtime support. TensorRT friendly setup for advanced users.</p></div>
+          <div class="card"><h3>Batch rendering</h3><p>Process entire folders and paired video plus depth map lists with progress indicators.</p></div>
+          <div class="card"><h3>Audio tools</h3><p>Attach and offset audio, rip streams, and keep sync during export.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="download">
+      <div class="container download-grid">
+        <div>
+          <h2 class="section-title">Download</h2>
+          <p class="section-lead">Grab the installer and start converting. Windows 10 or 11 is recommended. NVIDIA GPU is recommended for best performance.</p>
+          <div class="hero-cta">
+            <a class="btn primary" href="#" id="dlWin">Download Windows installer</a>
+            <a class="btn" href="#" id="dlItch">Download on Itch.io</a>
+            <a class="btn ghost" href="#" id="dlGithub">Releases on GitHub</a>
+          </div>
+          <ul class="list" style="margin-top:14px">
+            <li>Runs on CPU or GPU. CUDA support recommended for speed.</li>
+            <li>Open source code on GitHub.</li>
+            <li>No telemetry. Your renders stay on your machine.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">Formats supported</h3>
+          <ul class="list">
+            <li>Half Side by Side</li>
+            <li>Full Side by Side</li>
+            <li>VR180</li>
+            <li>Anaglyph</li>
+            <li>Interlaced</li>
+          </ul>
+          <h3>Minimum requirements</h3>
+          <ul class="list">
+            <li>Windows 10 or 11</li>
+            <li>8 GB RAM minimum, 16 GB recommended</li>
+            <li>NVIDIA GTX 10 series or better recommended</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="faq">
+      <div class="container">
+        <h2 class="section-title">FAQ</h2>
+        <details>
+          <summary>Does it run on AMD or Apple GPUs</summary>
+          <p>Yes on CPU. GPU acceleration is focused on NVIDIA with CUDA and ONNX. Apple Silicon support is planned through Metal backends in the future. AMD GPU users can run on CPU or try DirectML when available.</p>
+        </details>
+        <details>
+          <summary>Can I use my own depth model</summary>
+          <p>Yes. Place your model weights in the weights folder and select it from the model dropdown. ONNX and PyTorch options are available.</p>
+        </details>
+        <details>
+          <summary>What license does the app use</summary>
+          <p>The software is open source. The published method text is shared for learning with a no derivatives clause.</p>
+        </details>
+        <details>
+          <summary>Where can I get help</summary>
+          <p>Open an issue on GitHub or post in the community thread. You can also contact the maintainer through Itch.io.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container" style="display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+      <p>© <span id="year"></span> VisionDepth3D. Built by creators for creators.</p>
+      <p>
+        <a href="#" id="footerGithub">GitHub</a> •
+        <a href="#" id="footerItch">Itch.io</a> •
+        <a href="#download">Download</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // Replace these with your real links
+    const LINKS = {
+      itch: "#",            // ex: https://visiondepth.itch.io/visiondepth3d
+      github: "#",          // ex: https://github.com/VisionDepth/VisionDepth3D
+      winInstaller: "#"      // ex: direct link to latest .exe
+    };
+
+    function applyLinks() {
+      const byId = id => document.getElementById(id);
+      const set = (el, href) => { if (el && href) el.setAttribute('href', href); };
+      set(byId('itchLink'), LINKS.itch);
+      set(byId('ghLink'), LINKS.github);
+      set(byId('dlWin'), LINKS.winInstaller || LINKS.github);
+      set(byId('dlItch'), LINKS.itch);
+      set(byId('dlGithub'), LINKS.github);
+      set(byId('footerGithub'), LINKS.github);
+      set(byId('footerItch'), LINKS.itch);
+    }
+
+    // Theme toggle
+    const themeToggle = document.getElementById('themeToggle');
+    themeToggle?.addEventListener('click', () => {
+      const isLight = document.body.dataset.theme === 'light';
+      document.body.dataset.theme = isLight ? 'dark' : 'light';
+      if (!isLight) {
+        // Light scheme overrides
+        document.documentElement.style.setProperty('--bg', '#f5f8fb');
+        document.documentElement.style.setProperty('--bg-soft', '#eef3f8');
+        document.documentElement.style.setProperty('--surface', '#ffffff');
+        document.documentElement.style.setProperty('--card', '#ffffff');
+        document.documentElement.style.setProperty('--fg', '#0c1118');
+        document.documentElement.style.setProperty('--muted', '#4a5565');
+        document.documentElement.style.setProperty('--shadow', '0 10px 30px rgba(0,0,0,0.08)');
+      } else {
+        // Reset to dark values
+        document.documentElement.style.setProperty('--bg', '#0b0f14');
+        document.documentElement.style.setProperty('--bg-soft', '#10161f');
+        document.documentElement.style.setProperty('--surface', '#121a24');
+        document.documentElement.style.setProperty('--card', '#0f1520');
+        document.documentElement.style.setProperty('--fg', '#e6eef8');
+        document.documentElement.style.setProperty('--muted', '#9ab0c9');
+        document.documentElement.style.setProperty('--shadow', '0 10px 30px rgba(0,0,0,0.35)');
+      }
+    });
+
+    document.getElementById('year').textContent = new Date().getFullYear();
+    applyLinks();
+  </script>
+</body>
+</html>
