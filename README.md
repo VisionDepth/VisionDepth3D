@@ -59,21 +59,20 @@
   <em>(3D Tab)</em>
 </p>
 
-
-
-
-- CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate, per-pixel)
-- Based on the proprietary [**VisionDepth3D Method**](VisionDepth3D_Method.md):
-  - Depth-weighted continuous parallax (FG/MG/BG zones blended via soft masks)
-  - Subject-aware zero parallax tracking (histogram mode-based convergence)
-  - Edge-aware shift suppression (gradient-based feather masking)
-  - Floating window stabilization (momentum-smoothed convergence)
-  - Scene-adaptive parallax dampening (variance-based intensity control)
-  - Real-time CUDA `grid_sample` stereo warping (left/right in one pass)
-  - Depth-of-field simulation + occlusion healing (multi-pass Gaussian blending)
-- Export formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
-- Live preview overlays: **shift heatmaps, edge masks, stereo diff tools**
-- Fully interactive: **dynamic sliders**, **real-time 3D preview**, and **batch-ready pipeline**
+- **CUDA + PyTorch parallax shifting** — pixel-accurate, per-pixel depth warping.
+-  Built on the [**VisionDepth3D Method (Legit)**](VisionDepth3D_Method_Legit.md), featuring:
+  - **Pop-Control depth shaping** — percentile stretch → subject recenter → signed-gamma curve.
+  - **Subject-anchored zero-parallax (EMA-stabilized)** — histogram/percentile subject tracking.
+  - **Dynamic parallax scaling** — central depth variance → auto stereo intensity.
+  - **Edge-aware shift suppression** — gradient→sigmoid feather masking to prevent halos.
+  - **Floating window with temporal easing** — auto side masks, jitter-clamped offsets.
+  - **Matte sculpting + temporal stabilization** — distance transform + EMA to round subjects.
+  - **Motion-aware DOF** — focal tracker + Gaussian pyramid for subject-locked bokeh.
+  - **Gradient-based occlusion healing** — blends original + blurred to fill warp gaps.
+-  **Export formats**: Half-SBS, Full-SBS, VR, Anaglyph, Passive Interlaced.
+-  **Live preview overlays**: shift heatmaps, edge masks, stereo diff tools.
+-  **Fully interactive**: dynamic sliders, real-time 3D preview, batch-ready pipeline.
+-  **FFmpeg streaming pipeline**: NVENC / AMF / QSV / CPU with CRF/CQ control (no temp files).
 
 # AI-Powered Depth Estimation (GPU Accelerated)
 
