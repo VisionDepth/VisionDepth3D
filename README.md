@@ -1,7 +1,7 @@
 <h1 align="center"></h1>
 
 <p align="center">
-  <img width="900" height="527" alt="VisionDepth3D900x527" src="https://github.com/user-attachments/assets/17ff9eb4-863a-4874-a607-e2aa68faa808" />
+  <img width="450" height="263" alt="VisionDepth3D900x527" src="https://github.com/user-attachments/assets/17ff9eb4-863a-4874-a607-e2aa68faa808" />
   <br>
 </p>
 
