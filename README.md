@@ -27,7 +27,7 @@
   <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
     <img src="assets/widget-preview.png" 
          alt="Download VisionDepth3D on Itch.io" 
-         width="300" 
+         width="208" height="167" 
          style="border-radius: 8px;">
   </a>
   <br>
