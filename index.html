@@ -122,6 +122,23 @@
 
     /* Toggles */
     .theme-toggle { cursor: pointer; padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.04); }
+  
+    /* Slider (hero carousel) */
+    .slider { position: relative; border-radius: 22px; border: 1px solid rgba(255,255,255,0.09); background:
+      radial-gradient(600px 160px at 30% 0%, rgba(57,198,255,0.25), transparent),
+      radial-gradient(400px 200px at 80% 20%, rgba(124,255,198,0.18), transparent),
+      linear-gradient(180deg, rgba(16,22,31,0.95), rgba(16,22,31,0.85));
+      overflow: hidden; box-shadow: var(--shadow); }
+    .slides { display: flex; width: 100%; transition: transform 0.45s ease; will-change: transform; }
+    .slide { min-width: 100%; }
+    .slide img { display: block; width: 100%; height: 320px; object-fit: cover; border-radius: 0; border: none; }
+    .slide-btn { position: absolute; top: 50%; transform: translateY(-50%); border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.35); color: var(--fg); width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 22px; cursor: pointer; backdrop-filter: blur(6px); }
+    .slide-btn:hover { background: rgba(0,0,0,0.5); }
+    .slide-btn.prev { left: 12px; }
+    .slide-btn.next { right: 12px; }
+    .dots { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.35); border: 1px solid rgba(255,255,255,0.5); cursor: pointer; }
+    .dot.active { background: var(--accent); border-color: rgba(57,198,255,0.9); }
   </style>
 </head>
 <body>
@@ -167,10 +184,17 @@
       </div>
 
       <div class="hero-art">
-        <div class="hero-grid">
-          <div class="mock" aria-label="App preview left"></div>
-          <div class="mock" aria-label="App preview right"></div>
+        <div class="slider" aria-label="App preview carousel">
+          <div class="slides" id="slides">
+            <div class="slide"><img src="assets/preview1.png" alt="VisionDepth3D 3D Generator" /></div>
+            <div class="slide"><img src="assets/preview2.png" alt="VisionDepth3D Depth Estimation" /></div>
+            <div class="slide"><img src="assets/preview3.png" alt="VisionDepth3D Frame Tools" /></div>
+          </div>
+          <button class="slide-btn prev" id="prevBtn" aria-label="Previous screenshot">&#8249;</button>
+          <button class="slide-btn next" id="nextBtn" aria-label="Next screenshot">&#8250;</button>
+          <div class="dots" id="dots"></div>
         </div>
+      </div>
       </div>
     </div>
   </header>
@@ -359,6 +383,58 @@
 
     document.getElementById('year').textContent = new Date().getFullYear();
     applyLinks();
+
+    // Carousel logic
+    (function(){
+      const slides = document.getElementById('slides');
+      if (!slides) return;
+      const total = slides.children.length;
+      let index = 0;
+      const prev = document.getElementById('prevBtn');
+      const next = document.getElementById('nextBtn');
+      const dotsWrap = document.getElementById('dots');
+
+      // build dots
+      const dots = [];
+      for (let i = 0; i < total; i++) {
+        const d = document.createElement('button');
+        d.className = 'dot' + (i === 0 ? ' active' : '');
+        d.setAttribute('aria-label', `Go to slide ${i+1}`);
+        d.addEventListener('click', () => { index = i; update(); });
+        dotsWrap.appendChild(d);
+        dots.push(d);
+      }
+
+      function update(){
+        slides.style.transform = `translateX(-${index * 100}%)`;
+        dots.forEach((dot, i) => dot.classList.toggle('active', i === index));
+      }
+      function go(dir){ index = (index + dir + total) % total; update(); }
+
+      prev?.addEventListener('click', () => go(-1));
+      next?.addEventListener('click', () => go(1));
+
+      // keyboard
+      slides.addEventListener('keydown', (e)=>{
+        if (e.key === 'ArrowLeft') go(-1);
+        if (e.key === 'ArrowRight') go(1);
+      });
+      slides.setAttribute('tabindex', '0');
+
+      // touch swipe
+      let startX = 0, dragging = false;
+      slides.addEventListener('touchstart', e => { dragging = true; startX = e.touches[0].clientX; }, {passive:true});
+      slides.addEventListener('touchmove', e => { if (!dragging) return; }, {passive:true});
+      slides.addEventListener('touchend', e => {
+        if (!dragging) return; dragging = false;
+        const endX = e.changedTouches[0].clientX;
+        const delta = endX - startX;
+        if (Math.abs(delta) > 40) go(delta > 0 ? -1 : 1);
+      });
+
+      // resize guard keeps height consistent on narrow screens if needed
+      window.addEventListener('resize', ()=>update());
+    })();
   </script>
 </body>
 </html>
