@@ -54,10 +54,12 @@
 <h3 align="center">Real-Time 3D Stereo Composer</h2>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/affb8075-2066-4eb9-a668-164cb6b2ec66" alt="VisionDepth3D - 3D Tab" width="400"/>
+  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/4550ecb8-96ce-42f3-a73d-33c521868b77" />
   <br>
   <em>(3D Tab)</em>
 </p>
+
+
 
 
 - CUDA + PyTorch-powered **depth parallax shifting** (pixel-accurate, per-pixel)
@@ -76,11 +78,10 @@
 # AI-Powered Depth Estimation (GPU Accelerated)
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/04c180bb-d90d-4ff4-b6c1-5b7a548d54eb" alt="Depth Estimation Tab" width="400"/>
+  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/e16da471-7780-4bbf-8e21-e21dae55019a" />
   <br>
   <em>(Depth Estimation Tab)</em>
 </p>
-
 
 - **Supports 25+ models** including: `ZoeDepth`, `Depth Anything V1/V2`, `MiDaS`, `DPT (BEiT)`, `DepthPro`, `DINOv2`, `Distill-Any-Depth`, and **Marigold Diffusion**.
 -  One-click model switching with **auto-downloading and local caching** — no CLI or manual configs required.
@@ -103,10 +104,11 @@
 # AI Upscaling Functions
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/95b755c8-7d7c-4254-b6fb-fae5ac9cb200" alt="Frame Tools Tab" width="400"/>
+  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/f767c63e-d215-487b-895e-020372edf6bb" />
   <br>
   <em>(Frame Tools Tab)</em>
 </p>
+
 
 - Integrated **RIFE ONNX model** – PyTorch-free, real-time frame doubling
 - Supports **2x, 4x, 8x FPS interpolation**
@@ -125,7 +127,7 @@
 # Audio to Video Sync
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/01424ad3-2737-41c0-a93a-92394f3bc4bb" alt="Audio Tool" width="400"/>
+  <img width="558" height="587" alt="image" src="https://github.com/user-attachments/assets/9a074dfc-0ff0-49e1-8149-e78d9d68446c" />
   <br>
   <em>(Audio Tool)</em>
 </p>
@@ -137,7 +139,7 @@
 # Preview + Format Testing
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/f62a1f79-7a7e-49de-a733-650fdc3be197" alt="3D Preview UI" width="600"/>
+  <img width="700" height="587" alt="image" src="https://github.com/user-attachments/assets/2b9a291d-3590-4156-929f-d9e004b6988b" />
   <br>
   <em>(Live 3D Preview with Anaglyph and Parallax Controls)</em>
 </p>
@@ -149,10 +151,9 @@
 
 
 # Smart GUI + Workflow
+<img width="89" height="97" alt="image" src="https://github.com/user-attachments/assets/cb7dc3e9-403a-4e54-af0d-ac44120d1a8c" />
 
-![image](https://github.com/user-attachments/assets/b8967b58-fc5d-4511-88cc-0dc08e29d995)
-
-- Language support: **EN, FR, ES, DE**
+- Language support: **EN, FR, ES, DE, JA**
 - Responsive **multi-tab Tkinter interface** with persistent settings
 - Full GPU render control: **pause, resume, cancel**
 - Codec selector with **NVENC options** (H.264, HEVC, AV1-ready)
@@ -163,7 +164,6 @@
 - Aspect Ratios: **16:9**, **2.39:1**, **2.76:1**, **4:3**, **21:9**, **1:1**, **2.35:1**
 - Export formats: **MP4, MKV, AVI**
 - Codec support: **XVID, MP4V, MJPG, DIVX**, **FFmpeg NVENC**
-
 
 ---
 
@@ -375,6 +375,67 @@ Use the GUI to fine-tune your 3D conversion settings.
 - **Effect**: Helps stabilize the 3D effect by anchoring the subject at screen level, especially useful for scenes with depth jumps or fast movement.
 - **Recommended for**: Dialogue scenes, human-centric content, or anything where central focus should feel "on screen" rather than floating in depth.
 
+---
+### 11. Stereo Scaling (IPD)
+- **Description**: Controls the **inter-pupillary distance (IPD)** scaling, effectively adjusting how strong the stereo separation feels.
+- **Default**: `1.15`
+- **Range**: `0.50` to `2.00`
+- **Effect**:  
+  - Higher values exaggerate stereo depth (more 3D).  
+  - Lower values flatten depth (safer for long viewing).  
+- **Tip**: Keep near `1.0–1.3` for natural results.
+
+---
+### 12. Depth Pop Gamma
+- **Description**: Adjusts the gamma curve for depth, controlling how depth “pops” across the scene.
+- **Default**: `1.0`
+- **Range**: `0.5` to `2.0`
+- **Effect**:  
+  - Higher = stronger pop, can over-accentuate close objects.  
+  - Lower = smoother, flatter depth distribution.
+
+---
+### 13. Subject Lock
+- **Description**: Locks the subject’s depth position relative to the zero-parallax plane.
+- **Default**: `1.30`
+- **Range**: `1.0` to `2.0`
+- **Effect**:  
+  - Prevents subject from drifting too deep or too far out.  
+  - Useful for keeping faces/characters consistently anchored.
+
+---
+### 14. FG / BG Push ×
+- **Description**: Extra multipliers for pushing **foreground** or **background** layers.  
+- **Default**: `FG: 1.20`, `BG: 1.10`
+- **Range**: `0.5` to `2.0`
+- **Effect**:  
+  - FG Push emphasizes pop-out.  
+  - BG Push exaggerates scene depth.  
+- **Best Use**: Subtle tweaks to fine-tune stereo balance.
+
+---
+### 15. Color Grading Controls
+- **Saturation**:  
+  - Default: `1.35`  
+  - Adjusts color intensity. >1 = more vivid, <1 = muted.  
+
+- **Brightness**:  
+  - Default: `0.04`  
+  - Fine-tunes exposure; small values recommended.  
+
+- **Contrast**:  
+  - Default: `1.10`  
+  - Enhances separation between light/dark regions.  
+
+- **Effect**: These adjustments let you preview and render with tuned color grading **before** upscaling or final encoding.  
+- **Tip**: Avoid extreme values to prevent clipping or oversaturation.
+
+---
+### 16. Floating Window (DFW)
+- **Checkbox**: **Enable Floating Window**
+- **Effect**: Shifts the visible “window” edges of the stereo image inward.  
+- **Purpose**: Prevents window violations (objects being cut off by screen edges).  
+- **Recommended for**: Full-screen 3D playback, cinema, or VR headsets.
 
 ---
 ## Depth Map Tips
