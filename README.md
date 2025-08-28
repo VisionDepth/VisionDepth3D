@@ -1,6 +1,12 @@
-<h1 align="center">VisionDepth3D</h1>
+<h1 align="center"></h1>
+
+<p align="center">
+  <img width="900" height="527" alt="VisionDepth3D900x527" src="https://github.com/user-attachments/assets/17ff9eb4-863a-4874-a607-e2aa68faa808" />
+  <br>
+</p>
 
 <h2 align="center">The All-in-One 3D Suite for Creators</h2>
+
 
 <p align="center">
   <em>This is Hybrid 3D.<br>
@@ -19,14 +25,12 @@
 
 
 <p align="center">
-  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
-    <img src="assets/widget-preview.png" alt="Download VisionDepth3D on Itch.io" width="300" style="border-radius: 8px;">
+  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank" rel="noopener noreferrer">
+    <img src="https://static.itch.io/images/badge-color.svg" width="208" height="167" alt="VisionDepth3D on Itch.io">
   </a>
   <br>
   <em style="font-size: 14px; color: #888;">Click to download or support the project 💙</em>
 </p>
-
-
 
 ---
 
