@@ -60,7 +60,7 @@
 </p>
 
 - **CUDA + PyTorch parallax shifting** — pixel-accurate, per-pixel depth warping.
--  Built on the [**VisionDepth3D Method (Legit)**](VisionDepth3D_Method_Legit.md), featuring:
+-  Built on the [**VisionDepth3D Method**](VisionDepth3D_Method.md), featuring:
   - **Pop-Control depth shaping** — percentile stretch → subject recenter → signed-gamma curve.
   - **Subject-anchored zero-parallax (EMA-stabilized)** — histogram/percentile subject tracking.
   - **Dynamic parallax scaling** — central depth variance → auto stereo intensity.
