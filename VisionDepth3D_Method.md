@@ -1,126 +1,111 @@
-# The VisionDepth3D Method 
+# The VisionDepth3D Method  
 
-An advanced, real-time stereo rendering engine for 2D-to-3D conversion in VR and stereoscopic displays.
-
-## ✅ Core Innovations (Proprietary to VisionDepth3D)
-
-### 1. Depth-Weighted Continuous Parallax Shifting
-
-* Avoids depth slicing or zone segmentation.
-* Uses soft weights from the depth map to mix foreground, midground, and background contributions:
-
-```python
-raw_shift = (fg_weight * fg_shift +
-             mg_weight * mg_shift +
-             bg_weight * bg_shift)
-```
-
-* This enables smooth and natural parallax gradients across the image with no seams or pop-ins.
+An advanced, real-time stereo rendering engine for 2D-to-3D conversion in VR and stereoscopic displays.  
+VisionDepth3D introduces multiple **first-of-their-kind techniques** in the 3D conversion community, while also integrating established practices into a single GPU-optimized pipeline.
 
 ---
 
-### 2. Subject-Aware Zero-Parallax Plane Tracking
+## 🚀 Original Innovations (Introduced by VisionDepth3D)
 
-* Calculates the convergence plane dynamically by analyzing the mode of a center-weighted histogram from the depth map:
-
-```python
-subject_depth = estimate_subject_depth(depth_tensor)
-```
-
-* Produces a subject-anchored stereo window to keep the scene's focus point at screen depth.
-
-* Final zero-parallax shift is calculated as:
-
-```python
-zero_parallax_offset = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2)
-```
-
-* Replaces the original convergence formula, improving tracking accuracy.
+### 1. Depth Shaping for “Pop Control”  
+* The **`shape_depth_for_pop` algorithm** is unique to VisionDepth3D:  
+  1. Percentile stretch of depth range.  
+  2. Recentered on subject depth.  
+  3. Symmetric gamma curve for controlled “pop”.  
+* Enables tunable cinematic or VR-style stereo with consistent subject emphasis.  
 
 ---
 
-### 3. Edge-Aware Shift Masking (No Inpainting Required)
-
-* Uses gradient-based masking to suppress parallax near high-contrast edges:
-
-```python
-edge_mask = torch.sigmoid((grad_mag - edge_threshold) * feather_strength * 5)
-smooth_mask = 1.0 - edge_mask
-total_shift = total_shift * smooth_mask
-```
-
-* Prevents hard ghosting or edge bleed with no pre-processing.
+### 2. Subject-Aware Zero-Parallax Plane with EMA Stabilization  
+* Dynamically estimates subject depth (center-weighted histograms + percentiles).  
+* Locks the zero-parallax plane to the subject with exponential smoothing.  
+* Prevents subject “drift” and stabilizes the screen plane without manual keyframing.  
 
 ---
 
-### 4. Floating Window Stabilization
-
-* Smooths convergence shifts over time with adaptive momentum tracking:
-
-```python
-zero_parallax_offset = floating_window_tracker.smooth_offset(zero_parallax_offset)
-```
-
-* Clamps offset within bounds and applies side masking for viewer comfort.
-
----
-
-### 5. Scene-Aware Parallax Dampening
-
-* Dynamically adjusts stereo strength based on scene flatness:
-
+### 3. Dynamic Parallax Scaling by Scene Variance  
+* Computes normalized variance of depth in the central region:  
 ```python
 parallax_scale = compute_dynamic_parallax_scale(depth_tensor)
-```
-
-* Ensures stable 3D across both action scenes and low-contrast shots.
-
----
-
-### 6. Real-Time GPU-Optimized Pixel Warping
-
-* CUDA-accelerated `grid_sample` warping of the frame based on shift values:
-
-```python
-grid_left[..., 0] += shift_vals
-grid_right[..., 0] -= shift_vals
-```
-
-* Full left/right stereo generation without latency using PyTorch tensor operations.
+```  
+* Adapts stereo strength automatically — gentle for flat shots, expansive for landscapes.  
 
 ---
 
-### 7. Depth-Based DOF and Healing
-
-* Adaptive DOF: Multiple Gaussian blurred versions composited using per-pixel depth weight:
-
+### 4. Edge-Aware Shift Suppression with Gradient Sigmoid Masking  
+* Novel use of depth gradients to suppress parallax shifts near thin, detailed edges:  
 ```python
-blur_idx = blur_weights * (len(levels) - 1)
-```
+edge_mask = torch.sigmoid((grad_mag - edge_threshold) * feather_strength * 5)
+```  
+* Prevents ghosting and halos without AI inpainting.  
 
-* Pixel Healing: Smart fill of stereo occlusion zones using gradient-based mask blending.
+---
+
+### 5. Matte Sculpting with Temporal Stabilization  
+* Combines distance transforms with EMA smoothing to “round” depth on subjects.  
+* Prevents shimmer in hair, fingers, and soft edges.  
+* Creates natural curvature without requiring heavy segmentation pipelines.  
+
+---
+
+### 6. Floating Window with Temporal Easing  
+* Subject-aware floating window automatically detects window violations.  
+* `FloatingWindowTracker` + `FloatingBarEaser` smooth jitter and clamp drift.  
+* First real-time system that applies cinematic floating windows automatically.  
+
+---
+
+### 7. Motion-Aware Focal Depth Tracking for DOF  
+* Depth-of-field blur controlled by a **focal depth tracker** that adapts to scene motion.  
+* Busy shots → faster focus shifts; still shots → stable focus.  
+* Simulates real cinematography rules dynamically during 3D rendering.  
+
+---
+
+### 8. Gradient-Based Healing of Stereo Occlusion Gaps  
+* Detects warping gaps via gradient magnitude and fills with blended original + blurred content.  
+* Lightweight alternative to neural inpainting — seamless and invisible.  
+
+---
+
+## ⚙️ Supporting Features (Implemented, Not Unique)
+
+* **Depth-weighted continuous parallax shifting** – smooth stereo gradients instead of discrete layers.  
+* **GPU tensor grid warping** – CUDA-optimized `grid_sample` per-eye rendering.  
+* **Scene-aware dampening** – adjusts disparity for flat vs. complex scenes.  
+* **Temporal percentile EMA normalization** – stabilizes depth scale across frames.  
+* **Depth-based DOF (multi-level Gaussian pyramid)** – established technique, enhanced in VD3D with motion-aware focus.  
+* **Black bar detection & aspect handling** – auto-crop and cinematic aspect preservation.  
+* **Color grading & sharpening** – GPU-accelerated saturation, contrast, brightness, and safe sharpening.  
+* **Multi-format 3D output** – Half-SBS, Full-SBS, VR, anaglyph, interlaced.  
+* **FFmpeg streaming codec pipeline** – CPU (libx264/x265/AV1), NVIDIA NVENC, AMD AMF, Intel QSV with CRF/CQ control.  
 
 ---
 
 ## ✅ Summary Table
 
-| Component                       | Description                                         |
-| ------------------------------- | --------------------------------------------------- |
-| Depth-Weighted Shift            | Smooth pixel displacement without discrete zones    |
-| Subject-Aware Parallax Tracking | Dynamically centers stereo plane on dominant object |
-| Edge-Aware Feathering           | Prevents ghosting without segmentation              |
-| Floating Window Tracker         | Stabilizes convergence across frames                |
-| Scene-Aware Parallax Dampening  | Auto-tunes 3D intensity by depth stats              |
-| DOF + Healing                   | Simulated depth of field with gap healing           |
-| GPU Tensor Grid Warping         | High-performance stereo image warping               |
+| Category             | Component                                         |
+| -------------------- | ------------------------------------------------- |
+| **Original**         | Pop Control Depth Shaping                         |
+|                      | Subject-Aware Zero-Parallax Plane (EMA stabilized)|
+|                      | Dynamic Parallax Scaling by Scene Variance        |
+|                      | Edge-Aware Gradient Shift Suppression             |
+|                      | Matte Sculpting + Temporal Stabilization          |
+|                      | Floating Window with Temporal Easing              |
+|                      | Motion-Aware DOF Focal Tracking                   |
+|                      | Gradient-Based Healing of Occlusion Gaps          |
+| **Supporting**       | Depth-weighted Parallax Shifting                  |
+|                      | Temporal Percentile EMA Depth Normalization       |
+|                      | GPU Tensor Grid Warping                           |
+|                      | Scene-Aware Dampening                             |
+|                      | DOF via Gaussian Pyramids                         |
+|                      | Aspect Handling + Black Bar Detection             |
+|                      | GPU Color Grading + Sharpening                    |
+|                      | Multi-Codec Pipeline + Multi-Format Export        |
 
 ---
 
-* All features above are **original** to VisionDepth3D.
-* Designed and optimized in-house for real-time VR stereo authoring.
-* No external segmentation, warping, or AI fill-inpainting required.
+VisionDepth3D combines these original contributions with proven practices to form a **holistic, real-time, GPU-accelerated 2D→3D pipeline**.  
 
-For citations or inquiries:
-[https://github.com/VisionDepth/VisionDepth3D](https://github.com/VisionDepth/VisionDepth3D)
-
-📄 Licensed under: VisionDepth3D Custom Use License (No Derivatives)
+📄 Licensed under: VisionDepth3D Custom Use License (No Derivatives)  
+🔗 Project: [https://github.com/VisionDepth/VisionDepth3D](https://github.com/VisionDepth/VisionDepth3D)  
