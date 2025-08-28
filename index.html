@@ -131,7 +131,7 @@
       overflow: hidden; box-shadow: var(--shadow); }
     .slides { display: flex; width: 100%; transition: transform 0.45s ease; will-change: transform; }
     .slide { min-width: 100%; }
-    .slide img { display: block; width: 100%; height: 320px; object-fit: cover; border-radius: 0; border: none; }
+    .slide img { display: block; width: 100%; height: auto; max-height: 320px; object-fit: contain; background: #0b0f14; border-radius: 0; border: none; }
     .slide-btn { position: absolute; top: 50%; transform: translateY(-50%); border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.35); color: var(--fg); width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 22px; cursor: pointer; backdrop-filter: blur(6px); }
     .slide-btn:hover { background: rgba(0,0,0,0.5); }
     .slide-btn.prev { left: 12px; }
@@ -438,3 +438,4 @@
   </script>
 </body>
 </html>
+
