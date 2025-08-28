@@ -59,13 +59,7 @@
     }
     .nav-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; }
     .brand { display: flex; gap: 10px; align-items: center; font-weight: 700; letter-spacing: 0.3px; }
-    .logo {
-      width: 60px;  /* matches nav height */
-      height: 60px;
-      background: url("assets/logo.png") center/contain no-repeat;
-      border-radius: 6px;
-      box-shadow: none;
-    }
+    .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 0 25px rgba(57,198,255,0.35); }
     .nav-links { display: flex; gap: 18px; align-items: center; }
     .nav-links a { color: var(--fg); opacity: 0.85; font-size: 14px; }
     .nav-links a:hover { opacity: 1; }
@@ -137,7 +131,7 @@
       overflow: hidden; box-shadow: var(--shadow); }
     .slides { display: flex; width: 100%; transition: transform 0.45s ease; will-change: transform; }
     .slide { min-width: 100%; }
-    .slide img { display: block; width: 100%; height: auto; max-height: 320px; object-fit: contain; background: #0b0f14; border-radius: 0; border: none; }
+    .slide img { display: block; width: 100%; height: 320px; object-fit: cover; border-radius: 0; border: none; }
     .slide-btn { position: absolute; top: 50%; transform: translateY(-50%); border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.35); color: var(--fg); width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 22px; cursor: pointer; backdrop-filter: blur(6px); }
     .slide-btn:hover { background: rgba(0,0,0,0.5); }
     .slide-btn.prev { left: 12px; }
@@ -157,6 +151,7 @@
         <a href="#tools">Tools</a>
         <a href="#download">Download</a>
         <a href="#faq">FAQ</a>
+        <a href="#license">License</a>
         <button id="themeToggle" class="theme-toggle theme" aria-label="Toggle theme">Toggle theme</button>
       </div>
     </div>
@@ -284,7 +279,7 @@
           </div>
           <ul class="list" style="margin-top:14px">
             <li>Runs on CPU or GPU. CUDA support recommended for speed.</li>
-            <li>Open source code on GitHub.</li>
+            <li>Source available on GitHub. License: personal and non commercial.</li>
             <li>No telemetry. Your renders stay on your machine.</li>
           </ul>
         </div>
@@ -320,12 +315,27 @@
         </details>
         <details>
           <summary>What license does the app use</summary>
-          <p>The software is open source. The published method text is shared for learning with a no derivatives clause.</p>
+          <p>VisionDepth3D is licensed for personal and non commercial use under the VisionDepth3D License Agreement. Commercial or revenue generating use requires written permission from the Licensor. The Method description on this site is informational and does not grant rights to create derivative works of the method text. Third party components remain under their own licenses. See the <a href="https://github.com/VisionDepth/VisionDepth3D/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a> for full terms or email <a href="mailto:redsky90@gmail.com">redsky90@gmail.com</a> for commercial licensing.</p>
         </details>
         <details>
           <summary>Where can I get help</summary>
           <p>Open an issue on GitHub or post in the community thread. You can also contact the maintainer through Itch.io.</p>
         </details>
+      </div>
+    </section>
+    <section id="license">
+      <div class="container">
+        <h2 class="section-title">License</h2>
+        <p class="section-lead">Summary of terms. This is not a substitute for the full license.</p>
+        <div class="grid cards">
+          <div class="card"><h3>Grant</h3><p>Free personal and non commercial use. No automatic rights for business or revenue generating use.</p></div>
+          <div class="card"><h3>Restrictions</h3><p>No redistribution, sublicensing, resale, reverse engineering, or derivative works of the software or method text.</p></div>
+          <div class="card"><h3>Ownership</h3><p>All rights remain with the Licensor. Third party components are governed by their own licenses.</p></div>
+          <div class="card"><h3>Third party notices</h3><p>Depth models such as DPT, MiDaS, ZoeDepth are Apache 2.0. FFmpeg is GPL or LGPL depending on build and is invoked as an external process.</p></div>
+          <div class="card"><h3>No warranty</h3><p>Provided as is without warranty. Use at your own risk.</p></div>
+          <div class="card"><h3>Governing law</h3><p>Ontario, Canada.</p></div>
+        </div>
+        <p style="margin-top: 16px">Read the full license: <a href="https://github.com/VisionDepth/VisionDepth3D/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE on GitHub</a>. Commercial licensing: <a href="mailto:redsky90@gmail.com">redsky90@gmail.com</a>.</p>
       </div>
     </section>
   </main>
@@ -444,8 +454,3 @@
   </script>
 </body>
 </html>
-
-
-
-
-
