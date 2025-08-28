@@ -85,8 +85,8 @@
       linear-gradient(180deg, rgba(16,22,31,0.95), rgba(16,22,31,0.85));
       padding: 22px; box-shadow: var(--shadow); }
     .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; }
-    .hero-grid img, .mock { width: 100%; height: 320px; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); background: linear-gradient(135deg, #0f1520, #0c1118); display: block; position: relative; }
-    .mock::after { content: "Preview placeholder"; position: absolute; bottom: 12px; left: 12px; font-size: 12px; color: var(--muted); }
+    .hero-grid img { width: 100%; height: 320px; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); background: linear-gradient(135deg, #0f1520, #0c1118); display: block; position: relative; }
+    
 
     /* Sections */
     section { padding: 64px 0; border-top: 1px solid rgba(255,255,255,0.06); }
@@ -168,9 +168,8 @@
 
       <div class="hero-art">
         <div class="hero-grid">
-          <img src="assets/preview1.png" alt="3D Generator" />
-          <img src="assets/preview2.png" alt="Depth Estimation" />
-          <img src="assets/preview3.png" alt="Frame Tools" />
+          <div class="mock" aria-label="App preview left"></div>
+          <div class="mock" aria-label="App preview right"></div>
         </div>
       </div>
     </div>
@@ -315,9 +314,9 @@
   <script>
     // Replace these with your real links
     const LINKS = {
-      itch: "https://visiondepth3d.itch.io/visiondepth3d",            // ex: https://visiondepth.itch.io/visiondepth3d
-      github: "https://github.com/VisionDepth/VisionDepth3D",          // ex: https://github.com/VisionDepth/VisionDepth3D
-      winInstaller: "https://visiondepth3d.itch.io/visiondepth3d/download/eyJpZCI6MzUzNDE5NiwiZXhwaXJlcyI6MTc1NjM5NDY2N30%3d.3G0oxEst%2b9vqh5rldtov91D1Mo8%3d"      // ex: direct link to latest .exe
+      itch: "#",            // ex: https://visiondepth.itch.io/visiondepth3d
+      github: "#",          // ex: https://github.com/VisionDepth/VisionDepth3D
+      winInstaller: "#"      // ex: direct link to latest .exe
     };
 
     function applyLinks() {
@@ -363,5 +362,3 @@
   </script>
 </body>
 </html>
-
-
