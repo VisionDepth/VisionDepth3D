@@ -59,7 +59,7 @@
     }
     .nav-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; }
     .brand { display: flex; gap: 10px; align-items: center; font-weight: 700; letter-spacing: 0.3px; }
-    .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 0 25px rgba(57,198,255,0.35); }
+    .logo { width: 60px; height: 60px; border-radius: 6px; background: url("assets/logo.png") center/contain no-repeat; box-shadow: none; }
     .nav-links { display: flex; gap: 18px; align-items: center; }
     .nav-links a { color: var(--fg); opacity: 0.85; font-size: 14px; }
     .nav-links a:hover { opacity: 1; }
@@ -131,7 +131,7 @@
       overflow: hidden; box-shadow: var(--shadow); }
     .slides { display: flex; width: 100%; transition: transform 0.45s ease; will-change: transform; }
     .slide { min-width: 100%; }
-    .slide img { display: block; width: 100%; height: 320px; object-fit: cover; border-radius: 0; border: none; }
+    .slide img { display:block; width:100%; height:auto; max-height:320px; object-fit:contain; background:#0b0f14; border-radius:0; border:none; }
     .slide-btn { position: absolute; top: 50%; transform: translateY(-50%); border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.35); color: var(--fg); width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 22px; cursor: pointer; backdrop-filter: blur(6px); }
     .slide-btn:hover { background: rgba(0,0,0,0.5); }
     .slide-btn.prev { left: 12px; }
@@ -159,7 +159,7 @@
 
   <header class="hero">
     <div class="container">
-      <p class="stat-pill" style="display:inline-block">Open source • Windows first • CUDA ready</p>
+      <p class="stat-pill" style="display:inline-block">Source‑available • Windows first • CUDA ready</p>
       <h1 class="title">AI powered 2D to 3D conversion for cinema and VR</h1>
       <p class="subtitle">VisionDepth3D brings pixel accurate, real time parallax shifting to your 2D videos. Built for creators who want clean depth, natural convergence, and flexible export targets.</p>
 
@@ -187,9 +187,9 @@
       <div class="hero-art">
         <div class="slider" aria-label="App preview carousel">
           <div class="slides" id="slides">
-            <div class="slide"><img src="assets/preview1.png" alt="VisionDepth3D 3D Generator" /></div>
-            <div class="slide"><img src="assets/preview2.png" alt="VisionDepth3D Depth Estimation" /></div>
-            <div class="slide"><img src="assets/preview3.png" alt="VisionDepth3D Frame Tools" /></div>
+            <div class="slide"><img src="assets/preview1.png" alt="VisionDepth3D 3D Generator"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/preview2.png" alt="VisionDepth3D Depth Estimation"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/preview3.png" alt="VisionDepth3D Frame Tools"  loading="lazy"/></div>
           </div>
           <button class="slide-btn prev" id="prevBtn" aria-label="Previous screenshot">&#8249;</button>
           <button class="slide-btn next" id="nextBtn" aria-label="Next screenshot">&#8250;</button>
@@ -454,5 +454,3 @@
   </script>
 </body>
 </html>
-
-
