@@ -23,14 +23,20 @@
 
 </h3>
 
-
 <p align="center">
-  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank" rel="noopener noreferrer">
-    <img src="https://static.itch.io/images/badge-color.svg" width="208" height="167" alt="VisionDepth3D on Itch.io">
+  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
+    <img src="assets/widget-preview.png" 
+         alt="Download VisionDepth3D on Itch.io" 
+         width="300" 
+         style="border-radius: 8px;">
   </a>
   <br>
-  <em style="font-size: 14px; color: #888;">Click to download or support the project 💙</em>
+  <em style="font-size: 14px; color: #888;">
+    Click to download or support the project 💙
+  </em>
 </p>
+
+
 
 ---
 
