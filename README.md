@@ -24,17 +24,27 @@
 </h3>
 
 <p align="center">
-  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank">
-    <img src="assets/widget-preview.png" 
-         alt="Download VisionDepth3D on Itch.io" 
-         width="208" height="167" 
-         style="border-radius: 8px;">
-  </a>
-  <br>
   <em style="font-size: 14px; color: #888;">
     Click to download or support the project 💙
   </em>
-</p>
+  <br>
+
+  <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank" rel="noopener">
+    <img src="assets/widget-preview.png"
+         alt="Download VisionDepth3D on Itch.io"
+         width="208" height="167"
+         style="border-radius: 8px; margin-top: 6px;">
+  </a>
+  <br>
+  
+  <p align="center">
+	  <a href="https://visiondepth.github.io/VisionDepth3D/" target="_blank" rel="noopener"
+	     style="display:inline-block; margin-top:8px; padding:10px 16px; border-radius:12px;
+	            border:1px solid #39c6ff; background:linear-gradient(180deg, rgba(57,198,255,.15), rgba(57,198,255,.08));
+	            color:#39c6ff; font-weight:700; text-decoration:none;">
+	    Official website out now →
+	  </a>
+	</p>
 
 
 
