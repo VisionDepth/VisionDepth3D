@@ -1,4 +1,4 @@
-import os
+import os, platform, warnings
 import time
 import cv2
 import torch
@@ -16,6 +16,8 @@ from scipy.ndimage import gaussian_filter
 from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
 from core.ffmpeg_blackdetect import detect_black_white_frames
 import math
+from typing import Iterable, Optional
+
 
 # Device setup
 #onnx_device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
@@ -34,6 +36,18 @@ suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 process_thread = None 
 global_session_start_time = None
+ENABLE_DEPTH_ROTO = True           # master toggle
+ROTO_NEAR = 1.0                    # 1.0 = screen-near white
+ROTO_FAR  = 0.45                   # how dark at edges of subject
+ROTO_FEATHER_PX = 12               # edge softness
+ROTO_ROUND_GAMMA = 1.2             # >1.0 = rounder center
+ROTO_EMA_ALPHA = 0.88              # temporal matte smoothing
+ROTO_MASK_DIR = None               # e.g., "mattes/" (PNG per frame) or None if you auto-seg
+
+
+
+SETTINGS_FILE = "settings.json"
+
 
 # Common Aspect Ratios
 aspect_ratios = {
@@ -72,6 +86,83 @@ FFMPEG_CODEC_MAP = {
     "VP9 (QSV - Intel GPU)": "vp9_qsv",
     "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
+
+
+def ffmpeg_yuv10_reader(path, width, height):
+    """
+    Yields P010LE frames as float32 RGB in [0,1] with simple 10-bit scaling.
+    NOTE: stays in PQ/BT.2020 space; do *not* tone-map to SDR.
+    """
+    cmd = [
+        "ffmpeg","-loglevel","error",
+        "-i", path,
+        "-f","rawvideo",
+        "-pix_fmt","p010le",   # 10-bit 4:2:0
+        "-"
+    ]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    stride = width * height * 2 * 3 // 2  # P010 size
+    while True:
+        buf = p.stdout.read(stride)
+        if not buf or len(buf) < stride:
+            break
+        yuv = np.frombuffer(buf, dtype=np.uint16)
+        # reshape to planar P010 (Y full res, UV half res)
+        y = (yuv[:width*height].reshape((height, width)) >> 6).astype(np.float32) / 1023.0
+        uv = (yuv[width*height:].reshape((height//2, width)) >> 6).astype(np.float32) / 1023.0
+        u = uv[:, 0::2]; v = uv[:, 1::2]
+        # upsample chroma (nearest is fine here)
+        u = np.repeat(np.repeat(u, 2, axis=0), 2, axis=1)
+        v = np.repeat(np.repeat(v, 2, axis=0), 2, axis=1)
+        # very simple YUV->RGB for BT.2020 (non-constant luminance)
+        # keep in PQ domain (no tone map)
+        r = y + 1.4746*(v-0.5)
+        g = y - 0.16455*(u-0.5) - 0.57135*(v-0.5)
+        b = y + 1.8814*(u-0.5)
+        rgb = np.stack([r,g,b], axis=2).clip(0,1).astype(np.float32)
+        yield rgb
+    p.stdout.close(); p.wait()
+
+
+def sculpt_depth_u8(base_depth_u8, mask_u8, *,
+                    near=1.0, far=0.4,
+                    feather_px=12, round_gamma=1.2):
+    """
+    base_depth_u8: uint8 [H,W] 0..255 (white = near)
+    mask_u8      : uint8 [H,W] 0/255  (255 = inside subject)
+    Returns uint8 [H,W] depth with a rounded subject profile blended in.
+    """
+    mask = (mask_u8 > 127).astype(np.uint8)
+
+    # distance to edge (inside/outside)
+    dist_in  = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    dist_out = cv2.distanceTransform(1 - mask, cv2.DIST_L2, 3)
+
+    max_in = max(1.0, float(dist_in.max()))
+    r = np.power(np.clip(dist_in / max_in, 0, 1), round_gamma)  # 0 edge → 1 center
+
+    subj = (near * r + far * (1 - r)) * 255.0
+    subj_u8 = subj.astype(np.uint8)
+
+    # feather alpha: 0 outside → 1 inside
+    alpha = np.clip(dist_out / float(max(1, feather_px)), 0, 1)
+    alpha = (1.0 - alpha)  # 1 at subject center, ~0 outside
+    alpha3 = alpha  # depth is single-channel
+
+    out = (alpha3 * subj_u8 + (1 - alpha3) * base_depth_u8).astype(np.uint8)
+    return out
+
+class MatteEMA:
+    """Stabilize matte edges over time to avoid shimmer."""
+    def __init__(self, alpha=0.85):
+        self.prev = None
+        self.alpha = alpha
+    def step(self, mask_u8):
+        if self.prev is None:
+            self.prev = mask_u8.astype(np.float32) / 255.0
+        cur = mask_u8.astype(np.float32) / 255.0
+        self.prev = self.alpha * self.prev + (1 - self.alpha) * cur
+        return (np.clip(self.prev, 0, 1) * 255).astype(np.uint8)
 
 
 def parse_timecode(s: str | None) -> float | None:
@@ -949,6 +1040,7 @@ def render_sbs_3d(
     feather_strength=0.0,
     blur_ksize=1,
     use_ffmpeg=False,
+    preserve_hdr10= False,
     selected_ffmpeg_codec=None,
     crf_value=23,
     use_subject_tracking=False,
@@ -982,6 +1074,7 @@ def render_sbs_3d(
     color_brightness=0.0,
     start_s=None,
     end_s=None,
+    eye_mode="sbs",
 ):
 
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
@@ -1002,12 +1095,6 @@ def render_sbs_3d(
     # Guard: clamp and validate
     if start_ms < 0: start_ms = 0.0
     if end_ms > dur_ms: end_ms = dur_ms
-    if start_ms >= end_ms - 0.5:
-        print("⚠️ Invalid clip window; nothing to render.")
-        cap.release(); dcap.release()
-        return
-
-    # sanity
     if start_ms >= end_ms - 0.5:
         print("⚠️ Invalid clip window; nothing to render.")
         cap.release(); dcap.release()
@@ -1136,31 +1223,103 @@ def render_sbs_3d(
             per_eye_h = resized_height
             out_width = resized_width * 2
             out_height = resized_height
-            
+    
+    if eye_mode in ("left", "right"):
+        out_width  = per_eye_w
+        out_height = per_eye_h
+        
+    # --- invariants (fixed for the whole render) ---
+    cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
+    single_eye = eye_mode in ("left", "right")
+
+    # Fixed per-eye resize target used for every frame:
+    if not preserve_original_aspect:
+        eye_w = per_eye_w
+        eye_h = int(per_eye_w / cinema_aspect_ratio)
+        if eye_h % 2 != 0:
+            eye_h += 1
+    else:
+        eye_w = per_eye_w
+        eye_h = per_eye_h
+
+    # Floating-window bar should scale with the actually-encoded eye width
+    width_for_bars = per_eye_w if single_eye else resized_width
+
+    # DOF / Color grading flags don’t change during render
+    need_dof   = (dof_strength > 0.0)
+    need_color = (
+        (color_saturation != 1.0) or
+        (color_contrast   != 1.0) or
+        (abs(color_brightness) > 1e-6)
+    )
+
     ffmpeg_proc = None
     out = None
 
     if use_ffmpeg:
         ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-vcodec", "rawvideo",
-            "-pix_fmt", "bgr24",
+            "ffmpeg","-y",
+            "-f","rawvideo","-vcodec","rawvideo",
+            "-pix_fmt","bgr24",
             "-s", f"{out_width}x{out_height}",
             "-r", str(fps),
-            "-i", "-",
+            "-i","-",
             "-an",
             "-c:v", selected_ffmpeg_codec,
-            "-preset", "slow",
-            "-pix_fmt", "yuv420p"
         ]
-        if selected_ffmpeg_codec.startswith("libx"):
-            ffmpeg_cmd += ["-crf", str(crf_value)]
-        elif "nvenc" in selected_ffmpeg_codec:
-            ffmpeg_cmd += ["-cq", str(crf_value), "-b:v", "0"]
+
+        is_nvenc = "nvenc" in selected_ffmpeg_codec         # h264_nvenc/hevc_nvenc/av1_nvenc
+
+        if preserve_hdr10:
+            # 10-bit + HDR signaling (no tone-map)
+            ffmpeg_cmd += [
+                "-pix_fmt","p010le",
+                "-color_range","tv",
+                "-colorspace","bt2020nc",
+                "-color_primaries","bt2020",
+                "-color_trc","smpte2084",
+            ]
+            if is_nvenc:
+                ffmpeg_cmd += [
+                    "-preset","p5",               # NVENC preset (p1 fastest…p7 slowest)
+                    "-tune","hq",
+                    "-rc","vbr",
+                    "-cq", str(crf_value),        # you’re using this as “quality” knob
+                    "-b:v","0",
+                    "-profile:v","main10",
+                ]
+            elif selected_ffmpeg_codec == "libx265":
+                ffmpeg_cmd += [
+                    "-preset","slow",
+                    "-crf", str(crf_value),
+                    "-x265-params",
+                    "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+                ]
+            else:
+                ffmpeg_cmd += ["-preset","slow","-crf", str(crf_value)]
+
+        else:
+            # SDR
+            if is_nvenc:
+                ffmpeg_cmd += [
+                    "-preset","p5",
+                    "-tune","hq",
+                    "-rc","vbr",
+                    "-cq", str(crf_value),   # reuse your CRF slider as NVENC CQ
+                    "-b:v","0",
+                    "-pix_fmt","yuv420p",
+                ]
+            else:
+                ffmpeg_cmd += [
+                    "-preset","slow",
+                    "-crf", str(crf_value),
+                    "-pix_fmt","yuv420p",
+                ]
 
         ffmpeg_cmd.append(output_path)
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+
+
     else:
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*selected_codec), fps, (out_width, out_height))
         if not out.isOpened():
@@ -1180,7 +1339,8 @@ def render_sbs_3d(
     avg_fps = 0
     prev_depth_tensor = None
     focal_tracker = FocalDepthTracker(alpha=0.15, deadband=0.03, max_step=0.02)
-    
+    matte_ema = MatteEMA(alpha=ROTO_EMA_ALPHA)
+
     ret1, frame = cap.read()
     ret2, depth = dcap.read()
     if not ret1 or not ret2:
@@ -1247,24 +1407,50 @@ def render_sbs_3d(
                     frame_tensor = frame_tensor[:, start:start + new_h, :]
                     depth_tensor = depth_tensor[:, start:start + new_h, :]
 
-            # compute per-eye size
-            if not preserve_original_aspect:
-                cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
-                target_eye_w = per_eye_w
-                target_eye_h = int(per_eye_w / cinema_aspect_ratio)
-                if target_eye_h % 2 != 0:
-                    target_eye_h += 1
-            else:
-                target_eye_w = per_eye_w
-                target_eye_h = per_eye_h
+            # resize tensors to fixed per-eye target (computed once)
+            frame_tensor = F.interpolate(frame_tensor.unsqueeze(0),
+                                         size=(eye_h, eye_w),
+                                         mode='bilinear', align_corners=False).squeeze(0)
+            depth_tensor = F.interpolate(depth_tensor.unsqueeze(0),
+                                         size=(eye_h, eye_w),
+                                         mode='bilinear', align_corners=False).squeeze(0)
 
-            # resize tensors
-            frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
-            depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(target_eye_h, target_eye_w), mode='bilinear', align_corners=False).squeeze(0)
+            # --- Depth-Roto Assist (optional) BEFORE temporal filters ---
+            if ENABLE_DEPTH_ROTO:
+                # convert current depth to u8
+                depth_u8 = (depth_tensor.squeeze(0).clamp(0,1).cpu().numpy() * 255.0).astype(np.uint8)
 
-            # depth smoothing & shaping
+                # load or generate matte for this frame index
+                mask_u8 = None
+                if ROTO_MASK_DIR is not None:
+                    # build filename from absolute frame index (clip start offset + idx)
+                    abs_idx = start_frame_idx + idx
+                    mask_path = os.path.join(ROTO_MASK_DIR, f"frame_{abs_idx:06d}.png")
+                    if os.path.exists(mask_path):
+                        m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                        if m is not None:
+                            # ensure matte matches current tensor size (after crop/resize)
+                            m = cv2.resize(m, (eye_w, eye_h), interpolation=cv2.INTER_NEAREST)
+                            mask_u8 = m
+                            
+                # (Optional) if you don’t have external mattes yet, you could auto-seg here.
+                # e.g., mask_u8 = my_autoseg(frame_tensor)  # expect 0/255 uint8
+
+                if mask_u8 is not None:
+                    mask_u8 = matte_ema.step(mask_u8)  # temporal stabilize matte
+
+                    depth_u8 = sculpt_depth_u8(
+                        depth_u8, mask_u8,
+                        near=ROTO_NEAR, far=ROTO_FAR,
+                        feather_px=ROTO_FEATHER_PX, round_gamma=ROTO_ROUND_GAMMA
+                    )
+                    # back to tensor [1,H,W] in 0..1
+                    depth_tensor = torch.from_numpy(depth_u8).to(frame_tensor.device).float().unsqueeze(0) / 255.0
+
+            # Continue with your existing temporal/percentile normalization
             depth_tensor = temporal_depth_filter.smooth(depth_tensor)
             depth_tensor = depth_ema_norm.normalize(depth_tensor)
+
 
             fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
@@ -1336,63 +1522,57 @@ def render_sbs_3d(
                 focal_tracker.set_scene_motion(motion_metric)
                 focal_depth     = focal_tracker.update(candidate_focal)
 
-
-                if dof_strength > 0.0:
-                    # tensors from frames
+                if need_dof or need_color:
+                    # 1) to tensors once
                     left_t  = frame_to_tensor(left_frame)    # [3,H,W]
                     right_t = frame_to_tensor(right_frame)
 
-                    # 🔧 match depth to frame size used for DOF
+                    # 2) match depth to the eye frame once
                     H, W = left_t.shape[1], left_t.shape[2]
-                    depth_for_dof = F.interpolate(
+                    depth_for_eye = F.interpolate(
                         depth_tensor.unsqueeze(0), size=(H, W),
                         mode='bilinear', align_corners=False
                     ).squeeze(0)  # -> [1,H,W]
 
-                    # use your stabilized focal_depth (do NOT recompute here)
-                    left_t  = apply_dof_cuda(left_t,  depth_for_dof, focal_depth,
-                                             max_sigma=dof_strength, focus_width=0.35)
-                    right_t = apply_dof_cuda(right_t, depth_for_dof, focal_depth,
-                                             max_sigma=dof_strength, focus_width=0.35)
-                    
-                    lt = frame_to_tensor(left_frame)
-                    rt = frame_to_tensor(right_frame)
-                    
-                    # After DOF:
-                    lt  = apply_color_grade(left_t,  saturation=color_saturation,
-                                                contrast=color_contrast, brightness=color_brightness)
-                    rt = apply_color_grade(right_t, saturation=color_saturation,
-                                                contrast=color_contrast, brightness=color_brightness)
+                    # 3) DOF first (if enabled)
+                    if need_dof:
+                        left_t  = apply_dof_cuda(left_t,  depth_for_eye, focal_depth,
+                                                 max_sigma=dof_strength, focus_width=0.35)
+                        right_t = apply_dof_cuda(right_t, depth_for_eye, focal_depth,
+                                                 max_sigma=dof_strength, focus_width=0.35)
 
-                    # Back to NumPy (BGR uint8) for the rest
-                    left_frame  = tensor_to_frame(lt)
-                    right_frame = tensor_to_frame(rt)
-                    
-                else:
-                    # DOF disabled — still apply color grade
-                    lt = frame_to_tensor(left_frame)
-                    rt = frame_to_tensor(right_frame)
+                    # 4) Color grading next (if non-neutral)
+                    if need_color:
+                        left_t  = apply_color_grade(left_t,
+                                                    saturation=color_saturation,
+                                                    contrast=color_contrast,
+                                                    brightness=color_brightness)
+                        right_t = apply_color_grade(right_t,
+                                                    saturation=color_saturation,
+                                                    contrast=color_contrast,
+                                                    brightness=color_brightness)
 
-                    lt = apply_color_grade(lt,
-                                           saturation=color_saturation,
-                                           contrast=color_contrast,
-                                           brightness=color_brightness)
-                    rt = apply_color_grade(rt,
-                                           saturation=color_saturation,
-                                           contrast=color_contrast,
-                                           brightness=color_brightness)
-
-                    left_frame  = tensor_to_frame(lt)
-                    right_frame = tensor_to_frame(rt)
-
+                    # 5) back to numpy once
+                    left_frame  = tensor_to_frame(left_t)
+                    right_frame = tensor_to_frame(right_t)
 
             # floating window mask
             subject_depth = estimate_subject_depth(depth_tensor)
-            raw_zero = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2 + 1e-6)
+
+            # BEFORE:
+            # raw_zero = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2 + 1e-6)
+
+            # AFTER:
+            raw_zero = (
+                (-subject_depth * fg)
+              + (-subject_depth * mg)
+              + ( subject_depth * bg)
+            ) / (width_for_bars / 2 + 1e-6)
+
             stable_zero = conv_ema.update(raw_zero.item())
             if use_floating_window and use_subject_tracking:
                 shift_thresh = 0.005
-                raw_bar_width = int(abs(stable_zero) * resized_width * 0.75)
+                raw_bar_width = int(abs(stable_zero) * width_for_bars * 0.75)
                 smoothed_bar_width = bar_easer.ease(raw_bar_width)
                 bar_width = max(min(smoothed_bar_width, 80), 0)
                 if stable_zero > shift_thresh:
@@ -1415,8 +1595,14 @@ def render_sbs_3d(
             else:
                 left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
                 right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-
-            final = format_3d_output(left_out, right_out, output_format)
+                
+            # NEW:
+            if eye_mode == "left":
+                final = left_out
+            elif eye_mode == "right":
+                final = right_out
+            else:  # "sbs"
+                final = format_3d_output(left_out, right_out, output_format)
 
             # write frame
             if use_ffmpeg:
@@ -1432,9 +1618,7 @@ def render_sbs_3d(
                 cur_abs_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 if cur_abs_idx >= end_frame_idx:
                     break
-
-                
-
+               
             # progress / fps
             percent = (idx / max(total_frames, 1)) * 100.0
             elapsed = time.time() - global_session_start_time
@@ -1503,6 +1687,7 @@ def render_sbs_3d(
             print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
             global_session_start_time = None
 
+        return output_path  
 
 def select_input_video(
     input_video_path,
@@ -1610,6 +1795,7 @@ def process_video(
     suspend_flag,
     cancel_flag,
     use_ffmpeg,
+    preserve_hdr10,
     selected_ffmpeg_codec,
     crf_value,
     use_subject_tracking,
@@ -1637,7 +1823,9 @@ def process_video(
     color_brightness,
     ipd_value=0.0,
     start_s=None,
-    end_s=None, 
+    end_s=None,
+    eye_mode="sbs",
+    output_override=None
 ):
 
 
@@ -1645,7 +1833,7 @@ def process_video(
 
     input_path = input_video_path.get()
     depth_path = selected_depth_map.get()
-    output_path = output_sbs_video_path.get()
+    output_path = (output_override or output_sbs_video_path.get())
 
     if not input_path or not output_path or not depth_path:
         messagebox.showerror(
@@ -1715,8 +1903,9 @@ def process_video(
             aspect_ratios,
             feather_strength=feather_strength.get(),
             blur_ksize=blur_ksize.get(),
-            use_ffmpeg=use_ffmpeg.get(),
-            selected_ffmpeg_codec=FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
+            use_ffmpeg = use_ffmpeg.get(),
+            preserve_hdr10 = bool(preserve_hdr10),
+            selected_ffmpeg_codec = FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
             crf_value=crf_value.get(),
             use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
@@ -1750,65 +1939,100 @@ def process_video(
             color_brightness=(color_brightness.get() if hasattr(color_brightness, 'get') else color_brightness),
             start_s=start_s,
             end_s=end_s,
-        )   
+            eye_mode = eye_mode, 
+        )
+    return output_path
 
-
-# Define SETTINGS_FILE at the top of the script
-SETTINGS_FILE = "settings.json"
 def render_with_ffmpeg(
-    frame_generator,
-    output_path,
-    width,
-    height,
-    fps,
-    codec_name="libx264",
-    crf=23,
-    nvenc_cq=23,
-    preset="slow"
-):
+    frame_generator: Iterable[np.ndarray],
+    output_path: str,
+    width: int,
+    height: int,
+    fps: float,
+    codec_name: str = "libx264",
+    crf: int = 23,
+    nvenc_cq: int = 23,
+    preset: str = "slow",
+) -> None:
     """
-    Stream raw frames to FFmpeg using stdin to encode with H.264/H.265 or NVENC.
+    Stream raw BGR frames to FFmpeg via stdin and encode to a video file.
+
+    Parameters
+    ----------
+    frame_generator : iterable of np.ndarray
+        Yields frames shaped (H, W, 3) in BGR24.
+    output_path : str
+        Destination video file path (e.g., "out.mp4").
+    width, height : int
+        Expected frame size. Mismatched frames are skipped (not resized).
+    fps : float
+        Output frame rate.
+    codec_name : str
+        FFmpeg encoder (e.g., "libx264", "libx265", "h264_nvenc", "hevc_nvenc").
+    crf : int
+        CRF value for libx264/libx265.
+    nvenc_cq : int
+        CQ value for NVENC encoders (used with -rc vbr and -b:v 0).
+    preset : str
+        Encoder preset (e.g., "slow", "medium", "p5" for NVENC).
     """
+
+    # Base command (reading raw BGR24 frames from stdin)
     ffmpeg_cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-pix_fmt", "bgr24",
         "-s", f"{width}x{height}",
-        "-r", str(fps),
+        "-r", f"{fps}",
         "-i", "-",
         "-an",
         "-c:v", codec_name,
         "-preset", preset,
-        "-pix_fmt", "yuv420p",
+        "-pix_fmt", "yuv420p",   # SDR default; change upstream if you do HDR
         output_path
     ]
 
-    # 🔁 Codec-dependent quality option
+    # Codec-dependent quality flags
     if codec_name.startswith("libx"):
-        ffmpeg_cmd.insert(ffmpeg_cmd.index("-pix_fmt"), "-crf")
-        ffmpeg_cmd.insert(ffmpeg_cmd.index("-crf") + 1, str(crf))
+        # Insert CRF just before -pix_fmt to keep ordering tidy
+        ix = ffmpeg_cmd.index("-pix_fmt")
+        ffmpeg_cmd[ix:ix] = ["-crf", str(crf)]
     elif "nvenc" in codec_name:
-        ffmpeg_cmd.insert(ffmpeg_cmd.index("-pix_fmt"), "-cq")
-        ffmpeg_cmd.insert(ffmpeg_cmd.index("-cq") + 1, str(nvenc_cq))
-        ffmpeg_cmd += ["-b:v", "0"]  # ✅ Important for NVENC constant quality
+        ix = ffmpeg_cmd.index("-pix_fmt")
+        ffmpeg_cmd[ix:ix] = ["-cq", str(nvenc_cq)]
+        ffmpeg_cmd += ["-b:v", "0"]  # constant-quality style for NVENC
 
     print(f"🚀 Launching FFmpeg render: {codec_name} | CRF: {crf} | NVENC CQ: {nvenc_cq} ➜ {output_path}")
+
     try:
         with subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE) as proc:
+            assert proc.stdin is not None, "FFmpeg stdin not available."
+
             for idx, frame in enumerate(frame_generator):
                 if frame is None:
                     print(f"⚠️ Frame {idx} is None — skipping.")
                     continue
+
                 h, w = frame.shape[:2]
-                if (w != width or h != height):
+                if (w != width) or (h != height):
                     print(f"⚠️ Frame {idx} has incorrect shape: {w}x{h} (expected {width}x{height}) — skipping.")
                     continue
-                proc.stdin.write(frame.astype(np.uint8).tobytes())
 
+                # Ensure uint8 BGR
+                if frame.dtype != np.uint8:
+                    frame = frame.astype(np.uint8, copy=False)
+
+                proc.stdin.write(frame.tobytes())
+
+            # Close stdin so ffmpeg can finalize/flush
             proc.stdin.close()
             proc.wait()
-            print("✅ FFmpeg render complete.")
+
+            if proc.returncode == 0:
+                print("✅ FFmpeg render complete.")
+            else:
+                print(f"⚠️ FFmpeg exited with code {proc.returncode}. Check logs above.")
+
     except Exception as e:
         print(f"❌ FFmpeg render failed: {e}")
-

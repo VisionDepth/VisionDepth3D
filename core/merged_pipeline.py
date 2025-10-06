@@ -11,6 +11,8 @@ import onnxruntime as ort
 from tkinter import messagebox, filedialog
 from tqdm import tqdm
 import subprocess
+import queue
+
 
 
 suspend_flag = threading.Event()
@@ -283,6 +285,7 @@ def _esrgan_tiled(img, tile, pad):
             out[y:y+min(tile, h - y), x:x+min(tile, w - x)] = up[yc0:yc1, xc0:xc1]
     return out
 
+# ✅ CLEANED VERSION: Tiling fully removed from ESRGAN calls to prevent visual artifacts.
 
 def start_merged_pipeline(settings, progress_widget, status_label_widget):
     global progress_bar, status_label, esrgan_session
@@ -303,7 +306,7 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
 
     if enable_upscale:
         if not os.path.exists(model_path):
-            print(f"\u274C ESRGAN model missing: {model_path}")
+            print(f"❌ ESRGAN model missing: {model_path}")
             esrgan_session = None
         else:
             esrgan_session = ort.InferenceSession(model_path, sess_options=session_options, providers=device)
@@ -321,14 +324,9 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     video = start_ffmpeg_writer(output_path, width, height, output_fps, settings["codec"])
     start = time.time()
 
-    # ---- prefetch-driven loop ----
     target_size = (width, height)
+    file_iter = _frame_loader(files, target_size)
 
-    # If upscaling is enabled, let run_esrgan handle resizing to target_size.
-    # Otherwise, have the loader resize to target_size up-front to hide I/O latency.
-    file_iter = _frame_loader(files, None if enable_upscale else target_size)
-
-    # prime the first frame
     prev = next(file_iter, None)
     if prev is None:
         messagebox.showerror("Error", "No readable frames.")
@@ -339,47 +337,163 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
         video.wait()
         return
 
-    if enable_upscale:
-        prev = run_esrgan(prev, blend_mode, input_res_pct, target_size=target_size)
-
-    # write first frame
-    video.stdin.write(prev.tobytes())
-
-    # total frames we’ll report progress against
-    # (if RIFE is enabled, we conceptually process pairs; progress uses #source frames)
     total_src = len(files)
 
     for i, curr in enumerate(file_iter, start=1):
         if cancel_flag.is_set():
             break
 
-        if enable_upscale:
-            curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size)
-        else:
-            curr_proc = curr  # already resized by loader
-
         if enable_rife:
-            # interpolate between prev and curr, then write curr
-            inter = run_rife(prev, curr_proc, fps_mult)
-            for f in inter:
+            interpolated = run_rife(prev, curr, fps_mult)
+            if enable_upscale:
+                interpolated = [run_esrgan(f, blend_mode, input_res_pct, target_size=target_size) for f in interpolated]
+                curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size)
+            else:
+                interpolated = [cv2.resize(f, target_size) for f in interpolated]
+                curr_proc = cv2.resize(curr, target_size)
+
+            for f in interpolated:
                 video.stdin.write(f.tobytes())
+        else:
+            curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size) if enable_upscale else cv2.resize(curr, target_size)
 
         video.stdin.write(curr_proc.tobytes())
-        prev = curr_proc
+        prev = curr
 
-        # progress reports against source frames consumed
-        update_progress(i + 1, total_src if not enable_rife else total_src - 1, start)
+        update_progress(i + 1, total_src, start)
 
-    # if cancelled, still close ffmpeg cleanly
     try:
         video.stdin.close()
     except Exception:
         pass
     video.wait()
 
-    # final progress / status
-    final_total = total_src if not enable_rife else total_src - 1
-    update_progress(final_total, final_total, start)
+    update_progress(total_src, total_src, start)
+    try:
+        status_label.after(0, lambda: status_label.configure(text="✅ Processing Complete!"))
+    except Exception:
+        pass
+
+
+MAX_QUEUE_SIZE = 16
+
+def start_threaded_pipeline(settings, progress_widget, status_label_widget):
+    global progress_bar, status_label, esrgan_session
+    progress_bar = progress_widget
+    status_label = status_label_widget
+
+    frames_dir = settings["frames_folder"]
+    output_path = settings["output_file"]
+    codec = settings["codec"]
+    width, height = settings["width"], settings["height"]
+    fps = settings["fps"]
+    fps_mult = settings["fps_multiplier"]
+    enable_rife = settings["enable_rife"]
+    enable_upscale = settings["enable_upscale"]
+    blend_mode = settings.get("blend_mode", "OFF")
+    input_res_pct = settings.get("input_res_pct", 100)
+    model_path = settings.get("model_path", "weights/RealESR_Gx4_fp16.onnx")
+
+    output_fps = fps * fps_mult if enable_rife else fps
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
+    start = time.time()
+    target_size = (width, height)
+
+    # Setup ONNX ESRGAN session if needed
+    if enable_upscale and os.path.exists(model_path):
+        esrgan_session = ort.InferenceSession(model_path, sess_options=session_options, providers=device)
+    else:
+        esrgan_session = None
+
+    # Sorted frame list
+    files = natural_sort([
+        os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ])
+    total_src = len(files)
+
+    if total_src < 2:
+        print("❌ Not enough frames to process.")
+        return
+
+    interpolation_queue = queue.Queue(MAX_QUEUE_SIZE)
+    upscaling_queue = queue.Queue(MAX_QUEUE_SIZE)
+
+    def rife_worker():
+        prev = cv2.imread(files[0])
+        for idx in range(1, len(files)):
+            if cancel_flag.is_set():
+                break
+            curr = cv2.imread(files[idx])
+            interpolated = run_rife(prev, curr, fps_mult) if enable_rife else []
+            interpolation_queue.put((idx, prev, interpolated))  # indexed push
+            prev = curr
+        interpolation_queue.put(("END", prev, []))  # Sentinel to end processing
+
+    def esrgan_worker():
+        processed = 0
+        while True:
+            idx, frame, interpolated = interpolation_queue.get()
+            if idx == "END":
+                upscaling_queue.put(("END", None))
+                break
+
+            out_frames = []
+
+            if enable_upscale:
+                out_frames.extend([
+                    run_esrgan(f, blend_mode, input_res_pct, target_size=target_size)
+                    for f in interpolated
+                ])
+                frame_proc = run_esrgan(frame, blend_mode, input_res_pct, target_size=target_size)
+            else:
+                out_frames.extend([cv2.resize(f, target_size) for f in interpolated])
+                frame_proc = cv2.resize(frame, target_size)
+
+            # Append in order: interpolated frames first, then source frame
+            for f in out_frames:
+                upscaling_queue.put((idx, f))
+            upscaling_queue.put((idx + 0.5, frame_proc))  # Add offset to ensure it comes last
+
+            processed += 1
+            update_progress(processed, total_src, start)
+
+    def writer_worker():
+        buffer = {}
+        expected_idx = 1
+
+        while True:
+            idx, frame = upscaling_queue.get()
+            if idx == "END":
+                # Flush remaining ordered frames if any
+                remaining = sorted(buffer.items())
+                for _, f in remaining:
+                    video.stdin.write(f.tobytes())
+                break
+
+            buffer[idx] = frame
+
+            while expected_idx in buffer:
+                video.stdin.write(buffer.pop(expected_idx).tobytes())
+                expected_idx += 1
+
+    # Launch threads
+    t_rife = threading.Thread(target=rife_worker)
+    t_esr = threading.Thread(target=esrgan_worker)
+    t_writer = threading.Thread(target=writer_worker)
+
+    for t in (t_rife, t_esr, t_writer):
+        t.start()
+    for t in (t_rife, t_esr, t_writer):
+        t.join()
+
+    try:
+        video.stdin.close()
+    except Exception:
+        pass
+    video.wait()
+
+    update_progress(total_src, total_src, start)
     try:
         status_label.after(0, lambda: status_label.configure(text="✅ Processing Complete!"))
     except Exception:
