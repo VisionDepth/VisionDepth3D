@@ -61,94 +61,181 @@
 
 <h2 align="center">All-in-One 3D Suite</h2>
 
-<h3 align="center">Real-Time 3D Stereo Composer</h2>
+<h3 align="center">Real-Time 3D Stereo Composer</h3>
 
 <p align="center">
-  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/4550ecb8-96ce-42f3-a73d-33c521868b77" />
+  <img width="700" height="598" alt="3Dtab" src="https://github.com/user-attachments/assets/f6c82115-c3ba-464f-91c1-7a623ed11007" />
   <br>
   <em>(3D Tab)</em>
 </p>
 
-- **CUDA + PyTorch parallax shifting** — pixel-accurate, per-pixel depth warping.
--  Built on the [**VisionDepth3D Method**](VisionDepth3D_Method.md), featuring:
-  - **Pop-Control depth shaping** — percentile stretch → subject recenter → signed-gamma curve.
-  - **Subject-anchored zero-parallax (EMA-stabilized)** — histogram/percentile subject tracking.
-  - **Dynamic parallax scaling** — central depth variance → auto stereo intensity.
-  - **Edge-aware shift suppression** — gradient→sigmoid feather masking to prevent halos.
-  - **Floating window with temporal easing** — auto side masks, jitter-clamped offsets.
-  - **Matte sculpting + temporal stabilization** — distance transform + EMA to round subjects.
-  - **Motion-aware DOF** — focal tracker + Gaussian pyramid for subject-locked bokeh.
-  - **Gradient-based occlusion healing** — blends original + blurred to fill warp gaps.
--  **Export formats**: Half-SBS, Full-SBS, VR, Anaglyph, Passive Interlaced.
--  **Live preview overlays**: shift heatmaps, edge masks, stereo diff tools.
--  **Fully interactive**: dynamic sliders, real-time 3D preview, batch-ready pipeline.
--  **FFmpeg streaming pipeline**: NVENC / AMF / QSV / CPU with CRF/CQ control (no temp files).
+- **CUDA + PyTorch accelerated parallax shifting** — per-pixel, depth-aware stereo warping  
+- Built on the [**VisionDepth3D Method**](VisionDepth3D_Method.md), featuring:  
+  - **Pop-Control depth shaping** — percentile stretch → subject recenter → signed-gamma curve  
+  - **Subject-anchored zero-parallax (EMA stabilized)** — histogram/percentile subject tracking  
+  - **Dynamic parallax scaling** — central depth variance → auto stereo intensity  
+  - **Edge-aware shift suppression** — gradient → sigmoid feather masking prevents halos  
+  - **Floating window stabilization** — auto side masks with jitter-clamped offsets  
+  - **Matte sculpting + temporal smoothing** — distance transform + EMA to round/steady subjects  
+  - **Motion-aware DOF** — subject-locked Gaussian pyramid for smooth bokeh  
+  - **Gradient-based occlusion healing** — fills stereo gaps by blending warped + blurred data  
+- **Export formats**: Half-SBS, Full-SBS, VR (equirectangular), Anaglyph, Passive Interlaced  
+- **Live preview overlays**: shift heatmaps, edge masks, stereo difference maps  
+- **Workflow upgrades in v3.6**:  
+  - Direct **Left/Right eye export** (no split step needed)  
+  - **Clip-range rendering** (process just the section you need)  
+  - Extra **padding + edge reflection** reduce bleed-through  
+  - Fixed **NVENC presets** (no more forced `-preset slow`)  
+- **Fully interactive**: dynamic sliders, hotkey presets, real-time 3D preview, batch-ready pipeline  
+- **FFmpeg streaming pipeline**: NVENC / AMF / QSV / CPU with CRF/CQ control — no temp files  
+
+**Result:** The Stereo Composer has matured into a *production-ready 3D engine* — blending pixel-accurate warping with real-time preview, advanced parallax controls, and streamlined export for cinema, VR, or streaming.
 
 # AI-Powered Depth Estimation (GPU Accelerated)
 
 <p align="center">
-  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/e16da471-7780-4bbf-8e21-e21dae55019a" />
+  <img width="700" height="598" alt="Depthtab" src="https://github.com/user-attachments/assets/c2b32af2-5be5-4d3f-9b41-cceb77b30785" />
   <br>
   <em>(Depth Estimation Tab)</em>
 </p>
 
-- **Supports 25+ models** including: `ZoeDepth`, `Depth Anything V1/V2`, `MiDaS`, `DPT (BEiT)`, `DepthPro`, `DINOv2`, `Distill-Any-Depth`, and **Marigold Diffusion**.
--  One-click model switching with **auto-downloading and local caching** — no CLI or manual configs required.
--  **GPU-accelerated inference** via:
-  - `PyTorch` (Transformers)
-  - `ONNXRuntime + CUDA/TensorRT`
-  - `Diffusers (FP16)` for Stable Diffusion-based depth like `Marigold`
--  **Batch-ready pipeline** for:
-  - Image folders
-  - Video files (frame-extract + depth + encode)
--  New **16-bit depth export path** for Diffusers (Marigold) — supports inversion and FFmpeg-encoded MKV output.
--  Built-in **colormaps** (e.g., Viridis, Inferno, Magma, Plasma) + grayscale preview modes.
--  Smart batching with `get_dynamic_batch_size()` — adapts to your **GPU VRAM automatically**.
--  **Resolution-safe ONNX engine**:
-  - Auto detects static input shapes (e.g. `518x518`)
-  - Patches dummy warm-up tensors to avoid shape mismatch crashes.
--  Supports **video frame interpolation (RIFE)** for smoother previews and export.
--  AV1 safeguard: auto-detects unsupported codecs with **ffprobe fallback warning**.
+- **Supports 25+ depth models** including:  
+  `ZoeDepth`, `Depth Anything V1/V2`, `MiDaS`, `DPT (BEiT)`, `DepthPro`, `DINOv2`, `Distill-Any-Depth`, **Marigold Diffusion**, and new additions like **Depth Anything V2 Giant**.
+- **One-click model switching** with auto-download + local caching — no CLI setup required.
+- **GPU-accelerated inference backends**:  
+  - PyTorch (Transformers / TorchHub)  
+  - ONNXRuntime with CUDA / TensorRT  
+  - Diffusers (FP16) for Stable Diffusion–based models (Marigold, etc.)
+- **Batch-ready pipeline**:  
+  - Process image folders  
+  - Process full videos (frame extraction → depth inference → encode)
+- **16-bit depth output support** for richer disparity maps (Marigold / Diffusers)  
+  - Preserves high-precision for inversion and HDR workflows  
+  - FFmpeg-based MKV/PNG export
+- **Depth Blender integration** (new in v3.6):  
+  - Blend outputs from multiple models in real time for cleaner separation and smoother parallax
+- Built-in **colormaps & preview modes**: Viridis, Inferno, Magma, Plasma, Grayscale.
+- **Smart batching** with `get_dynamic_batch_size()` adapts to your GPU VRAM automatically.
+- **Resolution-safe ONNX engine**:  
+  - Detects static input shapes (e.g., `518x518`)  
+  - Warm-up patch avoids shape mismatch crashes
+- **Video frame interpolation (RIFE)** supported for smoother previews and exports.
+- **AV1 safeguard**: auto-detects unsupported codecs with ffprobe fallback + warning.
 
-# AI Upscaling Functions
+**Result:** Depth Estimation in VD3D is now faster, more stable, and more flexible — with expanded model support, precision 16-bit outputs, and the new Depth Blender pipeline for professional-quality depth maps.
+
+# AI Upscaling & Interpolation (GPU Accelerated)
 
 <p align="center">
-  <img width="700" height="598" alt="image" src="https://github.com/user-attachments/assets/f767c63e-d215-487b-895e-020372edf6bb" />
+  <img width="700" height="598" alt="frametools" src="https://github.com/user-attachments/assets/4abdc68f-b878-47b6-b185-2e39ace1ba1a" />
   <br>
   <em>(Frame Tools Tab)</em>
 </p>
 
+- Integrated **RIFE (ONNX)** for frame interpolation  
+  - PyTorch-free, CUDA-accelerated  
+  - Supports **2x, 4x, 8x FPS doubling**  
+  - Preview or export directly from GUI  
+- Integrated **Real-ESRGAN x4 (ONNX)** for super-resolution  
+  - GPU accelerated with **fp16 inference**  
+  - Upscale **720p → 1080p**, **1080p → 4K**, or custom targets  
+  - Matches resolution of depth/interpolated frames automatically
+- **Massive speed boost in v3.6**:  
+  - RIFE, ESRGAN, and FFmpeg writing now run **concurrently**  
+  - Render times dropped from **10h → ~1h** on long clips  
+  - Intelligent frame indexing and buffering keep exact sync
+- **Batch-ready pipeline**:  
+  - Works on raw image folders or full videos  
+  - Auto-reassembles videos with original **frame count, resolution, audio, and aspect ratio**
+- **VRAM-aware batching**: dynamically adjusts batch size (1–8 frames) for stability
+- **FFmpeg NVENC integration**:  
+  - GPU codec support with proper presets  
+  - AV1/H.264/H.265 export with faststart flags
+- **Live feedback in GUI**:  
+  - Progress bar, FPS, ETA, and logging for long renders  
+  - Cancel/resume safe
 
-- Integrated **RIFE ONNX model** – PyTorch-free, real-time frame doubling
-- Supports **2x, 4x, 8x FPS interpolation**
-- Processes raw image folders + **auto video reassembly**
-- Maintains **frame count, resolution, audio sync**, and aspect ratio
-- Preview and export using **FFmpeg codecs** (GUI-integrated)
-- Real-time **progress, FPS, ETA** feedback
-- Uses **Real-ESRGAN x4**, exported to ONNX with full CUDA acceleration
-- Intelligent **VRAM-aware batching** for 1–8 frames
-- Upscaling: **720p → 1080p**, **1080p → 4K**, or custom targets
-- Auto-scaling to match 3D or interpolated frame resolutions
-- Uses **fp16 inference** for clean, artifact-free output
-- Fully integrated into pipeline with **FFmpeg NVENC export**
-- GUI includes **progress bar, FPS, ETA tracking**
+**Result:** Upscaling & interpolation in VD3D are now faster, cleaner, and more flexible — letting you tackle full-length projects in a fraction of the time, without sacrificing visual quality.
 
-# Audio to Video Sync
+# Depth Blender (New in v3.6)
 
 <p align="center">
-  <img width="558" height="587" alt="image" src="https://github.com/user-attachments/assets/9a074dfc-0ff0-49e1-8149-e78d9d68446c" />
+  <img width="700" height="598" alt="DepthBlendTab" src="https://github.com/user-attachments/assets/89c61a02-55e8-4ff6-8ed0-bd3bd739d04e" />
+  <br>
+  <em>(Depth Blender Tab)</em>
+</p>
+
+- **Blend depth maps from multiple models** (e.g., DA2, ZeoDepth, Marigold) into a single, cleaner map.  
+- **Frame or video mode**:  
+  - Batch process paired frame folders (PNG)  
+  - Or process two full video files side by side  
+- **Live Preview & Frame Scrubber**:  
+  - Side-by-side preview (`V2 Base | Blended Output`)  
+  - Scrubbable timeline with Next/Prev buttons  
+  - Hot-reload when adjusting sliders  
+- **GPU-accelerated blending** (PyTorch CUDA) with CPU fallback.  
+- **Adjustable parameters** (all sliders update preview live):  
+  - White Strength  
+  - Feather Blur (kernel size)  
+  - CLAHE Clip Limit & Tile Grid  
+  - Bilateral Filter (d, sigmaColor, sigmaSpace)  
+- **Smart normalization**: matches brightness/contrast of blended output back to the base map.  
+- **Whites boosting & outlier suppression**: reduces halos and preserves fine detail.  
+- **Batch mode options**:  
+  - Overwrite V2 (frames mode)  
+  - Write to new output folder or video file  
+- **Scrubber & hotkeys**: Left/Right arrows nudge frame index for testing blends quickly.  
+- **Output scaling**: optional width/height override with high-quality Lanczos resize.  
+- **Robust logging & progress bar** with stop/resume support.
+
+**Result:** Depth Blender combines strengths of two depth models, smoothing out fuzz, suppressing white-edge artifacts, and giving creators more consistent 3D parallax across full sequences.
+
+
+# Audio to Video Sync (Updated in v3.6)
+
+<p align="center">
+  <img width="558" height="587" alt="AudioTool" src="https://github.com/user-attachments/assets/bd7775a3-f625-4e77-be53-0f820a5f1b0b" />
   <br>
   <em>(Audio Tool)</em>
 </p>
 
-- Extract + reattach source audio using **FFmpeg** (GUI-based)
-- Format options: **AAC, MP3, WAV** (bitrate adjustable)
-- No shell access needed – fully built into GUI
+- **Three modes**:  
+  - **Rip** → extract audio tracks from videos  
+  - **Attach** → re-mux or re-encode audio back into matching videos  
+  - **Attach + Stitch** → auto-attach per-clip audio and stitch final video in one step  
+
+- **Flexible audio matching**:  
+  - Auto-match audio files from a folder to videos by filename/index  
+  - Or choose a single audio file for all videos  
+
+- **Sync offset control**:  
+  - GUI slider to shift audio ±10s for real-time sync correction  
+
+- **Codec and format options**:  
+  - Rip: `copy, aac, mp3, opus, flac, wav, ac3, eac3` (bitrate configurable)  
+  - Attach: choose re-encode or fast copy for both video and audio  
+  - Final encode: full control over vcodec (`libx264`, `libx265`, `h264_nvenc`, `hevc_nvenc`), CRF/CQ, preset, acodec, and bitrate  
+
+- **Batch processing**:  
+  - Add multiple files or entire folders of videos  
+  - Auto-naming and folder output for ripped/attached files  
+  - Per-clip outputs + final stitched output  
+
+- **Gapless stitching**:  
+  - Normalizes fps, resolution, pixel format, and audio sample rate across clips  
+  - Ensures seamless concatenation (no desync, no black frames)  
+
+- **Live progress + logging**:  
+  - Async FFmpeg runner with progress window  
+  - Logs visible inside GUI while running  
+  - Cancel/resume safe  
+
+**Result:** The Audio Tool has grown from a simple rip/attach utility into a **pro-level sync and mux suite** — with full codec control, offset correction, and reliable batch stitching, all inside the VD3D workflow.
 
 # Preview + Format Testing
 
 <p align="center">
-  <img width="700" height="587" alt="image" src="https://github.com/user-attachments/assets/2b9a291d-3590-4156-929f-d9e004b6988b" />
+  <img width="700" height="587" alt="3Dpreview" src="https://github.com/user-attachments/assets/4ce33583-8db7-40c2-a35d-d5c78efd26d9" />
   <br>
   <em>(Live 3D Preview with Anaglyph and Parallax Controls)</em>
 </p>
@@ -161,12 +248,14 @@
 
 # Smart GUI + Workflow
 <img width="89" height="97" alt="image" src="https://github.com/user-attachments/assets/cb7dc3e9-403a-4e54-af0d-ac44120d1a8c" />
+<img width="89" height="97" alt="HelpHotkeys" src="https://github.com/user-attachments/assets/9324a4e9-9f10-4de1-a1e9-0596711410c7" />
+<img width="89" height="97" alt="Hotkeys" src="https://github.com/user-attachments/assets/45592879-ec6c-4e59-b9d5-f50144db40d9" />
 
 - Language support: **EN, FR, ES, DE, JA**
+- New Help Menu bar and Hotkeys 
 - Responsive **multi-tab Tkinter interface** with persistent settings
 - Full GPU render control: **pause, resume, cancel**
 - Codec selector with **NVENC options** (H.264, HEVC, AV1-ready)
-- One-click launch – no pip or scripting required
 
 # Output Formats & Aspect Ratios
 - Formats: **Half-SBS, Full-SBS, VR180, Anaglyph, Passive Interlaced**
