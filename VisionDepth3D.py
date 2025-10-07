@@ -1276,7 +1276,7 @@ def build_dark_header(root, on_language_change):
     
     # --- GPU Diagnostics (Help menu) ---
     def _run_gpu_diag():
-        import gpu_diag
+        import core.gpu_diag
         rpt = gpu_diag.gpu_diagnostics()  # no return_text
         try:
             root.clipboard_clear()
@@ -4755,5 +4755,6 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
+
 
 
