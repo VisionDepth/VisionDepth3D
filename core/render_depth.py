@@ -32,7 +32,6 @@ from safetensors.torch import load_file
 from core.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
 from diffusers.configuration_utils import ConfigMixin
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
-from core.depthcrafter_adapter import load_depthcrafter_adapter, run_depthcrafter_inference
 from core.models.depth_anything_v2.dpt import DepthAnythingV2
 
 
@@ -61,8 +60,6 @@ TILE_PAD        = 32
 TILE_DEBUG      = False   # set True to print tile debug info
 
 assert TILE_SIZE > 2*TILE_PAD, "TILE_SIZE must be larger than 2*TILE_PAD"
-
-
 
 _EXPECTED_WEIGHT_FILENAMES = {
     "pytorch_model.bin", "model.safetensors", "tf_model.h5", "model.ckpt", "flax_model.msgpack"
@@ -823,7 +820,7 @@ def load_supported_models():
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
         "Depth Anything v2 Metric Indoor (Large)": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "Depth Anything v2 Metric Outdoor (Large)":"depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-        "Depth Anything v2 Giant (safetensors)":   "dav2:vitg_fp32",
+        "Depth Anything v2 Giant (safetensors)": "Nap/depth_anything_v2_vitg",
 
         # Depth Anything v1
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
@@ -833,10 +830,8 @@ def load_supported_models():
         
         # Prompt Depth
         "Prompt Depth Anything VITS Transparent": "depth-anything/prompt-depth-anything-vits-transparent-hf",
-        
-
-        # Other popular models
-        
+       
+        # Other models        
         "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -1250,27 +1245,6 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (on {dev_str})"))
 
             elif is_diffusion:
-                kind = caps.get("diffusion_kind", "depth")
-                is_dc = (bool(caps.get("is_depthcrafter", False))
-                         or getattr(model_callable, "_is_depthcrafter", False))
-
-                if is_dc:
-                    pipe = model_callable
-                    pipe_type = "depthcrafter"
-                    status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Getting DepthCrafter ready..."))
-                    try:
-                        assert callable(pipe), "DepthCrafter pipe is not callable"
-                        print("🔥 DepthCrafter ready (will run during video processing)")
-                        status_label_widget.after(0, lambda: stop_spinner(
-                            status_label_widget,
-                            f"✅ DepthCrafter loaded: {selected_checkpoint} (device: {'CUDA' if device == 0 else 'CPU'})"
-                        ))
-                    except Exception as e:
-                        msg = f"❌ DepthCrafter init failed: {e}"
-                        print(msg)
-                        status_label_widget.after(0, lambda: stop_spinner(status_label_widget, msg))
-                    return
-
                 # Diffusers: depth pipelines (Marigold)
                 if kind == "depth" or getattr(model_callable, "_is_marigold", False):
                     pipe = model_callable
@@ -1368,51 +1342,6 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
     threading.Thread(target=warmup_thread, daemon=True).start()
 
-#def convert_depthcrafter_tensor_to_gray_sequence(predictions):
-    # predictions: Tensor [T, 3, H, W] (after .frames[0])
-#    if isinstance(predictions, torch.Tensor):
-#        predictions = predictions.detach().cpu().float().numpy()
-
-#    if predictions.ndim == 4 and predictions.shape[1] == 3:
-#        print(f"📦 DepthCrafter output: shape={predictions.shape}")
-#       res = predictions.mean(1)  # Convert to [T, H, W]
-#    elif predictions.ndim == 3:
-#        res = predictions
-#    else:
-#        raise ValueError(f"❌ Unexpected shape for depthcrafter output: {predictions.shape}")
-
-#    d_min, d_max = np.min(res), np.max(res)
-#    res = (res - d_min) / (d_max - d_min + 1e-6)
-#    res = (res * 255).astype(np.uint8)
-#    return res  # shape [T, H, W]
-
-
-def save_depthcrafter_outputs(depth: np.ndarray, out_path: str, fps: int = 24):
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-    out_video_path = f"{out_path}_depth.mkv"
-    h, w = depth.shape[1], depth.shape[2]
-
-    # Convert to 8-bit grayscale
-    depth_normalized = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
-    depth_8bit = (depth_normalized * 255.0).clip(0, 255).astype(np.uint8)
-
-    # Create video writer
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v") if out_video_path.endswith(".mp4") else cv2.VideoWriter_fourcc(*"XVID")
-    writer = cv2.VideoWriter(out_video_path, fourcc, fps, (w, h), isColor=False)
-
-    print(f"📁 Saving video to: {out_video_path} with shape {depth.shape} @ {fps} FPS")
-
-    for frame in depth_8bit:
-        writer.write(frame)
-
-    writer.release()
-    print("✅ Depth video saved.")
-
-    # Optionally save raw .npz
-    np.savez_compressed(out_path + ".npz", depth=depth)
-
-
 
 def round_to_multiple_of_8(x):
     return (x + 7) // 8 * 8
@@ -1420,11 +1349,8 @@ def round_to_multiple_of_8(x):
 def round_to_multiple_of_14(x):
     return ((int(x) + 13) // 14) * 14
 
-
-
 def parse_inference_resolution(res_string, fallback=(384, 384)):
     return INFERENCE_RESOLUTIONS.get(res_string.strip(), fallback)
-
 
 def choose_output_directory(output_label_widget, output_dir_var):
     selected_directory = filedialog.askdirectory()
