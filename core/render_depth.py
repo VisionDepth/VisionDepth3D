@@ -1245,6 +1245,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     status_label_widget, f"✅ ONNX model loaded: {selected_checkpoint} (on {dev_str})"))
 
             elif is_diffusion:
+                kind = caps.get("diffusion_kind", "depth")
                 # Diffusers: depth pipelines (Marigold)
                 if kind == "depth" or getattr(model_callable, "_is_marigold", False):
                     pipe = model_callable
@@ -2297,3 +2298,4 @@ if hasattr(threading, "excepthook"):
     def _thread_hook(args):
         _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
     threading.excepthook = _thread_hook
+
