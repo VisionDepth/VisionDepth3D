@@ -2165,7 +2165,7 @@ def load_supported_models():
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
         "Depth Anything v2 Metric Indoor (Large)": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "Depth Anything v2 Metric Outdoor (Large)":"depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-        "Depth Anything v2 Giant (safetensors)": "dav2:vitg_fp32",
+        "Depth Anything v2 Giant (safetensors)": "Nap/depth_anything_v2_vitg",
 
         # Depth Anything v1
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
@@ -4755,6 +4755,7 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
+
 
 
 

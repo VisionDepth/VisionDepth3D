@@ -42,7 +42,7 @@ def _snap_kijai_if_needed(filename: str, cache_dir: str) -> str:
     local_path = os.path.join(cache_dir, filename)
     if not os.path.exists(local_path):
         snapshot_download(
-            repo_id="Kijai/DepthAnythingV2-safetensors",
+            repo_id="Nap/depth_anything_v2_vitg",
             allow_patterns=[f"*{filename}*"],
             local_dir=cache_dir,
             local_dir_use_symlinks=False
@@ -75,7 +75,7 @@ def load_da_v2_adapter(
     elif ":" in spec_or_path and spec_or_path.split(":", 1)[0].strip().lower().endswith("safetensors"):
         # unlikely form—ignore
         weight_path = spec_or_path
-    elif spec_or_path.startswith("Kijai/"):
+    elif spec_or_path.startswith("Nap/"):
         _, fname = spec_or_path.split(":", 1)
         weight_path = _snap_kijai_if_needed(fname.strip(), cache_dir)
     else:
