@@ -179,17 +179,21 @@
       </div>
 
       <div class="stats">
-        <span class="stat-pill">2.5k+ downloads</span>
-        <span class="stat-pill">40+ GitHub stars</span>
-        <span class="stat-pill">VR and cinema ready</span>
+        <span class="stat-pill">2.8k+ downloads</span>
+        <span class="stat-pill">50+ GitHub stars</span>
+        <span class="stat-pill">python = 3.13</span>
       </div>
 
       <div class="hero-art">
         <div class="slider" aria-label="App preview carousel">
           <div class="slides" id="slides">
-            <div class="slide"><img src="assets/preview1.png" alt="VisionDepth3D 3D Generator"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/preview2.png" alt="VisionDepth3D Depth Estimation"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/preview3.png" alt="VisionDepth3D Frame Tools"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/3Dpreview.png" alt="VisionDepth3D"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/3Dtab.png" alt="VisionDepth3D 3D Generator"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/frametools.png" alt="VisionDepth3D Frame Tools"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/DepthBlendTab.png" alt="VisionDepth3D Depth Blender"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/HelpHotkeys.png" alt="Hotkeys"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/Hotkeys.png" alt="Hotkeys"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/logo.png" alt="VisionDepth3D Logo"  loading="lazy"/></div>
           </div>
           <button class="slide-btn prev" id="prevBtn" aria-label="Previous screenshot">&#8249;</button>
           <button class="slide-btn next" id="nextBtn" aria-label="Next screenshot">&#8250;</button>
@@ -201,9 +205,25 @@
   </header>
 
   <main>
+    <section id="tools">
+      <div class="container">
+        <h2 class="section-title">Built in tools</h2>
+        <p class="section-lead">Everything you need to go from flat footage to clean 3D. Pick your models, preview in real time, and export.</p>
+        <div class="grid cards">
+          <div class="card"><h3>Depth estimation</h3><p>25+ models supported including DPT, ZoeDepth, Depth Anything v2, Marigold, and more.</p></div>
+          <div class="card"><h3>Upscaling</h3><p>Real ESRGAN based upscaling for crisp final output. Custom model support included.</p></div>
+          <div class="card"><h3>Interpolation</h3><p>RIFE based frame interpolation to push smoother motion when you need it.</p></div>
+          <div class="card"><h3>GPU pipeline</h3><p>CUDA and ONNX runtime support. TensorRT friendly setup for advanced users.</p></div>
+          <div class="card"><h3>Batch rendering</h3><p>Process entire folders and paired video plus depth map lists with progress indicators.</p></div>
+          <div class="card"><h3>Audio tools</h3><p>Attach and offset audio, rip streams, and keep sync during export.</p></div>
+        </div>
+      </div>
+    </section>
+
+    
     <section id="features">
       <div class="container">
-        <h2 class="section-title">Highlights</h2>
+        <h2 class="section-title">Highlights about VD3D</h2>
         <p class="section-lead">Core capabilities designed for clean depth and comfortable viewing. Every feature is built to help creators ship better 3D faster.</p>
 
         <div class="grid cards">
@@ -229,7 +249,7 @@
           </div>
           <div class="card">
             <h3>Flexible export</h3>
-            <p>Half SBS, Full SBS, VR180, anaglyph, and interlaced outputs for your target device.</p>
+            <p>Half SBS, Full SBS, anaglyph, and interlaced outputs for your target device.</p>
           </div>
         </div>
       </div>
@@ -243,27 +263,11 @@
           <li>Depth weighted continuous parallax shifting</li>
           <li>Subject aware zero parallax tracking</li>
           <li>Edge aware shift masking to reduce ghosting</li>
-          <li>Floating window stabilization</li>
           <li>Scene aware parallax dampening</li>
           <li>CUDA accelerated stereo warping</li>
           <li>Depth of field simulation with pixel healing</li>
         </ul>
         <p class="section-lead" style="margin-top:18px; font-size:14px">Documentation is provided for learning. Redistribution of the method text or derivative use is not allowed.</p>
-      </div>
-    </section>
-
-    <section id="tools">
-      <div class="container">
-        <h2 class="section-title">Built in tools</h2>
-        <p class="section-lead">Everything you need to go from flat footage to clean 3D. Pick your models, preview in real time, and export.</p>
-        <div class="grid cards">
-          <div class="card"><h3>Depth estimation</h3><p>25+ models supported including DPT, ZoeDepth, Depth Anything v2, Marigold, and more.</p></div>
-          <div class="card"><h3>Upscaling</h3><p>Real ESRGAN based upscaling for crisp final output. Custom model support included.</p></div>
-          <div class="card"><h3>Interpolation</h3><p>RIFE based frame interpolation to push smoother motion when you need it.</p></div>
-          <div class="card"><h3>GPU pipeline</h3><p>CUDA and ONNX runtime support. TensorRT friendly setup for advanced users.</p></div>
-          <div class="card"><h3>Batch rendering</h3><p>Process entire folders and paired video plus depth map lists with progress indicators.</p></div>
-          <div class="card"><h3>Audio tools</h3><p>Attach and offset audio, rip streams, and keep sync during export.</p></div>
-        </div>
       </div>
     </section>
 
@@ -311,7 +315,7 @@
         </details>
         <details>
           <summary>Can I use my own depth model</summary>
-          <p>Yes. Place your model weights in the weights folder and select it from the model dropdown. ONNX and PyTorch options are available.</p>
+          <p>Yes but only if you cloned the repo. Place your model weights in the weights folder and select it from the model dropdown. ONNX and PyTorch options are available.</p>
         </details>
         <details>
           <summary>What license does the app use</summary>
@@ -454,5 +458,6 @@
   </script>
 </body>
 </html>
+
 
 
