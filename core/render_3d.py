@@ -21,8 +21,19 @@ from typing import Iterable, Optional
 
 # Device setup
 #onnx_device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
-torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🔥 CUDA available: {torch.cuda.is_available()} | Running on {torch_device}")
+def pick_torch_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+
+    # macOS Metal support
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+
+    # CPU fallback (Linux/Windows with no GPU, or AMD GPU for ONNX)
+    return torch.device("cpu")
+
+torch_device = pick_torch_device()
+print(f"🔥 Torch compute device: {torch_device}")
 
 # Load ONNX model
 #MODEL_PATH = 'weights/backward_warping_model.onnx'
@@ -43,11 +54,15 @@ ROTO_FEATHER_PX = 12               # edge softness
 ROTO_ROUND_GAMMA = 1.2             # >1.0 = rounder center
 ROTO_EMA_ALPHA = 0.88              # temporal matte smoothing
 ROTO_MASK_DIR = None               # e.g., "mattes/" (PNG per frame) or None if you auto-seg
-
-
+# Dynamic Floating Window tuning
+DFW_MIN_PARALLAX     = 0.010   # do not show any bar below this offset
+DFW_MAX_BAR_FRAC     = 0.07    # max bar width as fraction of per-eye width (about 7 percent)
+DFW_WIDTH_EASE       = 0.90    # how much to keep previous width (0.9 = very smooth)
+DFW_PARALLAX_WEIGHT  = 0.65    # how much the actual parallax drives the bar
+DFW_DEPTH_WEIGHT     = 0.35    # how much subject depth offset from mid drives it
+DFW_USE_FADE         = True    # use faded mask instead of solid black
 
 SETTINGS_FILE = "settings.json"
-
 
 # Common Aspect Ratios
 aspect_ratios = {
@@ -86,6 +101,34 @@ FFMPEG_CODEC_MAP = {
     "VP9 (QSV - Intel GPU)": "vp9_qsv",
     "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
+
+def merge_audio_from_source(final_video, original_video, output_with_audio):
+    """
+    Muxes the original audio track into the final 3D render without re-encoding.
+    Fast + lossless. If audio missing, automatically falls back to video-only output.
+    """
+    if not os.path.exists(original_video) or not os.path.exists(final_video):
+        return final_video
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", final_video,
+        "-i", original_video,
+        "-map", "0:v",
+        "-map", "1:a",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        output_with_audio
+    ]
+
+    process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if process.returncode == 0 and os.path.exists(output_with_audio):
+        try: os.remove(final_video)   # replace silently
+        except: pass
+        return output_with_audio
+
+    return final_video  # fallback
 
 
 def ffmpeg_yuv10_reader(path, width, height):
@@ -233,34 +276,88 @@ def depth_to_tensor(depth_frame):
     depth_tensor = torch.from_numpy(depth_gray).float().unsqueeze(0) / 255.0
     return depth_tensor.to(torch_device)
 
-def estimate_subject_depth(depth_tensor):
+
+@torch.no_grad()
+def estimate_subject_depth(depth_tensor: torch.Tensor) -> torch.Tensor:
     """
-    Robust subject depth estimator using saliency-weighted center crop with histogram smoothing.
-    Returns a scalar tensor with estimated subject depth.
+    Robust subject depth estimator (scalar in [0,1]) from a single-frame depth map [1,H,W].
+    Improvements over the basic version:
+      - Gaussian center prior (soft, resolution-aware)
+      - Edge suppression via gradient magnitude
+      - Outlier trimming by percentiles
+      - Weighted histogram + local mean around the dominant mode
+      - Safe fallbacks when content is ambiguous
     """
-    _, H, W = depth_tensor.shape
-    device = depth_tensor.device
+    assert depth_tensor.dim() == 3 and depth_tensor.shape[0] == 1, "depth_tensor must be [1,H,W]"
+    d = depth_tensor.clamp(0.0, 1.0)
+    device = d.device
+    _, H, W = d.shape
 
-    # Focus on center-weighted region (more of 60–80% central view)
-    crop = depth_tensor[:, H//5:H*4//5, W//5:W*4//5]
+    # 1) Soft center weighting (Gaussian prior)
+    # sigma scaled to frame size so it behaves consistently across resolutions
+    yy, xx = torch.meshgrid(
+        torch.linspace(-1, 1, H, device=device),
+        torch.linspace(-1, 1, W, device=device),
+        indexing="ij"
+    )
+    # make it a little wider horizontally (common subject framing)
+    gauss = torch.exp(-0.5 * ((yy / 0.65)**2 + (xx / 0.85)**2))  # [H,W]
+    center_w = gauss / (gauss.max() + 1e-8)
 
-    # Apply bounds to exclude floor/walls/extremes
-    valid = crop[(crop > 0.05) & (crop < 0.95)]
+    # 2) Suppress high-gradient depth edges (prefer coherent regions over boundaries)
+    dx = F.pad(d[:, :, 1:] - d[:, :, :-1], (1, 0))
+    dy = F.pad(d[:, 1:, :] - d[:, :-1, :], (0, 0, 1, 0))
+    grad = torch.sqrt(dx.pow(2) + dy.pow(2)).squeeze(0)  # [H,W]
+    # map gradient to [0..1] weight where 1 = smooth, 0 = edge
+    smooth_w = 1.0 - torch.sigmoid(12.0 * (grad - 0.03))  # 0.03 is a gentle edge threshold
 
-    if valid.numel() < 20:
-        return torch.tensor(0.5, device=device)  # fallback if invalid
+    # 3) Trim extreme outliers using percentiles on the center crop
+    # use a soft 70% crop to avoid bars/floor while keeping enough pixels
+    y0, y1 = int(H * 0.15), int(H * 0.85)
+    x0, x1 = int(W * 0.20), int(W * 0.80)
+    crop = d[:, y0:y1, x0:x1]
+    lo = torch.quantile(crop, 0.03)
+    hi = torch.quantile(crop, 0.97)
+    valid_mask = (d >= lo) & (d <= hi)
 
-    # Histogram: Find dominant depth bin
-    hist = torch.histc(valid, bins=64, min=0.0, max=1.0)
-    peak_bin = torch.argmax(hist)
-    bin_width = 1.0 / 64
-    subject_depth = (peak_bin.float() + 0.5) * bin_width
+    # 4) Compose weights
+    w = (center_w * smooth_w) * valid_mask.float()  # [H,W]
+    w_sum = w.sum()
 
-    # Optional: Blend with median for stability
-    median_depth = torch.median(valid)
-    smoothed_depth = (0.7 * subject_depth + 0.3 * median_depth).clamp(0.0, 1.0)
+    if float(w_sum) < 1e-3:
+        # Safeguard: fall back to plain median of center crop
+        return torch.median(crop)
 
-    return smoothed_depth
+    # 5) Weighted histogram to find the dominant mode
+    # bucketize into bins, then scatter_add the weights
+    nbins = 64
+    bin_edges = torch.linspace(0.0, 1.0, nbins + 1, device=device)
+    vals = d.squeeze(0)  # [H,W]
+    idx = torch.clamp((vals * nbins).long(), 0, nbins - 1)  # bin index 0..63
+
+    hist = torch.zeros(nbins, device=device)
+    hist.scatter_add_(0, idx.view(-1), w.view(-1))
+
+    peak = torch.argmax(hist)  # dominant bin
+    # 6) Local weighted mean around the peak for stability (±2 bins window)
+    left = int(torch.clamp(peak - 2, 0, nbins - 1))
+    right = int(torch.clamp(peak + 2, 0, nbins - 1))
+
+    # mask pixels that fall inside the peak neighborhood
+    in_win = (idx >= left) & (idx <= right)
+    w_win = torch.where(in_win, w, torch.zeros(1, device=device))
+    w_win_sum = w_win.sum()
+
+    if float(w_win_sum) < 1e-6:
+        # If window is empty, return bin center of the peak
+        return (peak.float() + 0.5) / nbins
+
+    # weighted mean inside the local window
+    subject = (vals * w_win).sum() / (w_win_sum + 1e-8)
+
+    # 7) Final clamp
+    return subject.clamp(0.0, 1.0)
+
 
 
 def enhance_curvature(depth_tensor, strength=0.15):
@@ -291,23 +388,18 @@ def suppress_artifacts_with_edge_mask(depth_tensor, total_shift, feather_strengt
     Suppress pixel shift artifacts near sharp depth edges (hair, limbs).
     Returns a softly masked version of total_shift using adaptive edge gradient detection.
     """
-    # Compute depth gradient (H, W)
+    
     dx = torch.abs(F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0)))
     dy = torch.abs(F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0)))
     grad_mag = torch.sqrt(dx ** 2 + dy ** 2)
-
-    # Use a sigmoid function for smooth masking
+  
     edge_mask = torch.sigmoid((grad_mag - edge_threshold) * feather_strength * 5)  # [0, 1]
 
-    # Invert mask and smooth
     smooth_mask = 1.0 - edge_mask
     smooth_mask = F.avg_pool2d(smooth_mask.unsqueeze(0), kernel_size=5, stride=1, padding=2).squeeze(0)
 
-    # Apply mask to suppress shift near edges
     return total_shift * smooth_mask
 
-
-# Optional temporal depth filter class
 class TemporalDepthFilter:
     def __init__(self, alpha=0.85):
         self.prev_depth = None
@@ -318,8 +410,6 @@ class TemporalDepthFilter:
             self.prev_depth = curr_depth.clone()
         self.prev_depth = self.alpha * self.prev_depth + (1 - self.alpha) * curr_depth
         return self.prev_depth
-
-# --- Robust per-shot depth normalization with temporal smoothing ---
 
 class DepthPercentileEMA:
     def __init__(self, p_lo=0.02, p_hi=0.98, alpha=0.90):
@@ -336,10 +426,10 @@ class DepthPercentileEMA:
         """
         assert depth_01.dim() == 3 and depth_01.shape[0] == 1
         d = depth_01.clamp(0, 1)
-        # Compute robust low/high percentiles on GPU (fast)
+        
         lo = torch.quantile(d, self.p_lo)
         hi = torch.quantile(d, self.p_hi)
-        # guard against collapse
+        
         if (hi - lo) < 1e-5:
             return d
 
@@ -362,7 +452,6 @@ def midtone_shape(depth_01: torch.Tensor, gamma=0.85):
 
 
 class ConvergenceEMA:
-    """Very small EMA to stabilize screen-plane (optional)."""
     def __init__(self, alpha=0.95):
         self.alpha = alpha
         self.val = None
@@ -371,19 +460,30 @@ class ConvergenceEMA:
         return self.val
 
 
-# --- place these AFTER the class defs ---
+class SubjectDepthEMA:
+    def __init__(self, alpha=0.95):
+        self.val = None
+        self.alpha = alpha
+    def update(self, x):
+        if self.val is None:
+            self.val = x
+        else:
+            self.val = self.alpha * self.val + (1 - self.alpha) * x
+        return self.val
+
+subject_depth_ema = SubjectDepthEMA(alpha=0.97)
 depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
 conv_ema = ConvergenceEMA(alpha=0.97)
-MID_GAMMA = 0.85  # 0.80–0.95 works well
+MID_GAMMA = 0.90  # 0.80–0.95 works well
 
 
 def tensor_to_frame(tensor):
     frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     return cv2.cvtColor(frame_cpu, cv2.COLOR_RGB2BGR)
 
-def detect_black_bars(frame_tensor, threshold=10):
+def detect_black_bars(frame_tensor, threshold=10): 
     """
-    Automatically detects black bars on top and bottom of a frame tensor.
+    Detect black bars on top and bottom once.
     Returns: (top_crop, bottom_crop) in pixels
     """
     frame_np = (frame_tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
@@ -406,15 +506,25 @@ def detect_black_bars(frame_tensor, threshold=10):
 
     return top_crop, bottom_crop
 
-def crop_black_bars_torch(frame_tensor, top, bottom):
+
+def crop_black_bars_torch(frame_tensor, cached_crop=None, threshold=10):
     """
-    Crops black bars vertically using PyTorch tensors.
+    Crops black bars using cached detection (only detect once).
     - frame_tensor: shape [3, H, W]
-    Returns: cropped tensor
+    - cached_crop: optional (top, bottom) tuple for reuse
     """
+    # If we already have a cached crop, reuse it
+    if cached_crop is not None:
+        top, bottom = cached_crop
+    else:
+        top, bottom = detect_black_bars(frame_tensor, threshold)
+
     if top + bottom >= frame_tensor.shape[1]:
-        return frame_tensor  # prevent invalid crop
-    return frame_tensor[:, top:frame_tensor.shape[1] - bottom, :]
+        return frame_tensor, (0, 0)
+
+    cropped = frame_tensor[:, top:frame_tensor.shape[1] - bottom, :]
+    return cropped, (top, bottom)
+
 
 def feather_shift_edges(
     shifted_tensor: torch.Tensor,
@@ -540,15 +650,12 @@ def heal_missing_pixels(warped_frame, warped_depth, original_frame, edge_mask, h
 
     missing_mask = missing_mask.expand_as(warped_frame)  # [3, H, W]
 
-    # Basic healing: blend original into missing areas
     healed = (1.0 - heal_strength * missing_mask) * warped_frame + heal_strength * missing_mask * original_frame
 
-    # 💡 BONUS: Apply slight blur *only* on healed areas for better invisibility
     soft_blur = F.avg_pool2d(healed.unsqueeze(0), 3, stride=1, padding=1).squeeze(0)
     healed = (1.0 - 0.3 * missing_mask) * healed + 0.3 * missing_mask * soft_blur
 
     return healed.clamp(0, 1)
-
 
 # Shift Smoother
 class ShiftSmoother:
@@ -670,7 +777,6 @@ def pixel_shift_cuda(
     dof_strength=2.0,
     convergence_strength=0.0,
     enable_dynamic_convergence=True,
-    # new pop controls
     depth_pop_gamma=0.85,
     depth_pop_mid=0.50,
     depth_stretch_lo=0.05,
@@ -706,7 +812,10 @@ def pixel_shift_cuda(
 
     # recompute subject after shaping for tighter screen-plane lock
     subject_depth = estimate_subject_depth(d_shaped)
+    
+    subject_depth = torch.tensor(subject_depth_ema.update(subject_depth.item()), device=device)
 
+    
     # weights from shaped depth (steeper foreground falloff)
     fg_weight = (1.0 - d_shaped).pow(1.5).clamp(0, 1)
     mg_weight = (1.0 - (d_shaped - depth_pop_mid).abs() * 3.0).clamp(0, 1)  # slightly tighter mid band
@@ -735,14 +844,23 @@ def pixel_shift_cuda(
         # include user zero_parallax_strength as a bias away from screen plane if desired
         zero_parallax_offset = zero_parallax_offset - float(zero_parallax_strength)
 
+        # --- Adaptive floating window offset (internal convergence dampening) ---
         if enable_floating_window:
-            subject_weight = torch.clamp(1.0 - subject_depth * 2.0, 0.5, 1.0)
+            # Bias toward mid-depth (0.5) rather than raw near/far extremes
+            depth_bias = abs(subject_depth - 0.5)
+            subject_weight = torch.clamp(1.0 - depth_bias * 2.0, 0.4, 1.0)
+
+            # Apply smoother attenuation before clamping
             zero_parallax_offset *= subject_weight
-            zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.35, 0.35)
+            zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.30, 0.30)
+
+            # Use tracker for temporal coherence (less jitter)
             zero_parallax_offset = floating_window_tracker.smooth_offset(
-                zero_parallax_offset.item(), threshold=0.0015
+                zero_parallax_offset.item(),
+                threshold=0.001
             )
 
+        # Apply final offset
         total_shift -= zero_parallax_offset
 
     max_shift_px = width * max_pixel_shift_percent
@@ -755,11 +873,14 @@ def pixel_shift_cuda(
             subj_for_conv = estimate_subject_depth(d_shaped)
             convergence_bias = subj_for_conv * convergence_strength
         else:
-            convergence_bias = convergence_strength
+            convergence_bias = torch.tensor(convergence_strength, device=device)
 
-        convergence_norm = convergence_bias.item() if isinstance(convergence_bias, torch.Tensor) else convergence_bias
-        convergence_norm = convergence_norm / half_width
-        total_shift -= convergence_norm
+        # ✅ Smooth convergence to prevent “3D shimmer”
+        conv_smooth = conv_ema.update(convergence_bias.item())
+
+        # Apply smoothed convergence bias
+        total_shift -= conv_smooth / half_width
+
 
     mask_strength = np.clip(feather_strength / 10.0, 0.05, 0.3)
 
@@ -769,6 +890,14 @@ def pixel_shift_cuda(
         final_shift = (1.0 - mask_strength) * total_shift + mask_strength * edge_suppressed
     else:
         final_shift = total_shift
+    
+    # Initialize the EMA buffer on first run
+    if not hasattr(pixel_shift_cuda, "_shift_ema") or pixel_shift_cuda._shift_ema is None:
+        pixel_shift_cuda._shift_ema = final_shift.clone()
+    else:
+        pixel_shift_cuda._shift_ema = 0.90 * pixel_shift_cuda._shift_ema + 0.10 * final_shift
+
+    final_shift = pixel_shift_cuda._shift_ema
 
     shift_vals = final_shift.squeeze(0)
 
@@ -940,8 +1069,8 @@ def format_3d_output(left, right, fmt):
         return np.hstack((lw, rw))
     
     elif fmt == "Red-Cyan Anaglyph":
-        return generate_anaglyph_3d(left, right)
-    
+        return generate_anaglyph_3d(left, right, mode="halfcolor")  # start with halfcolor
+
     elif fmt == "Passive Interlaced":
         interlaced = np.zeros_like(left)
         interlaced[::2] = left[::2]      # even rows
@@ -950,38 +1079,72 @@ def format_3d_output(left, right, fmt):
 
     return np.hstack((left, right))  # fallback
 
-def generate_anaglyph_3d(left_frame, right_frame):
+def generate_anaglyph_3d(left_bgr, right_bgr, mode="dubois"):
     """
-    Generates a Dubois-style Red-Cyan anaglyph for better color accuracy and depth.
+    Inputs are OpenCV BGR. 
+    mode="halfcolor" is a simple, high-impact check (Left→Red, Right→Cyan).
+    mode="dubois" applies a BGR-adapted Dubois matrix.
     """
-    left = left_frame.astype(np.float32) / 255.0
-    right = right_frame.astype(np.float32) / 255.0
+    lb, lg, lr = cv2.split(left_bgr)   # B,G,R from LEFT
+    rb, rg, rr = cv2.split(right_bgr)  # B,G,R from RIGHT
 
-    l_r, l_g, l_b = cv2.split(left)
-    r_r, r_g, r_b = cv2.split(right)
+    if mode == "halfcolor":
+        # Left supplies Red, Right supplies Green/Blue (Cyan)
+        return cv2.merge([rb, rg, lr])  # B from right, G from right, R from left
 
-    # Dubois-style anaglyph transform
-    red = 0.4561 * l_r + 0.5005 * l_g + 0.1762 * l_b
-    green = 0.3764 * r_r + 0.7616 * r_g - 0.1876 * r_b
-    blue = -0.0401 * r_r - 0.1126 * r_g + 1.2723 * r_b
+    # ---- BGR-adapted Dubois (coefficients reordered for BGR) ----
+    # Red   channel is built from LEFT (R,G,B):
+    r = 0.1762*lb + 0.5005*lg + 0.4561*lr
+    # Green channel is built from RIGHT (R,G,B):
+    g = -0.1876*rr + 0.7616*rg + 0.3764*rb
+    # Blue  channel is built from RIGHT (R,G,B):
+    b =  1.2723*rb - 0.1126*rg - 0.0401*rr
 
-    anaglyph = cv2.merge([
-        np.clip(red, 0, 1),
-        np.clip(green, 0, 1),
-        np.clip(blue, 0, 1)
+    out = cv2.merge([
+        np.clip(b, 0, 1),  # B
+        np.clip(g, 0, 1),  # G
+        np.clip(r, 0, 1),  # R
     ])
+    return (out * 255).astype(np.uint8)
 
-    return (anaglyph * 255).astype(np.uint8)
 
-def apply_side_mask(image, side="left", width=40):
+def apply_side_mask(image, side="left", width=40, fade=False, solid_black=True):
+    """
+    Applies either a faded or solid black mask on one or both edges.
+    - fade=True: linear alpha fade
+    - solid_black=True: hard opaque black bar (cinema-grade)
+    """
+    if width <= 0:
+        return image
+
     h, w = image.shape[:2]
-    mask = np.ones((h, w, 3), dtype=np.uint8) * 255
-    if side == "left":
-        mask[:, :width] = 0
-    elif side == "right":
-        mask[:, w - width:] = 0
-    return cv2.bitwise_and(image, mask)
-    
+    output = image.copy()
+
+    if solid_black:
+        # 🧱 Solid opaque black bar — cinema floating window
+        if side == "left":
+            output[:, :width] = 0
+        else:
+            output[:, -width:] = 0
+        return output
+
+    # 🩶 Faded style (original)
+    mask = np.ones((h, w), np.float32)
+    if fade:
+        fade_len = min(width, w // 2)
+        ramp = np.linspace(0, 1, fade_len)
+        if side == "left":
+            mask[:, :fade_len] = ramp
+        else:
+            mask[:, -fade_len:] = ramp[::-1]
+    else:
+        if side == "left":
+            mask[:, :width] = 0
+        else:
+            mask[:, -width:] = 0
+
+    return (image * mask[..., None]).astype(np.uint8)
+
     
 class FocalDepthTracker:
     def __init__(self, alpha=0.15, deadband=0.03, max_step=0.02):
@@ -1152,11 +1315,20 @@ def render_sbs_3d(
     first_frame_tensor = frame_to_tensor(frame)
 
     if auto_crop_black_bars:
+        # Detect once on first frame
         top_crop, bottom_crop = detect_black_bars(first_frame_tensor)
-        print(f"Auto-crop: Top {top_crop}px | Bottom {bottom_crop}px")
-        first_frame_tensor = crop_black_bars_torch(first_frame_tensor, top_crop, bottom_crop)
+        cached_crop = (top_crop, bottom_crop)
+
+        # Log just once
+        if top_crop > 0 or bottom_crop > 0:
+            print(f"📏 Auto-crop detected black bars: top={top_crop}px, bottom={bottom_crop}px")
+        else:
+            print("📏 Auto-crop: No black bars detected")
+
+        # Apply it to first frame
+        first_frame_tensor, _ = crop_black_bars_torch(first_frame_tensor, cached_crop)
     else:
-        top_crop, bottom_crop = 0, 0
+        cached_crop = (0, 0)
 
     target_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
 
@@ -1218,6 +1390,12 @@ def render_sbs_3d(
             per_eye_h = 1600
             out_width = per_eye_w * 2
             out_height = per_eye_h
+        elif output_format == "Red-Cyan Anaglyph":
+            # One frame only, not SBS
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
         else:
             per_eye_w = resized_width
             per_eye_h = resized_height
@@ -1242,8 +1420,12 @@ def render_sbs_3d(
         eye_w = per_eye_w
         eye_h = per_eye_h
 
-    # Floating-window bar should scale with the actually-encoded eye width
-    width_for_bars = per_eye_w if single_eye else resized_width
+    # safer: compute width for floating window based on the actual frame you’ll mask
+    if single_eye:
+        width_for_bars = per_eye_w
+    else:
+        width_for_bars = resized_width // 2  # half for each eye in SBS
+
 
     # DOF / Color grading flags don’t change during render
     need_dof   = (dof_strength > 0.0)
@@ -1349,7 +1531,8 @@ def render_sbs_3d(
         
     # Decide how many frames to process (for loop + progress)
     total_frames = clip_total_frames if clip_total_frames > 0 else total_frames_full
-
+    zero_parallax_offset = 0.0
+    
     try:
         for idx in range(total_frames):
             if cancel_flag.is_set():
@@ -1388,10 +1571,15 @@ def render_sbs_3d(
             depth_tensor = depth_to_tensor(depth)
 
             if auto_crop_black_bars:
-                top_crop, bottom_crop = detect_black_bars(frame_tensor)
-                print(f"🔪 Cropping top: {top_crop}px, bottom: {bottom_crop}px")
-                frame_tensor = crop_black_bars_torch(frame_tensor, top_crop, bottom_crop)
-                depth_tensor = crop_black_bars_torch(depth_tensor, top_crop, bottom_crop)
+                mean_brightness = torch.mean(frame_tensor).item() * 255
+                if mean_brightness > 20:  # avoid false detection during fade-in
+                    new_top, new_bottom = detect_black_bars(frame_tensor)
+                    if abs(new_top - cached_crop[0]) > 20 or abs(new_bottom - cached_crop[1]) > 20:
+                        cached_crop = (new_top, new_bottom)
+                        print(f"📏 Auto-crop updated → top={new_top}px, bottom={new_bottom}px")
+
+                frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
+                depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
 
             _, h, w = frame_tensor.shape
             current_ratio = w / h
@@ -1559,28 +1747,15 @@ def render_sbs_3d(
             # floating window mask
             subject_depth = estimate_subject_depth(depth_tensor)
 
-            # BEFORE:
-            # raw_zero = ((-subject_depth * fg) + (-subject_depth * mg) + (subject_depth * bg)) / (resized_width / 2 + 1e-6)
-
             # AFTER:
             raw_zero = (
                 (-subject_depth * fg)
               + (-subject_depth * mg)
               + ( subject_depth * bg)
             ) / (width_for_bars / 2 + 1e-6)
-
-            stable_zero = conv_ema.update(raw_zero.item())
-            if use_floating_window and use_subject_tracking:
-                shift_thresh = 0.005
-                raw_bar_width = int(abs(stable_zero) * width_for_bars * 0.75)
-                smoothed_bar_width = bar_easer.ease(raw_bar_width)
-                bar_width = max(min(smoothed_bar_width, 80), 0)
-                if stable_zero > shift_thresh:
-                    left_frame  = apply_side_mask(left_frame,  side="right", width=bar_width)
-                    right_frame = apply_side_mask(right_frame, side="right", width=bar_width)
-                elif stable_zero < -shift_thresh:
-                    left_frame  = apply_side_mask(left_frame,  side="left",  width=bar_width)
-                    right_frame = apply_side_mask(right_frame, side="left",  width=bar_width)
+            
+            zero_parallax_offset = float(
+                floating_window_tracker.smooth_offset(raw_zero, threshold=0.001))
 
             # sharpen & pack
             left_sharp = apply_sharpening(left_frame, sharpness_factor)
@@ -1595,14 +1770,95 @@ def render_sbs_3d(
             else:
                 left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
                 right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-                
-            # NEW:
+            
+            # --- Dynamic Floating Window (softer and side aware) ---
+            if use_floating_window and use_subject_tracking:
+                global dfw_last_side, dfw_last_width
+
+                if 'dfw_last_side' not in globals():
+                    dfw_last_side = "left"
+                    dfw_last_width = 0
+
+                # zero_parallax_offset just above is in "grid" space, usually [-1, 1]
+                parallax_mag = abs(float(zero_parallax_offset))
+
+                # Do not draw any bar if parallax is tiny
+                if parallax_mag < DFW_MIN_PARALLAX:
+                    target_width = 0
+                else:
+                    # Subject depth bias from mid-plane
+                    if torch.is_tensor(subject_depth):
+                        subject_depth_val = float(subject_depth.mean().item())
+                    else:
+                        subject_depth_val = float(subject_depth)
+
+                    depth_delta = abs(subject_depth_val - 0.5)
+
+                    # Blend parallax and subject depth together
+                    parallax_delta = (
+                        DFW_PARALLAX_WEIGHT * parallax_mag +
+                        DFW_DEPTH_WEIGHT   * depth_delta
+                    )
+
+                    # Clamp the influence so big parallax does not explode the bar
+                    parallax_delta = min(parallax_delta, 0.12)
+
+                    # Convert to pixels and clamp to a small fraction of the eye width
+                    target_width = int(per_eye_w * parallax_delta)
+                    max_bar_px   = int(per_eye_w * DFW_MAX_BAR_FRAC)
+                    target_width = max(0, min(target_width, max_bar_px))
+
+                    # Decide which side to place the window on
+                    # If this feels flipped for your content, just swap "left"/"right" here
+                    dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
+
+                # Ease width over time so it does not pop
+                dfw_last_width = int(
+                    DFW_WIDTH_EASE * dfw_last_width +
+                    (1.0 - DFW_WIDTH_EASE) * target_width
+                )
+
+                # Small widths are basically invisible, so skip
+                if dfw_last_width > 1:
+                    if DFW_USE_FADE:
+                        left_out  = apply_side_mask(
+                            left_out,
+                            side=dfw_last_side,
+                            width=dfw_last_width,
+                            fade=True,
+                            solid_black=False,
+                        )
+                        right_out = apply_side_mask(
+                            right_out,
+                            side=dfw_last_side,
+                            width=dfw_last_width,
+                            fade=True,
+                            solid_black=False,
+                        )
+                    else:
+                        # Hard cinema style black bar
+                        left_out  = apply_side_mask(
+                            left_out,
+                            side=dfw_last_side,
+                            width=dfw_last_width,
+                            fade=False,
+                            solid_black=True,
+                        )
+                        right_out = apply_side_mask(
+                            right_out,
+                            side=dfw_last_side,
+                            width=dfw_last_width,
+                            fade=False,
+                            solid_black=True,
+                        )
+
             if eye_mode == "left":
                 final = left_out
             elif eye_mode == "right":
                 final = right_out
             else:  # "sbs"
                 final = format_3d_output(left_out, right_out, output_format)
+            
 
             # write frame
             if use_ffmpeg:
@@ -1688,6 +1944,437 @@ def render_sbs_3d(
             global_session_start_time = None
 
         return output_path  
+
+def render_sbs_3d_image(
+    input_image_path: str,
+    depth_image_path: str,
+    output_image_path: str,
+    fg_shift: float,
+    mg_shift: float,
+    bg_shift: float,
+    sharpness_factor: float,
+    output_format: str,
+    selected_aspect_ratio,
+    aspect_ratios,
+    feather_strength: float = 0.0,
+    blur_ksize: int = 1,
+    use_subject_tracking: bool = False,
+    use_floating_window: bool = False,
+    max_pixel_shift_percent: float = 0.02,
+    auto_crop_black_bars: bool = False,
+    parallax_balance: float = 0.8,
+    zero_parallax_strength: float = 0.0,
+    enable_edge_masking: bool = True,
+    enable_feathering: bool = True,
+    dof_strength: float = 0.0,
+    convergence_strength: float = 0.0,
+    enable_dynamic_convergence: bool = True,
+    ipd_factor: float = 1.0,
+    depth_pop_gamma: float = 0.85,
+    depth_pop_mid: float = 0.50,
+    depth_stretch_lo: float = 0.05,
+    depth_stretch_hi: float = 0.95,
+    fg_pop_multiplier: float = 1.20,
+    bg_push_multiplier: float = 1.10,
+    subject_lock_strength: float = 1.00,
+    color_saturation: float = 1.0,
+    color_contrast: float = 1.0,
+    color_brightness: float = 0.0,
+    eye_mode: str = "sbs",
+):
+    """
+    Single image version of render_sbs_3d.
+    Runs pixel_shift_cuda with the same depth shaping, parallax logic, and
+    floating window as the video path, then writes a single 3D frame to disk.
+    """
+
+    # Support Tk variables or plain Python types
+    def _val(v):
+        return v.get() if hasattr(v, "get") else v
+
+    fg_shift           = float(_val(fg_shift))
+    mg_shift           = float(_val(mg_shift))
+    bg_shift           = float(_val(bg_shift))
+    sharpness_factor   = float(_val(sharpness_factor))
+    feather_strength   = float(_val(feather_strength))
+    blur_ksize         = int(_val(blur_ksize))
+    use_subject_tracking = bool(_val(use_subject_tracking))
+    use_floating_window  = bool(_val(use_floating_window))
+    max_pixel_shift_percent = float(_val(max_pixel_shift_percent))
+    auto_crop_black_bars   = bool(_val(auto_crop_black_bars))
+    parallax_balance       = float(_val(parallax_balance))
+    zero_parallax_strength = float(_val(zero_parallax_strength))
+    enable_edge_masking    = bool(_val(enable_edge_masking))
+    enable_feathering      = bool(_val(enable_feathering))
+    dof_strength           = float(_val(dof_strength))
+    convergence_strength   = float(_val(convergence_strength))
+    enable_dynamic_convergence = bool(_val(enable_dynamic_convergence))
+    ipd_factor             = float(_val(ipd_factor))
+    depth_pop_gamma        = float(_val(depth_pop_gamma))
+    depth_pop_mid          = float(_val(depth_pop_mid))
+    depth_stretch_lo       = float(_val(depth_stretch_lo))
+    depth_stretch_hi       = float(_val(depth_stretch_hi))
+    fg_pop_multiplier      = float(_val(fg_pop_multiplier))
+    bg_push_multiplier     = float(_val(bg_push_multiplier))
+    subject_lock_strength  = float(_val(subject_lock_strength))
+    color_saturation       = float(_val(color_saturation))
+    color_contrast         = float(_val(color_contrast))
+    color_brightness       = float(_val(color_brightness))
+    output_format          = _val(output_format)
+
+    # Resolve aspect ratio key from Tk StringVar or plain string
+    if hasattr(selected_aspect_ratio, "get"):
+        ar_key = selected_aspect_ratio.get()
+    else:
+        ar_key = selected_aspect_ratio
+    target_ratio = aspect_ratios.get(ar_key, 16.0 / 9.0)
+
+    # Load images
+    frame = cv2.imread(input_image_path, cv2.IMREAD_COLOR)
+    depth = cv2.imread(depth_image_path, cv2.IMREAD_COLOR)
+
+    if frame is None:
+        print(f"❌ Could not read input image: {input_image_path}")
+        return None
+    if depth is None:
+        print(f"❌ Could not read depth image: {depth_image_path}")
+        return None
+
+    frame_tensor = frame_to_tensor(frame)
+    depth_tensor = depth_to_tensor(depth)
+
+    # Optional black bar crop (same logic as video path)
+    cached_crop = (0, 0)
+    if auto_crop_black_bars:
+        top_crop, bottom_crop = detect_black_bars(frame_tensor)
+        cached_crop = (top_crop, bottom_crop)
+        if top_crop > 0 or bottom_crop > 0:
+            print(f"📏 Auto-crop detected black bars on still: top={top_crop}px, bottom={bottom_crop}px")
+        frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
+        depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
+
+    # Crop to selected cinema aspect ratio
+    _, h, w = frame_tensor.shape
+    current_ratio = w / h
+    if abs(current_ratio - target_ratio) > 0.01:
+        if current_ratio > target_ratio:
+            # frame is wider than target, crop left/right
+            new_w = int(h * target_ratio)
+            start = (w - new_w) // 2
+            frame_tensor = frame_tensor[:, :, start:start + new_w]
+            depth_tensor = depth_tensor[:, :, start:start + new_w]
+        else:
+            # frame is taller than target, crop top/bottom
+            new_h = int(w / target_ratio)
+            start = (h - new_h) // 2
+            frame_tensor = frame_tensor[:, start:start + new_h, :]
+            depth_tensor = depth_tensor[:, start:start + new_h, :]
+
+    resized_height = frame_tensor.shape[1]
+    resized_width  = frame_tensor.shape[2]
+
+    # For stills we preserve original per eye aspect
+    if output_format == "Full-SBS":
+        per_eye_w = resized_width
+        per_eye_h = resized_height
+        out_width = per_eye_w * 2
+        out_height = per_eye_h
+    elif output_format == "Half-SBS":
+        per_eye_w = resized_width // 2
+        per_eye_h = resized_height
+        out_width = resized_width
+        out_height = resized_height
+    elif output_format == "VR":
+        per_eye_w = 1440
+        per_eye_h = 1600
+        out_width = per_eye_w * 2
+        out_height = per_eye_h
+    elif output_format == "Red-Cyan Anaglyph":
+        per_eye_w = resized_width
+        per_eye_h = resized_height
+        out_width = resized_width
+        out_height = resized_height
+    elif output_format == "Passive Interlaced":
+        per_eye_w = resized_width
+        per_eye_h = resized_height
+        out_width = resized_width
+        out_height = resized_height
+    else:
+        per_eye_w = resized_width
+        per_eye_h = resized_height
+        out_width = resized_width * 2
+        out_height = resized_height
+
+    eye_w = per_eye_w
+    eye_h = per_eye_h
+
+    single_eye = eye_mode in ("left", "right")
+    if single_eye:
+        width_for_bars = per_eye_w
+    else:
+        width_for_bars = resized_width // 2
+
+    need_dof = (dof_strength > 0.0)
+    need_color = (
+        (color_saturation != 1.0) or
+        (color_contrast != 1.0) or
+        (abs(color_brightness) > 1e-6)
+    )
+
+    # Resize tensors to per eye target
+    frame_tensor = F.interpolate(
+        frame_tensor.unsqueeze(0),
+        size=(eye_h, eye_w),
+        mode="bilinear",
+        align_corners=False
+    ).squeeze(0)
+    depth_tensor = F.interpolate(
+        depth_tensor.unsqueeze(0),
+        size=(eye_h, eye_w),
+        mode="bilinear",
+        align_corners=False
+    ).squeeze(0)
+
+    # Optional depth roto, same style as video, using frame index 0
+    matte_ema = MatteEMA(alpha=ROTO_EMA_ALPHA)
+    if ENABLE_DEPTH_ROTO:
+        depth_u8 = (depth_tensor.squeeze(0).clamp(0, 1).cpu().numpy() * 255.0).astype(np.uint8)
+        mask_u8 = None
+        if ROTO_MASK_DIR is not None:
+            mask_path = os.path.join(ROTO_MASK_DIR, "frame_000000.png")
+            if os.path.exists(mask_path):
+                m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if m is not None:
+                    m = cv2.resize(m, (eye_w, eye_h), interpolation=cv2.INTER_NEAREST)
+                    mask_u8 = m
+
+        if mask_u8 is not None:
+            mask_u8 = matte_ema.step(mask_u8)
+            depth_u8 = sculpt_depth_u8(
+                depth_u8,
+                mask_u8,
+                near=ROTO_NEAR,
+                far=ROTO_FAR,
+                feather_px=ROTO_ROUND_GAMMA,
+                round_gamma=ROTO_ROUND_GAMMA,
+            )
+            depth_tensor = torch.from_numpy(depth_u8).to(frame_tensor.device).float().unsqueeze(0) / 255.0
+
+    # Temporal smoothing is not needed on a single still, but we keep the same
+    # normalization path so depth range behaves like video
+    local_temporal = TemporalDepthFilter(alpha=0.5)
+    depth_tensor = local_temporal.smooth(depth_tensor)
+    depth_tensor = depth_ema_norm.normalize(depth_tensor)
+
+    # Shift smoothing and dynamic parallax scale, same as video
+    smoother = ShiftSmoother(alpha=0.15)
+    fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
+
+    try:
+        dyn_scale = compute_dynamic_parallax_scale(depth_tensor, min_scale=0.90, max_scale=1.15)
+    except Exception:
+        dyn_scale = 1.0
+
+    fg *= dyn_scale
+    mg *= dyn_scale
+    bg *= dyn_scale
+
+    if ipd_factor != 0.0:
+        fg *= ipd_factor
+        mg *= ipd_factor
+        bg *= ipd_factor
+
+    # Run your CUDA pixel shift exactly like the video pipeline
+    left_frame, right_frame = pixel_shift_cuda(
+        frame_tensor,
+        depth_tensor,
+        resized_width,
+        resized_height,
+        fg,
+        mg,
+        bg,
+        blur_ksize=blur_ksize,
+        feather_strength=feather_strength,
+        use_subject_tracking=use_subject_tracking,
+        enable_floating_window=use_floating_window,
+        return_shift_map=False,
+        max_pixel_shift_percent=max_pixel_shift_percent,
+        zero_parallax_strength=zero_parallax_strength,
+        enable_edge_masking=enable_edge_masking,
+        enable_feathering=enable_feathering,
+        dof_strength=dof_strength,
+        convergence_strength=convergence_strength,
+        enable_dynamic_convergence=enable_dynamic_convergence,
+        depth_pop_gamma=depth_pop_gamma,
+        depth_pop_mid=depth_pop_mid,
+        depth_stretch_lo=depth_stretch_lo,
+        depth_stretch_hi=depth_stretch_hi,
+        fg_pop_multiplier=fg_pop_multiplier,
+        bg_push_multiplier=bg_push_multiplier,
+        subject_lock_strength=subject_lock_strength,
+    )
+
+    # Optional DOF and color grade, same order as video
+    if need_dof or need_color:
+        left_t = frame_to_tensor(left_frame)
+        right_t = frame_to_tensor(right_frame)
+
+        H, W = left_t.shape[1], left_t.shape[2]
+        depth_for_eye = F.interpolate(
+            depth_tensor.unsqueeze(0),
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False
+        ).squeeze(0)
+
+        if need_dof:
+            focal_depth = estimate_subject_depth(depth_tensor)
+            left_t = apply_dof_cuda(
+                left_t,
+                depth_for_eye,
+                focal_depth,
+                max_sigma=dof_strength,
+                focus_width=0.35,
+            )
+            right_t = apply_dof_cuda(
+                right_t,
+                depth_for_eye,
+                focal_depth,
+                max_sigma=dof_strength,
+                focus_width=0.35,
+            )
+
+        if need_color:
+            left_t = apply_color_grade(
+                left_t,
+                saturation=color_saturation,
+                contrast=color_contrast,
+                brightness=color_brightness,
+            )
+            right_t = apply_color_grade(
+                right_t,
+                saturation=color_saturation,
+                contrast=color_contrast,
+                brightness=color_brightness,
+            )
+
+        left_frame = tensor_to_frame(left_t)
+        right_frame = tensor_to_frame(right_t)
+
+    # Sharpen and size per eye
+    left_sharp = apply_sharpening(left_frame, sharpness_factor)
+    right_sharp = apply_sharpening(right_frame, sharpness_factor)
+
+    if output_format == "Full-SBS":
+        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+    elif output_format == "Half-SBS":
+        left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+        right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+    elif output_format in ("VR", "Red-Cyan Anaglyph", "Passive Interlaced"):
+        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+    else:
+        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
+        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+
+    # Dynamic floating window, same logic as video (one frame)
+    if use_floating_window and use_subject_tracking:
+        global dfw_last_side, dfw_last_width
+
+        if "dfw_last_side" not in globals():
+            dfw_last_side = "left"
+            dfw_last_width = 0
+
+        subject_depth = estimate_subject_depth(depth_tensor)
+
+        raw_zero = (
+            (-subject_depth * fg)
+            + (-subject_depth * mg)
+            + (subject_depth * bg)
+        ) / (width_for_bars / 2 + 1e-6)
+
+        zero_parallax_offset = float(
+            floating_window_tracker.smooth_offset(raw_zero, threshold=0.001)
+        )
+
+        parallax_mag = abs(zero_parallax_offset)
+
+        if parallax_mag < DFW_MIN_PARALLAX:
+            target_width = 0
+        else:
+            if torch.is_tensor(subject_depth):
+                subject_depth_val = float(subject_depth.mean().item())
+            else:
+                subject_depth_val = float(subject_depth)
+
+            depth_delta = abs(subject_depth_val - 0.5)
+
+            parallax_delta = (
+                DFW_PARALLAX_WEIGHT * parallax_mag
+                + DFW_DEPTH_WEIGHT * depth_delta
+            )
+            parallax_delta = min(parallax_delta, 0.12)
+
+            target_width = int(per_eye_w * parallax_delta)
+            max_bar_px = int(per_eye_w * DFW_MAX_BAR_FRAC)
+            target_width = max(0, min(target_width, max_bar_px))
+
+            dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
+
+        dfw_last_width = int(
+            DFW_WIDTH_EASE * dfw_last_width
+            + (1.0 - DFW_WIDTH_EASE) * target_width
+        )
+
+        if dfw_last_width > 1:
+            if DFW_USE_FADE:
+                left_out = apply_side_mask(
+                    left_out,
+                    side=dfw_last_side,
+                    width=dfw_last_width,
+                    fade=True,
+                    solid_black=False,
+                )
+                right_out = apply_side_mask(
+                    right_out,
+                    side=dfw_last_side,
+                    width=dfw_last_width,
+                    fade=True,
+                    solid_black=False,
+                )
+            else:
+                left_out = apply_side_mask(
+                    left_out,
+                    side=dfw_last_side,
+                    width=dfw_last_width,
+                    fade=False,
+                    solid_black=True,
+                )
+                right_out = apply_side_mask(
+                    right_out,
+                    side=dfw_last_side,
+                    width=dfw_last_width,
+                    fade=False,
+                    solid_black=True,
+                )
+
+    # Pick eye mode and format
+    if eye_mode == "left":
+        final = left_out
+    elif eye_mode == "right":
+        final = right_out
+    else:
+        final = format_3d_output(left_out, right_out, output_format)
+
+    # Make sure final matches desired output size
+    if final.shape[1] != out_width or final.shape[0] != out_height:
+        final = cv2.resize(final, (out_width, out_height), interpolation=cv2.INTER_AREA)
+
+    cv2.imwrite(output_image_path, final.astype(np.uint8))
+    print(f"✅ Saved 3D image to {output_image_path}")
+    return output_image_path
+
 
 def select_input_video(
     input_video_path,
@@ -1825,7 +2512,8 @@ def process_video(
     start_s=None,
     end_s=None,
     eye_mode="sbs",
-    output_override=None
+    output_override=None,
+    keep_original_audio=False,
 ):
 
 
@@ -1884,9 +2572,11 @@ def process_video(
     progress_label.config(text="0%")
     progress.update()
 
+    final_render_path = None
+
     # 🔥 Start render process
     if format_selected in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph", "Passive Interlaced"]:
-        render_sbs_3d(
+        final_render_path = render_sbs_3d(
             input_path,
             depth_path,
             output_path,
@@ -1903,9 +2593,9 @@ def process_video(
             aspect_ratios,
             feather_strength=feather_strength.get(),
             blur_ksize=blur_ksize.get(),
-            use_ffmpeg = use_ffmpeg.get(),
-            preserve_hdr10 = bool(preserve_hdr10),
-            selected_ffmpeg_codec = FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
+            use_ffmpeg=use_ffmpeg.get(),
+            preserve_hdr10=bool(preserve_hdr10),
+            selected_ffmpeg_codec=FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
             crf_value=crf_value.get(),
             use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
@@ -1939,9 +2629,21 @@ def process_video(
             color_brightness=(color_brightness.get() if hasattr(color_brightness, 'get') else color_brightness),
             start_s=start_s,
             end_s=end_s,
-            eye_mode = eye_mode, 
+            eye_mode=eye_mode,
         )
-    return output_path
+
+    if not final_render_path:
+        return output_path  # safety fallback
+
+    # 🔊 Inject original audio if toggle enabled
+    if keep_original_audio:
+        print("🔊 Merging original audio into final render…")
+        merged_output = os.path.splitext(final_render_path)[0] + "_audio.mp4"
+        final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output)
+        print("🎧 Audio merge done!")
+
+    return final_render_path
+
 
 def render_with_ffmpeg(
     frame_generator: Iterable[np.ndarray],
