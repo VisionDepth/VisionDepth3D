@@ -11,6 +11,12 @@ Hotkeys:
 import os, sys, time, argparse, platform, threading
 from collections import deque
 from typing import Tuple
+import subprocess, shlex
+from threading import Thread, Lock
+from flask import Flask, Response
+import io
+
+
 
 import cv2
 import numpy as np
@@ -247,8 +253,9 @@ def open_capture(args):
         order = ["dshow", "msmf", "any"]
 
     cap = None
+    used_backend = None  # track which backend actually opened
 
-    # Try by device name first if provided (Windows)
+    # Try by device name first
     if getattr(args, "dshow_name", None) and platform.system() == "Windows":
         label = args.dshow_name
         if req == "ffmpeg" and not label.lower().startswith("video="):
@@ -259,6 +266,7 @@ def open_capture(args):
             if diag:
                 print(f"[diag] try name '{label}' backend={be} -> opened={cap.isOpened()}")
             if cap.isOpened():
+                used_backend = be
                 break
 
     # Fallback to index
@@ -270,12 +278,14 @@ def open_capture(args):
             if diag:
                 print(f"[diag] try index {idx} backend={be} -> opened={cap.isOpened()}")
             if cap.isOpened():
+                used_backend = be
                 break
 
     # Last chance: CAP_ANY
     if cap is None or not cap.isOpened():
         idx = int(getattr(args, "device_index", 0))
         cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
+        used_backend = "any"
         if diag:
             print(f"[diag] final CAP_ANY open -> opened={cap.isOpened()}")
 
@@ -323,7 +333,14 @@ def open_capture(args):
     got_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     got_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     got_fps = cap.get(cv2.CAP_PROP_FPS)
-    print(f"📷 Opened camera: {got_w}x{got_h} @ {got_fps:.2f}fps (backend={req})")
+    print(f"📷 Opened camera: {got_w}x{got_h} @ {got_fps:.2f}fps (backend={used_backend or req})")
+    
+    try:
+        fcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc = ''.join(chr((fcc >> (8*i)) & 0xFF) for i in range(4))
+        print(f"🎛  Driver FOURCC: {fourcc}")
+    except Exception:
+        pass
     return cap
 
 
@@ -336,6 +353,8 @@ def scan_devices():
             ok, _ = (cap.read() if cap.isOpened() else (False, None))
             print(f"{backend:5s} idx {idx}: {'OK' if ok else 'fail'}")
             cap.release()
+
+
 
 
 def start_latest_capture(cap):
@@ -359,57 +378,100 @@ def start_latest_capture(cap):
     t.start()
     return q, stop
 
-
 # -------------------- Depth model (fast path) -------------------- #
 def make_da2(model_id: str, use_fp16: bool):
     if not TORCH_AVAILABLE:
-        raise RuntimeError("PyTorch is not available. Install torch to run the depth model.")
+        raise RuntimeError("PyTorch is not available.")
     device = "cuda" if CUDA_AVAILABLE else "cpu"
-    dtype = torch.float16 if (use_fp16 and CUDA_AVAILABLE) else torch.float32
-    proc = AutoProcessor.from_pretrained(model_id, use_fast=True)
-    model = AutoModelForDepthEstimation.from_pretrained(model_id, dtype=dtype).to(device)
-    model.eval()
+    dtype  = torch.float16 if (use_fp16 and CUDA_AVAILABLE) else torch.float32
+
+    model = AutoModelForDepthEstimation.from_pretrained(model_id, torch_dtype=dtype).to(device).eval()
     torch.set_grad_enabled(False)
-    torch.backends.cudnn.benchmark = True
     if CUDA_AVAILABLE:
-        torch.backends.cuda.matmul.allow_tf32 = True  # Ampere+
-    return model, proc, device
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+
+    # Pull mean/std from model config if present, else defaults
+    try:
+        cfg = model.config.vision_config
+        mean = torch.tensor(getattr(cfg, "image_mean", [0.5,0.5,0.5]), device=device, dtype=torch.float32).view(1,3,1,1)
+        std  = torch.tensor(getattr(cfg, "image_std",  [0.5,0.5,0.5]), device=device, dtype=torch.float32).view(1,3,1,1)
+    except Exception:
+        mean = torch.tensor([0.5,0.5,0.5], device=device, dtype=torch.float32).view(1,3,1,1)
+        std  = torch.tensor([0.5,0.5,0.5], device=device, dtype=torch.float32).view(1,3,1,1)
+    return model, (mean, std), device
 
 
-def depth_from_frame_fast(model, proc, device: str, frame_bgr: np.ndarray, inference_size: Tuple[int, int]) -> np.ndarray:
-    """Works with DA-v2 (predicted_depth [B,H,W]) and also [B,1,H,W] models."""
-    h, w = frame_bgr.shape[:2]
+# Reuse staging tensors to avoid allocs (store once at module scope)
+_STAGING = {"inp": None, "rgb_small": None}
+
+def depth_from_frame_fast(model, norm, device: str, frame_bgr: np.ndarray, inference_size: Tuple[int,int]) -> np.ndarray:
+    """Zero-PIL, zero AutoProcessor. CPU→GPU copy once, everything else CUDA."""
     iw, ih = inference_size
-    small = cv2.resize(frame_bgr, (iw, ih), interpolation=cv2.INTER_AREA) if (w, h) != (iw, ih) else frame_bgr
-    rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+    h, w = frame_bgr.shape[:2]
 
-    amp_dtype = (torch.float16 if next(model.parameters()).dtype == torch.float16 else torch.float32)
-    with torch.inference_mode(), torch.autocast(device_type=device, dtype=amp_dtype):
-        inputs = proc(images=rgb, return_tensors="pt").to(device)
-        out = model(**inputs).predicted_depth      # DA2: [B,H,W]
-        if out.ndim == 4:                          # other models: [B,1,H,W]
-            out = out[:, 0]                        # -> [B,H,W]
+    # 1) Resize on CPU (fast for 720/1080p down to ~384) then BGR->RGB
+    small = cv2.resize(frame_bgr, (iw, ih), interpolation=cv2.INTER_AREA)
+    rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-        # upscale on GPU for quality/speed
-        pred = torch.nn.functional.interpolate(out.unsqueeze(1), size=(h, w),
-                                               mode="bicubic", align_corners=False).squeeze(1)
-        depth = pred[0].float().cpu().numpy()
+    # 2) Upload once; keep a persistent tensor to avoid new alloc each frame
+    t_inp = _STAGING["inp"]
+    if t_inp is None or tuple(t_inp.shape[-2:]) != (ih, iw):
+        t_inp = torch.empty((1,3,ih,iw), device=device, dtype=torch.float32)
+        _STAGING["inp"] = t_inp
+    # Copy to GPU (pinned memory helps if you set frame_bgr.flags['C_CONTIGUOUS'])
+    t_inp.copy_(torch.from_numpy(rgb).permute(2,0,1).unsqueeze(0).to(device=device, dtype=torch.float32), non_blocking=True)
+    # Normalize (stay float32 for stability; autocast will handle model dtype)
+    mean, std = norm
+    t_inp = (t_inp / 255.0 - mean) / std
 
-    # percentile stretch → 0..1
-    lo, hi = np.percentile(depth, 1), np.percentile(depth, 99)
-    if hi - lo < 1e-6:
-        return np.full_like(depth, 0.5, dtype=np.float32)
-    return np.clip((depth - lo) / (hi - lo), 0, 1).astype(np.float32)
+    with torch.inference_mode(), torch.autocast(device_type=device, dtype=getattr(next(model.parameters()), "dtype", torch.float16)):
+        out = model(pixel_values=t_inp).predicted_depth  # [B,H,W] or [B,1,H,W]
+        if out.ndim == 4: out = out[:,0]                 # -> [B,H,W]
+        # upscale on GPU
+        pred = torch.nn.functional.interpolate(out.unsqueeze(1).float(), size=(h,w), mode="bicubic", align_corners=False).squeeze(1)
+        depth = pred[0]
+
+    # Percentile stretch on GPU (fast approx using quantiles)
+    d = depth.flatten()
+    lo = torch.quantile(d, 0.01)
+    hi = torch.quantile(d, 0.99)
+    depth01 = torch.clamp((depth - lo) / (hi - lo + 1e-6), 0, 1)
+
+    return depth01.detach().cpu().numpy().astype(np.float32)
+
 
 
 # -------------------- Utilities -------------------- #
-def sbs_pack(left_bgr: np.ndarray, right_bgr: np.ndarray) -> np.ndarray:
-    if left_bgr.shape != right_bgr.shape:
-        h = min(left_bgr.shape[0], right_bgr.shape[0])
-        w = min(left_bgr.shape[1], right_bgr.shape[1])
-        left_bgr  = cv2.resize(left_bgr,  (w, h))
-        right_bgr = cv2.resize(right_bgr, (w, h))
-    return np.hstack([left_bgr, right_bgr])
+def sbs_pack_gpu(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
+    """
+    left/right: CUDA tensors [3,H,W] in 0..1
+    returns np.uint8 BGR H x (2W) x 3
+    """
+    # Torch is typically RGB; convert to BGR for OpenCV once on GPU
+    # Swap channels: RGB->BGR
+    left_bgr  = left_t[[2,1,0], ...]
+    right_bgr = right_t[[2,1,0], ...]
+    sbs = torch.cat([left_bgr, right_bgr], dim=2)  # [3,H,2W]
+    sbs8 = (sbs.mul(255).clamp(0,255).byte()).permute(1,2,0).contiguous()  # [H,2W,3]
+    return sbs8.cpu().numpy()
+
+def sbs_pack_gpu_rgb(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
+    """
+    left/right: CUDA RGB [3,H,W] in 0..1 -> returns BGR uint8 H x (2W) x 3
+    """
+    sbs = torch.cat([left_t, right_t], dim=2)  # [3,H,2W] RGB
+    sbs8 = (sbs.mul(255).clamp(0,255).byte()).permute(1,2,0).contiguous()  # [H,2W,3] RGB
+    # Convert once to BGR for OpenCV/pyvirtualcam
+    return cv2.cvtColor(sbs8.cpu().numpy(), cv2.COLOR_RGB2BGR)
+
+def sbs_pack_gpu_bgr(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
+    """
+    left/right: CUDA BGR [3,H,W] in 0..1 -> returns BGR uint8 H x (2W) x 3
+    """
+    sbs = torch.cat([left_t, right_t], dim=2)  # [3,H,2W] BGR
+    sbs8 = (sbs.mul(255).clamp(0,255).byte()).permute(1,2,0).contiguous()  # [H,2W,3] BGR
+    return sbs8.cpu().numpy()
 
 
 def apply_preset(args):
@@ -424,6 +486,44 @@ def apply_preset(args):
         args.depth_fps = 15
     # "default" → keep user values
 
+class MJPEGStreamer:
+    def __init__(self, bind_host: str, bind_port: int):
+        self.app = Flask("vd3d_mjpeg")
+        self._lock = Lock()
+        self._jpeg = None
+
+        @self.app.route("/video.mjpg")
+        def video():
+            def gen():
+                boundary = b"--frame\r\n"
+                while True:
+                    with self._lock:
+                        buf = self._jpeg
+                    if buf is not None:
+                        yield boundary
+                        yield b"Content-Type: image/jpeg\r\n"
+                        yield b"Cache-Control: no-cache\r\n\r\n"
+                        yield buf + b"\r\n"
+                    else:
+                        # no frame yet; tiny sleep via chunk pacing
+                        yield b""
+            return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+        self._host = bind_host
+        self._port = bind_port
+        self._thread = Thread(target=lambda: self.app.run(host=self._host, port=self._port, threaded=True, use_reloader=False),
+                              daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def push_bgr(self, frame_bgr):
+        # JPEG encode the latest SBS frame
+        ok, jpg = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if ok:
+            with self._lock:
+                self._jpeg = jpg.tobytes()
+
 
 # -------------------- Main runtime -------------------- #
 def run_live(args, external_stop: threading.Event | None = None):
@@ -431,6 +531,15 @@ def run_live(args, external_stop: threading.Event | None = None):
     # Open capture & start reader
     cap = open_capture(args)
     frame_q, stop_cap = start_latest_capture(cap)
+    
+    if getattr(args, "diag", False):
+        print("[diag] args:", {k: getattr(args, k, None) for k in (
+            "backend","source","device_index","dshow_name","fourcc",
+            "width","height","fps","model","fp16","infer_w","infer_h",
+            "depth_fps","sbs","fg_shift","mg_shift","bg_shift","smooth",
+            "ema","preset","virtualcam","vcam_fps","pixelshift_rgb")})
+
+
 
     # Quick warm-up to fail fast if nothing is arriving
     first = None
@@ -466,6 +575,7 @@ def run_live(args, external_stop: threading.Event | None = None):
         cv2.resizeWindow(win, getattr(args, "preview_w", 960), getattr(args, "preview_h", 540))
         cv2.moveWindow(win, getattr(args, "preview_x", 60), getattr(args, "preview_y", 60))
 
+
     fullscreen = False
     view_mode = 2 if args.sbs else 0  # 0=passthrough, 1=depth, 2=SBS
 
@@ -479,11 +589,35 @@ def run_live(args, external_stop: threading.Event | None = None):
     depth_period = 1.0 / max(1e-3, args.depth_fps)
 
     # Smoothing state
-    ema_alpha = float(args.ema)
-    depth_ema = None if args.smooth else None
-
+    ema_alpha = float(args.ema)  # interpret as "new-frame weight" (0..1)
+    depth_ema = None
+            
+    streamer = None
+    if getattr(args, "http_stream", None):
+        try:
+            host, port = args.http_stream.split(":")
+            streamer = MJPEGStreamer(host, int(port))
+            streamer.start()
+            print(f"🌐 MJPEG streaming at http://{host}:{port}/video.mjpg")
+        except Exception as e:
+            print(f"⚠️ Failed to start MJPEG server: {e}")
+            streamer = None
+            
     # Virtual cam
     vcam = None
+    audio_proc = None
+    if getattr(args, "audio_device", None):
+        # Build ffplay command for DirectShow audio monitor
+        # Note: adelay expects ms per channel: "X|X" for stereo
+        d = max(0, int(getattr(args, "audio_delay_ms", 0)))
+        adelay = f"{d}|{d}"
+        cmd = f'ffplay -loglevel error -f dshow -i audio="{args.audio_device}" -nodisp -af adelay={adelay}'
+        try:
+            audio_proc = subprocess.Popen(shlex.split(cmd))
+            if getattr(args, "diag", False):
+                print(f"[diag] audio monitor started: {cmd}")
+        except Exception as e:
+            print(f"⚠️ Could not start audio monitor: {e}")
 
     print("▶️  Streaming… (f=fullscreen, m=mode, q=quit)")
     while True:
@@ -497,6 +631,23 @@ def run_live(args, external_stop: threading.Event | None = None):
         except IndexError:
             time.sleep(0.002)
             continue
+            
+        fourcc_req = (getattr(args, "fourcc", "") or "").upper()
+        if frame.ndim == 3 and frame.shape[2] == 2 and fourcc_req == "YUY2":
+            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
+
+        # Manual override
+        if getattr(args, "force_bgr_swap", False):
+            frame = frame[..., ::-1].copy()
+        elif not getattr(args, "no_capture_swap", False):
+            # Heuristic swap only if not disabled
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                g_mean = float(frame[...,1].mean())
+                rb_mean = 0.5 * (float(frame[...,0].mean()) + float(frame[...,2].mean()))
+                if rb_mean > 0 and g_mean < 0.35 * rb_mean:
+                    frame = frame[..., ::-1].copy()
+
+
         if frame is None or frame.size == 0:
             continue
 
@@ -523,8 +674,9 @@ def run_live(args, external_stop: threading.Event | None = None):
                 if depth_ema is None:
                     depth_ema = depth_new
                 else:
-                    depth_ema = ema_alpha * depth_ema + (1.0 - ema_alpha) * depth_new
-                # mild denoise for temporal stability
+                    # new-weighted EMA: higher alpha = more responsive
+                    depth_ema = (1.0 - ema_alpha) * depth_ema + ema_alpha * depth_new
+                # tiny denoise (optional)
                 depth01 = cv2.medianBlur((depth_ema * 255).astype(np.uint8), 3).astype(np.float32) / 255.0
             else:
                 depth01 = depth_new
@@ -535,12 +687,14 @@ def run_live(args, external_stop: threading.Event | None = None):
         elif view_mode == 1:
             d8 = (depth01 * 255.0).astype(np.uint8)
             out_bgr = cv2.applyColorMap(d8, cv2.COLORMAP_VIRIDIS)
+
         else:
             if HAVE_PIXEL_SHIFT and pixel_shift_cuda is not None and CUDA_AVAILABLE:
+                # Upload once (convert BGR->RGB; using OpenCV here is fine)
                 frm_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frm_t = torch.from_numpy(frm_rgb).float().permute(2, 0, 1) / 255.0
-                d_t = torch.from_numpy(depth01).float().unsqueeze(0)
-                frm_t = frm_t.to("cuda"); d_t = d_t.to("cuda")
+                frm_t = torch.from_numpy(frm_rgb).permute(2, 0, 1).to("cuda", dtype=torch.float32).div_(255.0)  # [3,H,W] RGB 0..1
+                d_t   = torch.from_numpy(depth01).to("cuda", dtype=torch.float32).unsqueeze(0)                   # [1,H,W]
+
                 h, w = frame.shape[:2]
                 left, right = pixel_shift_cuda(
                     frm_t, d_t, w, h,
@@ -550,9 +704,37 @@ def run_live(args, external_stop: threading.Event | None = None):
                     enable_feathering=True,
                     enable_edge_masking=True,
                 )
-                out_bgr = sbs_pack(left, right)
+
+                # Handle both return types: torch CUDA tensors (preferred) or NumPy
+                if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+                    # Expect [3,H,W] RGB float 0..1 on CUDA
+                    if left.device.type != "cuda":  left = left.to("cuda")
+                    if right.device.type != "cuda": right = right.to("cuda")
+                    # If your kernel returns [H,W,3], fix layout:
+                    if left.dim() == 3 and left.shape[0] != 3:
+                        left  = left.permute(2,0,1)  # -> [3,H,W]
+                        right = right.permute(2,0,1)
+                    out_bgr = (sbs_pack_gpu_rgb(left, right) if args.pixelshift_rgb
+                               else sbs_pack_gpu_bgr(left, right))
+                else:
+                    # Fallback: assume NumPy RGB 0..1 or uint8
+                    if left.dtype != np.uint8:
+                        left_u8  = np.clip(left * 255.0, 0, 255).astype(np.uint8)
+                        right_u8 = np.clip(right * 255.0, 0, 255).astype(np.uint8)
+                    else:
+                        left_u8, right_u8 = left, right
+                    # If [3,H,W], convert to [H,W,3]
+                    if left_u8.ndim == 3 and left_u8.shape[0] == 3:
+                        left_u8  = np.transpose(left_u8,  (1,2,0))
+                        right_u8 = np.transpose(right_u8, (1,2,0))
+                    # Convert RGB->BGR once, then hstack
+                    left_bgr  = cv2.cvtColor(left_u8,  cv2.COLOR_RGB2BGR)
+                    right_bgr = cv2.cvtColor(right_u8, cv2.COLOR_RGB2BGR)
+                    out_bgr = np.hstack([left_bgr, right_bgr])
             else:
-                out_bgr = sbs_pack(frame, frame)
+                # No CUDA kernel available: duplicate passthrough
+                out_bgr = np.hstack([frame, frame])
+
 
         # Lazy-init virtual cam
         if vcam is None and args.virtualcam and HAVE_VCAM:
@@ -586,9 +768,20 @@ def run_live(args, external_stop: threading.Event | None = None):
             cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, prop)
         elif key == ord('m'):
             view_mode = (view_mode + 1) % 3
-
+        elif key == ord('c'):
+            # Toggle a one-shot channel swap on output preview
+            out_bgr = out_bgr[..., ::-1].copy()
+            
+    if streamer is not None:
+        streamer.push_bgr(out_bgr)
+        
 
     # Cleanup
+    if audio_proc is not None:
+        try:
+            audio_proc.terminate()
+        except Exception:
+            pass
     if vcam is not None:
         vcam.close()
     stop_cap.set()
@@ -598,7 +791,6 @@ def run_live(args, external_stop: threading.Event | None = None):
         pass
     if show_preview:
         cv2.destroyAllWindows()
-
 
 # -------------------- CLI -------------------- #
 def build_parser():
@@ -622,6 +814,22 @@ def build_parser():
     p.add_argument("--fg-shift", type=float, default=20.0, help="Foreground pixel shift")
     p.add_argument("--mg-shift", type=float, default=10.0, help="Midground pixel shift")
     p.add_argument("--bg-shift", type=float, default=-14.0, help="Background pixel shift (neg pulls back)")
+    # add to argparse:
+    p.add_argument("--pixelshift-rgb", action="store_true",
+                   help="Set if pixel_shift_cuda returns RGB [3,H,W] float 0..1 (else assumes BGR)")
+    p.add_argument("--force-bgr-swap", action="store_true",
+                   help="Force B<->R swap on the captured frame before depth")
+    p.add_argument("--no-capture-swap", action="store_true",
+                   help="Disable the auto swap heuristic on the captured frame")
+                   
+    p.add_argument("--audio-device", type=str, default=None,
+                   help='DirectShow audio device name, e.g. audio="Microphone (Cam Link 4K)"')
+    p.add_argument("--audio-delay-ms", type=int, default=0,
+                   help="Optional audio delay to match video processing latency (milliseconds)")
+    p.add_argument("--http-stream", type=str, default=None,
+               help="Bind address:port to stream MJPEG (e.g. 0.0.0.0:8000). Serves at /video.mjpg")
+
+
 
     p.add_argument("--smooth", dest="smooth", action="store_true", help="Enable temporal smoothing")
     p.add_argument("--no-smooth", dest="smooth", action="store_false", help="Disable temporal smoothing")
@@ -726,6 +934,8 @@ def launch_live_gui(parent: tk.Tk | None = None):
     prev_h_v      = tk.IntVar(value=540)
 
     diag_v        = tk.BooleanVar(value=False)
+
+
 
     # ---- layout helpers ----
     def L(f, text): return ttk.Label(f, text=text)
@@ -849,6 +1059,7 @@ def launch_live_gui(parent: tk.Tk | None = None):
         a.capture_fps  = int(fps_v.get())  # reuse for screen cap throttle
         a.crop         = None
         a.diag         = bool(diag_v.get())
+        a.pixelshift_rgb = False
         return a
 
     def start():
@@ -928,7 +1139,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
         sys.exit(1)
-        
-        
-
-
