@@ -15,10 +15,12 @@
   "Process Image Folder": "Traiter le dossier d'images",
   "Process Video": "Traiter la vidéo",
   "Process Video Folder": "Traiter le dossier de vidéos",
-  "Depth Map": "Carte de profondeur",  
+  "Depth Map": "Carte de profondeur",
   "Inference Steps:": "Étapes d'inférence :",
   "CPU Offload Mode": "Mode de délestage CPU",
-  
+  "Use float16": "Utiliser le float16",
+  "Video Codec:": "Codec vidéo :",
+  "Pause": "Pause",
   "_DepthBlenderTab": "",
   "Depth Blender": "Mélangeur de Profondeur",
   "Preview (scrubbable):": "Aperçu (navigable) :",
@@ -53,15 +55,16 @@
   "Stop": "Arrêter",
   "Progress: 0/0": "Progression : 0/0",
   "Log": "Journal",
-
-
   "_3DRenderTab": "",
   "3D Video Generator": "Générateur de Vidéo 3D",
   "3D Format": "Format 3D",
   "Select Input Video": "Sélectionner la vidéo d'entrée",
   "Select Depth Map": "Sélectionner la carte de profondeur",
   "Select Output Video": "Sélectionner la vidéo de sortie",
-  "Generate 3D Video": "Générer la vidéo 3D",
+  "Select Input Image": "Sélectionner l’image d’entrée",
+  "Select Depth Map Image": "Sélectionner l’image de carte de profondeur",
+  "Select Output Image": "Sélectionner l’image de sortie",
+  "Generate 3D": "Générer la 3D",
   "Open Preview": "Ouvrir l'aperçu",
   "Suspend": "Suspendre",
   "Resume": "Reprendre",
@@ -121,29 +124,28 @@
   "Left/Right Output": "Sortie gauche/droite",
   "Delete SBS after": "Supprimer le SBS après",
   "Preserve HDR10": "Conserver le HDR10",
+  "Keep Original Audio": "Conserver l'audio d'origine",
+  "Clip Range (optional)": "Plage du clip (optionnel)",
+  "Start (HH:MM:SS[.ms] or seconds):": "Début (HH:MM:SS[.ms] ou secondes) :",
+  "End (HH:MM:SS[.ms] or seconds):": "Fin (HH:MM:SS[.ms] ou secondes) :",
+  "Clear": "Effacer",
   "VD3D External Input 3D (WIP)": "VD3D Entrée Externe 3D (WIP)",
   "Audio Tool": "Outil Audio",
-
-  
   "Menu.File": "Fichier",
   "Menu.Help": "Aide",
   "Menu.Language": "Langue",
-
   "Menu.SaveSettings": "Enregistrer les paramètres",
   "Menu.SavePresetAs": "Enregistrer le préréglage sous…",
   "Menu.LoadSettings": "Charger les paramètres",
   "Menu.LoadPreset": "Charger un préréglage…",
-
   "Menu.Video": "Vidéo",
   "Menu.DepthMap": "Carte de profondeur",
   "Menu.OutputPath": "Chemin de sortie",
   "Menu.Generate3D": "Générer en 3D",
   "Menu.Cancel": "Annuler",
-
   "Menu.AudioTool": "Outil audio",
   "Menu.ResetDefaults": "Réinitialiser par défaut",
   "Menu.Exit": "Quitter",
-
   "Help.About": "À propos",
   "Help.OfficialWebsite": "Site officiel",
   "Help.Reddit": "Communauté Reddit",
@@ -154,9 +156,6 @@
   "Help.AspectCheat": "Aide-mémoire des formats d’image",
   "Help.PreviewGUI": "Aperçu GUI",
   "Help.GPUDiagnostics": "Exécuter le diagnostic GPU…",
-
-
-
   "_FrameToolsTab": "",
   "FrameTools": "Outils d’Images",
   "Extract Frames from Video": "Extraire les images de la vidéo",
@@ -184,11 +183,10 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 Détection de scènes (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "Seuil de sensibilité (plus bas = plus de coupes) :",
   "Detect Scenes & Extract": "Détecter les scènes et extraire",
-
   "_Tooltips": "",
   "Tooltip.SceneDetect": "Utilise PySceneDetect pour détecter automatiquement les changements de scène dans la vidéo pour le découpage ou le traitement par lot.",
   "Tooltip.SceneDetectThreshold": "Ajuste la sensibilité de la détection des scènes. Plus bas = plus de coupes ; plus haut = moins de coupes.",
-  "Tooltip.DetectScenesExtract": "Lance la détection de scènes et extrait automatiquement les scènes détectées pour un traitement ultérieur.",  
+  "Tooltip.DetectScenesExtract": "Lance la détection de scènes et extrait automatiquement les scènes détectées pour un traitement ultérieur.",
   "Tooltip.ModeSelect": "Choisissez entre le mode rendu unique (générer une seule vidéo 3D) ou le mode par lot (traiter plusieurs paires vidéo + carte de profondeur).",
   "Tooltip.ApplyEntries": "Applique les valeurs actuelles des contrôles Pop & Sujet pour mettre à jour l’aperçu et les paramètres de rendu.",
   "Tooltip.UseFFmpeg": "Active le rendu avec FFmpeg pour un encodage plus rapide. ⚠️ Nécessite FFmpeg dans le PATH système.",
@@ -236,6 +234,7 @@
   "Tooltip.CRF": "Le CRF contrôle la qualité vidéo CPU : plus la valeur est basse, meilleure est la qualité. 18–23 est visuellement sans perte.",
   "Tooltip.NVENCCQ": "Contrôle de qualité NVENC de NVIDIA. Semblable au CRF mais optimisé pour l'encodage GPU.",
   "Tooltip.SelectedCodec": "Codec standard utilisé pour l'exportation vidéo basée sur le CPU.",
+  "Tooltip.SelectedDepthCodec": "Encodeur avancé pour l’exportation avec FFmpeg.",
   "Tooltip.FFmpegCodec": "Encodeur avancé pour l'exportation avec FFmpeg. NVENC est optimal pour les GPU NVIDIA.",
   "Tooltip.AspectRatio": "Choisissez le rapport d'aspect final pour correspondre à votre affichage ou plateforme cible.",
   "Tooltip.ExtractFrames": "Extrait les images brutes d'une vidéo pour une utilisation avec RIFE ou ESRGAN.",
@@ -278,14 +277,17 @@
   "Tooltip.DB.SigmaSpace": "Sigma espace du filtre bilatéral.",
   "Tooltip.DB.PreviewFrame": "Sélectionnez le cadre à prévisualiser avec le curseur ou les boutons.",
   "Tooltip.DB.BlendParms": "Réglez les paramètres de mélange pour contrôler la force et la netteté de la fusion.",
-  "Tooltip.DB.mode_frame": "Choisissez entre le traitement par dossiers (images) ou vidéos.",
-  "Tooltip.DB.Title": "Onglet principal du Mélangeur de Profondeur.",
+  "Tooltip.DB.ModeTitle": "Choisissez entre le traitement par dossiers (images) ou vidéos.",
   "Tooltip.LROutput": "Choisissez l’œil à rendre : gauche, droit ou paire stéréo (SBS).",
   "Tooltip.DeleteOutputbtn": "*lié au réglage de sortie G/D* Supprime la vidéo SBS après la génération de l’œil gauche ou droit",
   "Tooltip.HDRbtn": "Bascule pour conserver le contenu HDR10",
   "Tooltip.Audiobtn": "Ouvrir l’outil audio pour supprimer ou ajouter des pistes audio à votre vidéo.",
-  "Tooltip.Livebtn": "Démarrer le Live 3D avec des sources externes (webcam, carte de capture ou écran)."
-
+  "Tooltip.KeepAudio": "Si cette option est activée, la piste audio originale de la vidéo est copiée dans le rendu 3D final sans ré-encodage.",
+  "Tooltip.ClipRangeLabel": "Permet éventuellement de couper le rendu en définissant une heure de début et de fin.",
+  "Tooltip.StartClipRangeLabel": "Laisser vide pour commencer au début. Accepte HH:MM:SS[.ms] ou des secondes.",
+  "Tooltip.EndClipRangeLabel": "Laisser vide pour rendre jusqu’à la fin. Accepte HH:MM:SS[.ms] ou des secondes.",
+  "Tooltip.Float16Button": "Utilise une précision 16 bits (float16) pour un calcul de profondeur plus rapide lorsque c’est pris en charge. Peut modifier légèrement la précision de la profondeur.",
+  "Tooltip.Livebtn": "Démarrer le Live 3D avec des sources externes (webcam, carte de capture ou écran).",
+  "Tooltip.Output": "Choisissez d’écraser le dossier de frames v2 ou de définir votre propre chemin"
 
 }
- 

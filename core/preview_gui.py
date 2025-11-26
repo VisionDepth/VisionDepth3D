@@ -462,6 +462,17 @@ def open_3d_preview_window(
         nonlocal preview_job
         nonlocal preview_img, frame, depth
         preview_job = None 
+        from core import render_3d
+
+        # Reset EMAs when scrubbing to avoid layered artifacts
+        render_3d.pixel_shift_cuda._shift_ema = None
+        render_3d.subject_depth_ema.val = None
+        render_3d.depth_ema_norm._lo = None
+        render_3d.depth_ema_norm._hi = None
+        render_3d.conv_ema.val = None
+        render_3d.floating_window_tracker.prev_offset = 0.0
+        render_3d.floating_window_tracker.frame_counter = 0
+
 
         try:
             frame_idx = frame_slider.get()

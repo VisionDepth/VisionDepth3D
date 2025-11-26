@@ -17,7 +17,9 @@
   "Process Video Folder": "ビデオフォルダを処理",
   "Depth Map": "深度マップ",
   "CPU Offload Mode": "CPUオフロードモード",
-
+  "Use float16": "float16 を使用",
+  "Video Codec:": "ビデオコーデック:",
+  "Pause": "一時停止",
   "_DepthBlenderTab": "",
   "Depth Blender": "深度ブレンダー",
   "Preview (scrubbable):": "プレビュー（スクラブ可能）:",
@@ -52,9 +54,6 @@
   "Stop": "停止",
   "Progress: 0/0": "進行状況: 0/0",
   "Log": "ログ",
-
-
-
   "_3DRenderTab": "",
   "3D Video Generator": "3Dビデオジェネレーター",
   "No Thumbnail": "サムネイルなし",
@@ -63,7 +62,10 @@
   "Select Input Video": "入力ビデオを選択",
   "Select Depth Map": "深度マップを選択",
   "Select Output Video": "出力ビデオを選択",
-  "Generate 3D Video": "3Dビデオを生成",
+  "Select Input Image": "入力画像を選択",
+  "Select Depth Map Image": "深度マップ画像を選択",
+  "Select Output Image": "出力画像を選択",
+  "Generate 3D": "3Dを生成",
   "Open Preview": "プレビューを開く",
   "Suspend": "一時停止",
   "Resume": "再開",
@@ -126,29 +128,27 @@
   "Left/Right Output": "左/右出力",
   "Delete SBS after": "処理後にSBSを削除",
   "Preserve HDR10": "HDR10 を保持",
+  "Keep Original Audio": "元のオーディオを保持",
+  "Clip Range (optional)": "クリップ範囲（任意）",
+  "Start (HH:MM:SS[.ms] or seconds):": "開始（HH:MM:SS[.ms] または秒）:",
+  "End (HH:MM:SS[.ms] or seconds):": "終了（HH:MM:SS[.ms] または秒）:",
+  "Clear": "クリア",
   "VD3D External Input 3D (WIP)": "VD3D 外部入力 3D (WIP)",
-
-
-  
   "Menu.File": "ファイル",
   "Menu.Help": "ヘルプ",
   "Menu.Language": "言語",
-
   "Menu.SaveSettings": "設定を保存",
   "Menu.SavePresetAs": "プリセットを別名で保存…",
   "Menu.LoadSettings": "設定を読み込む",
   "Menu.LoadPreset": "プリセットを読み込む…",
-
   "Menu.Video": "ビデオ",
   "Menu.DepthMap": "深度マップ",
   "Menu.OutputPath": "出力パス",
   "Menu.Generate3D": "3Dを生成",
   "Menu.Cancel": "キャンセル",
-
   "Menu.AudioTool": "オーディオツール",
   "Menu.ResetDefaults": "デフォルトにリセット",
   "Menu.Exit": "終了",
-
   "Help.About": "情報",
   "Help.OfficialWebsite": "公式ウェブサイト",
   "Help.Reddit": "Reddit コミュニティ",
@@ -159,8 +159,6 @@
   "Help.AspectCheat": "アスペクト比チートシート",
   "Help.PreviewGUI": "プレビューGUI",
   "Help.GPUDiagnostics": "GPU 診断を実行…",
-
-
   "_FrameToolsTab": "",
   "FrameTools": "フレームツール",
   "Extract Frames from Video": "ビデオからフレームを抽出",
@@ -185,7 +183,6 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 シーン検出 (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "感度しきい値（低い = カット増加）：",
   "Detect Scenes & Extract": "シーン検出と抽出",
-  
   "_Tooltips": "",
   "Tooltip.SceneDetect": "PySceneDetectを使用して、ビデオ内のシーン変更を自動的に検出し、分割やバッチ処理に利用します。",
   "Tooltip.SceneDetectThreshold": "シーン検出の感度を調整します。低い値 = カット増加、高い値 = カット減少。",
@@ -279,14 +276,17 @@
   "Tooltip.DB.SigmaSpace": "バイラテラルフィルタのスペースσ。",
   "Tooltip.DB.PreviewFrame": "スライダーまたはボタンでプレビューするフレームを選択します。",
   "Tooltip.DB.BlendParms": "ブレンドの強さや鮮明さを調整するためのパラメータを設定します。",
-  "Tooltip.DB.mode_frame": "フォルダ（フレーム）またはビデオで処理するかを選択します。",
-  "Tooltip.DB.Title": "デプスブレンダーのメインタブです。",
+  "Tooltip.DB.ModeTitle": "フォルダ（フレーム）またはビデオで処理するかを選択します。",
   "Tooltip.LROutput": "どの目を生成するかを選択します：左目、右目、またはステレオペア（SBS）。",
   "Tooltip.DeleteOutputbtn": "*L/R 出力トグルに関連* 左眼または右眼の映像を生成した後に、SBS ビデオを削除します",
   "Tooltip.HDRbtn": "HDR10 コンテンツを保持するためのトグル",
   "Tooltip.Audiobtn": "オーディオツールを開いて、動画のオーディオトラックを削除または追加します。",
-  "Tooltip.Livebtn": "外部入力（ウェブカメラ、キャプチャカード、画面）でLive 3Dを開始します。"
-
-
+  "Tooltip.KeepAudio": "有効にすると、元の動画の音声を再エンコードせずに最終的な3Dレンダーにコピーします。",
+  "Tooltip.ClipRangeLabel": "開始時間と終了時間を設定して、オプションでレンダー範囲をトリミングできます。",
+  "Tooltip.StartClipRangeLabel": "空欄のままにすると最初から開始します。HH:MM:SS[.ms] または秒数を指定できます。",
+  "Tooltip.EndClipRangeLabel": "空欄のままにすると最後までレンダーします。HH:MM:SS[.ms] または秒数を指定できます。",
+  "Tooltip.SelectedDepthCodec": "FFmpeg 書き出し用の高度なエンコーダーです。",
+  "Tooltip.Float16Button": "対応している場合、16ビット（float16）精度でより高速に深度推定を行います。深度の精度がわずかに変化する場合があります。",
+  "Tooltip.Livebtn": "外部入力（ウェブカメラ、キャプチャカード、画面）でLive 3Dを開始します。",
+  "Tooltip.Output": "v2 フレームフォルダを上書きするか、独自の出力パスを選択します"
 }
-

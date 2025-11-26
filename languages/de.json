@@ -18,7 +18,9 @@
   "Depth Map": "Tiefenkarte",
   "Inference Steps:": "Inference-Schritte:",
   "CPU Offload Mode": "CPU-Auslagerungsmodus",
-
+  "Use float16": "Float16 verwenden",
+  "Video Codec:": "Videocodec:",
+  "Pause": "Pause",
   "_DepthBlenderTab": "",
   "Depth Blender": "Tiefenmischer",
   "Preview (scrubbable):": "Vorschau (durchsuchbar):",
@@ -53,15 +55,16 @@
   "Stop": "Stopp",
   "Progress: 0/0": "Fortschritt: 0/0",
   "Log": "Protokoll",
-
-
   "_3DRenderTab": "",
   "3D Video Generator": "3D-Video-Generator",
   "3D Format": "3D-Format",
   "Select Input Video": "Eingabevideo auswählen",
   "Select Depth Map": "Tiefenkarte auswählen",
   "Select Output Video": "Ausgabevideo auswählen",
-  "Generate 3D Video": "3D-Video generieren",
+  "Select Input Image": "Eingabebild auswählen",
+  "Select Depth Map Image": "Tiefenkartenbild auswählen",
+  "Select Output Image": "Ausgabebild auswählen",
+  "Generate 3D": "3D generieren",
   "Open Preview": "Vorschau öffnen",
   "Suspend": "Pausieren",
   "Resume": "Fortsetzen",
@@ -125,31 +128,27 @@
   "Left/Right Output": "Links/Rechts-Ausgang",
   "Delete SBS after": "SBS danach löschen",
   "Preserve HDR10": "HDR10 beibehalten",
+  "Keep Original Audio": "Originalaudio beibehalten",
+  "Clip Range (optional)": "Clip-Bereich (optional)",
+  "Start (HH:MM:SS[.ms] or seconds):": "Start (HH:MM:SS[.ms] oder Sekunden):",
+  "End (HH:MM:SS[.ms] or seconds):": "Ende (HH:MM:SS[.ms] oder Sekunden):",
+  "Clear": "Löschen",
   "VD3D External Input 3D (WIP)": "VD3D Externe Eingabe 3D (WIP)",
-
-
-
-  
-
   "Menu.File": "Datei",
   "Menu.Help": "Hilfe",
   "Menu.Language": "Sprache",
-
   "Menu.SaveSettings": "Einstellungen speichern",
   "Menu.SavePresetAs": "Voreinstellung speichern unter…",
   "Menu.LoadSettings": "Einstellungen laden",
   "Menu.LoadPreset": "Voreinstellung laden…",
-
   "Menu.Video": "Video",
   "Menu.DepthMap": "Tiefenkarte",
   "Menu.OutputPath": "Ausgabepfad",
   "Menu.Generate3D": "3D generieren",
   "Menu.Cancel": "Abbrechen",
-
   "Menu.AudioTool": "Audio-Werkzeug",
   "Menu.ResetDefaults": "Auf Standard zurücksetzen",
   "Menu.Exit": "Beenden",
-
   "Help.About": "Über",
   "Help.OfficialWebsite": "Offizielle Website",
   "Help.Reddit": "Reddit-Community",
@@ -160,8 +159,6 @@
   "Help.AspectCheat": "Seitenverhältnis-Spickzettel",
   "Help.PreviewGUI": "Vorschau-GUI",
   "Help.GPUDiagnostics": "GPU-Diagnose ausführen…",
-
-
   "_FrameToolsTab": "",
   "FrameTools": "Frame-Werkzeuge",
   "Extract Frames from Video": "Frames aus Video extrahieren",
@@ -186,8 +183,6 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 Szenenerkennung (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "Empfindlichkeitsschwelle (niedriger = mehr Schnitte):",
   "Detect Scenes & Extract": "Szenen erkennen & extrahieren",
-
-
   "_Tooltips": "",
   "Tooltip.SceneDetect": "Verwendet PySceneDetect, um automatisch Szenenwechsel im Video zu finden, für Splitting oder Stapelverarbeitung.",
   "Tooltip.SceneDetectThreshold": "Passt die Empfindlichkeit der Szenenerkennung an. Niedriger = mehr Schnitte; höher = weniger Schnitte.",
@@ -202,6 +197,7 @@
   "Tooltip.ColormapLabel": "Wähle eine visuelle Farbkarte zur Einfärbung der Tiefenkarte (z. B. Viridis, Magma, Inferno).",
   "Tooltip.ColormapDropdown": "Wendet die gewählte Farbkarte an, um die Tiefenwahrnehmung in der Vorschau und in gespeicherten Ausgaben zu visualisieren.",
   "Tooltip.InvertCheckbox": "Kehrt Nah-/Fernwerte in der Tiefenkarte um. Nützlich, wenn die Tiefe invertiert erscheint.",
+  "Tooltip.Float16Button": "Verwendet 16-Bit-Präzision (float16) für eine schnellere Tiefenberechnung, sofern unterstützt. Kann die Tiefengenauigkeit leicht verändern.",
   "Tooltip.SaveFramesCheckbox": "Aktiviert das Speichern einzelner Tiefenbilder pro Frame zusätzlich zum Ausgabevideo.",
   "Tooltip.BatchSizeEntry": "Legt fest, wie viele Frames pro Stapel verarbeitet werden. Geringere Werte verringern den VRAM-Verbrauch auf Kosten der Geschwindigkeit.",
   "Tooltip.InputLabel": "Zeigt das RGB-Bild an.",
@@ -237,6 +233,7 @@
   "Tooltip.NVENCCQ": "Qualitätssteuerung für NVIDIA NVENC. Ähnlich wie CRF, aber für GPU-Encoding optimiert.",
   "Tooltip.SelectedCodec": "Standard-Codec für CPU-basierten Videoexport.",
   "Tooltip.FFmpegCodec": "Fortschrittlicher Encoder für FFmpeg-Export. NVENC ist optimal für NVIDIA-GPUs.",
+  "Tooltip.SelectedDepthCodec": "Fortgeschrittener Encoder für den FFmpeg-Export.",
   "Tooltip.AspectRatio": "Wähle das endgültige Seitenverhältnis passend zu deinem Zielgerät oder deiner Plattform.",
   "Tooltip.ExtractFrames": "Extrahiert Rohbilder aus einer Videodatei für die Verarbeitung mit RIFE oder ESRGAN.",
   "Tooltip.RIFE": "Aktiviert KI-Interpolation zur Vervielfachung der Bildrate für flüssige Zeitlupe oder Echtzeitskalierung.",
@@ -282,12 +279,15 @@
   "Tooltip.DB.PreviewFrame": "Wählen Sie den Frame zur Vorschau mit dem Schieberegler oder den Tasten.",
   "Tooltip.DB.BlendParms": "Passen Sie die Mischparameter an, um Stärke und Schärfe der Überblendung zu steuern.",
   "Tooltip.DB.ModeTitle": "Wählen Sie zwischen Verarbeitung nach Ordnern (Frames) oder Videos.",
-  "Tooltip.DB.TitleLbl": "Hauptregisterkarte des Tiefen-Mixers.",
   "Tooltip.LROutput": "Wählen Sie aus, welches Auge gerendert werden soll: links, rechts oder ein Stereopaar (SBS).",
   "Tooltip.DeleteOutputbtn": "*bezogen auf den L/R-Ausgabe-Schalter* Löscht das SBS-Video, nachdem das linke oder rechte Auge erzeugt wurde",
   "Tooltip.HDRbtn": "Umschalten, um HDR10-Inhalte beizubehalten",
   "Tooltip.Audiobtn": "Öffne das Audiotool, um Audiospuren aus deinem Video zu entfernen oder hinzuzufügen.",
-  "Tooltip.Livebtn": "Starte Live-3D mit externen Eingaben (Webcam, Capture-Card oder Bildschirm)."
-
+  "Tooltip.Livebtn": "Starte Live-3D mit externen Eingaben (Webcam, Capture-Card oder Bildschirm).",
+  "Tooltip.KeepAudio": "Wenn aktiviert, wird der Originalton des Videos ohne erneute Kodierung in das endgültige 3D-Rendering übernommen.",
+  "Tooltip.ClipRangeLabel": "Optional den Renderbereich durch Start- und Endzeit begrenzen.",
+  "Tooltip.StartClipRangeLabel": "Leer lassen, um am Anfang zu starten. Akzeptiert HH:MM:SS[.ms] oder Sekunden.",
+  "Tooltip.EndClipRangeLabel": "Leer lassen, um bis zum Ende zu rendern. Akzeptiert HH:MM:SS[.ms] oder Sekunden.",
+  "Tooltip.Output": "Wählen Sie, ob der v2-Frames-Ordner überschrieben werden soll, oder geben Sie einen eigenen Pfad an"
 
 }

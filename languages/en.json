@@ -18,6 +18,9 @@
   "Process Video": "Process Video",
   "Process Video Folder": "Process Video Folder",
   "Depth Map": "Depth Map",
+  "Use float16": "Use float16",
+  "Video Codec:": "Video Codec:",
+  "Pause": "Pause",
 
   "_DepthBlenderTab": "",
   "Depth Blender": "Depth Blender",
@@ -66,7 +69,10 @@
   "Select Input Video": "Select Input Video",
   "Select Depth Map": "Select Depth Map",
   "Select Output Video": "Select Output Video",
-  "Generate 3D Video": "Generate 3D Video",
+  "Select Input Image": "Select Input Image",
+  "Select Depth Map Image": "Select Depth Map Image",
+  "Select Output Image": "Select Output Image",
+  "Generate 3D": "Generate 3D",
   "Open Preview": "Open Preview",
   "Suspend": "Suspend",
   "Resume": "Resume",
@@ -126,6 +132,12 @@
   "Left/Right Output": "Left/Right Output",
   "Delete SBS after": "Delete SBS after",
   "Preserve HDR10": "Preserve HDR10",
+  "Keep Original Audio": "Keep Original Audio",
+  "Clip Range (optional)": "Clip Range (optional)",
+  "Start (HH:MM:SS[.ms] or seconds):": "Start (HH:MM:SS[.ms] or seconds):",
+  "End (HH:MM:SS[.ms] or seconds):": "End (HH:MM:SS[.ms] or seconds):",
+  "Clear": "Clear",
+  
   "VD3D External Input 3D (WIP)": "VD3D External Input 3D (WIP)",
   
   "Menu.File": "File",
@@ -233,6 +245,7 @@
   "Tooltip.Feathering": "Feather the edges of the 3D mask for smoother visual transitions.",
   "Tooltip.SkipBlankFrames": "Skips blank/white frames from being rendered. Useful for cleaner cuts.",
   "Tooltip.UseFFmpeg": "Enable FFmpeg rendering for faster encoding. ⚠️ Requires FFmpeg in system PATH.",
+  "Tooltip.SelectedDepthCodec": "Advanced encoder for FFmpeg export.",
   "Tooltip.CRF": "CRF controls CPU video quality: lower = better quality. 18–23 is visually lossless.",
   "Tooltip.NVENCCQ": "NVIDIA NVENC quality control. Similar to CRF but optimized for GPU encoding.",
   "Tooltip.SelectedCodec": "Standard codec used for CPU-based video export.",
@@ -267,6 +280,12 @@
   "Tooltip.LROutput": "Choose which eye(s) to render: Left, Right, or a stereo pair (SBS).",
   "Tooltip.DeleteOutputbtn": "*related too L/R output toggle* Deletes SBS video after Left or Right eye is generated",
   "Tooltip.HDRbtn": "toggle to Preserve HDR10 content",
+  "Tooltip.ClipRangeLabel": "Optionally trim your render by setting a start and end time.",
+  "Tooltip.StartClipRangeLabel": "Leave empty to start at the beginning. Accepts HH:MM:SS[.ms] or seconds.",
+  "Tooltip.EndClipRangeLabel": "Leave empty to render until the end. Accepts HH:MM:SS[.ms] or seconds.",
+  "Tooltip.KeepAudio": "If enabled, copies the original video's audio into the final 3D render without re-encoding.",
+  "Tooltip.Float16Button": "Use 16-bit (float16) precision for faster depth inference when supported. May slightly change depth accuracy.",
+
   "Tooltip.Audiobtn": "Open the Audio Tool to remove or attach audio tracks to your video.",
   "Tooltip.Livebtn": "Start Live 3D with external inputs (webcam, capture card, or screen).",
 
@@ -287,8 +306,7 @@
   
   "Tooltip.DB.PreviewFrame": "Select the frame to preview using the slider or the buttons.",
   "Tooltip.DB.BlendParms": "Adjust blend parameters to control the strength and sharpness of the merge.",
-  "Tooltip.DB.ModeTitle": "Choose between processing folders (frames) or videos.",
-  "Tooltip.DB.TitleLbl": "Main tab of the Depth Blender."
+  "Tooltip.DB.ModeTitle": "Choose between processing folders (frames) or videos."
 
 }
 
