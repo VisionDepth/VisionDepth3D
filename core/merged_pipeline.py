@@ -41,7 +41,9 @@ if "CUDAExecutionProvider" in available_providers:
 else:
     device = ["CPUExecutionProvider"]
 
-print(f"🧠 ONNX will use providers: {device}")
+provider_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU-only"
+print(f"Upscaler ONNX: {provider_txt}")
+print(f"Providers: {device}")
 
 # ✅ Load RIFE
 rife_path = resource_path(os.path.join("weights", "RIFE_fp32.onnx"))
@@ -474,7 +476,11 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
             print(f"❌ ESRGAN model missing: {model_path}")
             esrgan_session = None
         else:
+            print(f"📦 Loading ESRGAN from {model_path}")
             esrgan_session = ort.InferenceSession(model_path, sess_options=session_options, providers=device)
+            mode_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU"
+            print(f"⚡ ESRGAN ready [{mode_txt}]")
+
 
     files = natural_sort([
         os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
