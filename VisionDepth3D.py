@@ -38,6 +38,7 @@ from core.render_3d import (
     select_output_video,
     process_video,
     parse_timecode,
+    render_sbs_3d_image,
 )
 
 # Depth Estimation
@@ -53,6 +54,9 @@ from core.render_depth import (
     process_videos_in_folder,
     update_progress,
     cancel_requested,
+    request_depth_pause,
+    request_depth_resume,
+    request_depth_cancel,
 )
 
 from core.merged_pipeline import (
@@ -66,10 +70,11 @@ from core.merged_pipeline import (
 
 # DB.py exports you already have
 from core.DB import (
-    lighten_beta,
     FramesWorker,
     VideosWorker,
-    TORCH_CUDA,
+    lighten_beta,
+    _put_label,
+    _resize_max,
 )
 
 from core.vd3d_live import launch_live_gui
@@ -111,14 +116,29 @@ if platform.system() == "Windows":
         category=UserWarning,
     )
 
-# --- add near the top with other imports ---
 try:
     import torch
+    torch.set_grad_enabled(False)
+
+    if torch.cuda.is_available():
+        TORCH_DEVICE_NAME = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        TORCH_DEVICE_NAME = "mps"
+    else:
+        TORCH_DEVICE_NAME = "cpu"
+
     TORCH_AVAILABLE = True
-    CUDA_AVAILABLE = torch.cuda.is_available()
-except Exception:
+except Exception as e:
     TORCH_AVAILABLE = False
-    CUDA_AVAILABLE = False
+    TORCH_DEVICE_NAME = "cpu"
+
+
+def gpu_available():
+    try:
+        import torch
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu").type
+    except Exception:
+        return "cpu"
 
 def _menu_set(menu, idx, label, accel=None):
     """Update a menu entry label with optional accelerator text aligned right."""
@@ -129,6 +149,14 @@ def _menu_set(menu, idx, label, accel=None):
         menu.entryconfig(idx, label=f"{label}\t{accel}")
     else:
         menu.entryconfig(idx, label=label)
+
+def offload_available():
+    try:
+        import accelerate
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
 
 def open_github():
     """Opens the GitHub repository in a web browser."""
@@ -143,7 +171,7 @@ def ui_select_input_video():
         input_video_path,
         video_thumbnail_label,
         video_specs_label,
-        update_aspect_preview,     # <- your function/callback
+        update_aspect_preview,  
         original_video_width,
         original_video_height,
     )
@@ -155,8 +183,8 @@ def ui_select_input_video():
 
 def ui_select_depth_map():
     path = select_depth_map(
-        selected_depth_map,        # adjust to your signature
-        depth_map_label,         # e.g. if you have one
+        selected_depth_map,        
+        depth_map_label,         
     )
     try:
         if path: save_settings()
@@ -173,92 +201,6 @@ def ui_select_output_path():
     except Exception:
         pass
 
-def _apply_preset_config(config: dict):
-    """Apply a preset config dict to GUI variables (shared by all loaders)."""
-    def _clamp(v, lo, hi): return max(lo, min(hi, v))
-
-    fg_shift.set(float(config.get("fg_shift", 8.0)))
-    mg_shift.set(float(config.get("mg_shift", -3.0)))
-    bg_shift.set(float(config.get("bg_shift", -6.0)))
-    zero_parallax_strength.set(float(config.get("zero_parallax_strength", 0.0)))
-    max_pixel_shift.set(float(config.get("max_pixel_shift", 0.02)))
-    parallax_balance.set(float(config.get("parallax_balance", 0.8)))
-    sharpness_factor.set(float(config.get("sharpness_factor", 1.0)))
-    dof_strength.set(float(config.get("dof_strength", 2.0)))
-    convergence_strength.set(float(config.get("convergence_strength", 0.0)))
-
-    use_ffmpeg.set(bool(config.get("use_ffmpeg", False)))
-    enable_feathering.set(bool(config.get("enable_feathering", True)))
-    enable_edge_masking.set(bool(config.get("enable_edge_masking", True)))
-    use_floating_window.set(bool(config.get("use_floating_window", True)))
-    auto_crop_black_bars.set(bool(config.get("auto_crop_black_bars", False)))
-    skip_blank_frames.set(bool(config.get("skip_blank_frames", False)))
-    enable_dynamic_convergence.set(bool(config.get("enable_dynamic_convergence", True)))
-
-    gamma = float(config.get("depth_pop_gamma", 0.85))
-    depth_pop_gamma.set(_clamp(gamma, 0.70, 1.20))
-
-    mid = float(config.get("depth_pop_mid", 0.50))
-    depth_pop_mid.set(_clamp(mid, 0.0, 1.0))
-
-    lo = float(config.get("depth_stretch_lo", 0.05))
-    hi = float(config.get("depth_stretch_hi", 0.95))
-    lo = _clamp(lo, 0.0, 1.0); hi = _clamp(hi, 0.0, 1.0)
-    if hi <= lo: lo, hi = 0.05, 0.95
-    depth_stretch_lo.set(lo); depth_stretch_hi.set(hi)
-
-    fg_mul = float(config.get("fg_pop_multiplier", 1.20))
-    bg_mul = float(config.get("bg_push_multiplier", 1.10))
-    subject_lock = float(config.get("subject_lock_strength", 1.00))
-    fg_pop_multiplier.set(_clamp(fg_mul, 0.5, 2.0))
-    bg_push_multiplier.set(_clamp(bg_mul, 0.5, 2.0))
-    subject_lock_strength.set(_clamp(subject_lock, 0.0, 2.0))
-
-    # Optional color grading
-    sat = float(config.get("saturation", 1.0))
-    con = float(config.get("contrast",   1.0))
-    bri = float(config.get("brightness", 0.0))
-    saturation.set(_clamp(sat, 0.0, 2.0))
-    contrast.set(_clamp(con, 0.0, 2.0))
-    brightness.set(_clamp(bri, -0.5, 0.5))
-
-    # IPD / stereo separation (optional)
-    try:
-        ipd_on  = bool(config.get("ipd_enabled", False))
-        ipd_val = _clamp(float(config.get("ipd_factor", 1.00)), 0.50, 1.50)
-        if 'ipd_enabled_var' in globals(): ipd_enabled_var.set(ipd_on)
-        if 'ipd_factor_var'  in globals(): ipd_factor_var.set(ipd_val)
-        try:
-            if 'ipd_slider' in globals():
-                ipd_slider.config(state=('normal' if ipd_on else 'disabled'))
-            if 'ipd_value_lbl' in globals():
-                ipd_value_lbl.config(text=f"{ipd_val:.2f}x")
-            if '_on_ipd_slider' in globals():
-                _on_ipd_slider()
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"⚠️ IPD restore skipped: {e}")
-
-    # Sync any text entries if present
-    try:
-        pop_mid_entry.delete(0, tk.END);      pop_mid_entry.insert(0, f"{depth_pop_mid.get():.2f}")
-        stretch_lo_entry.delete(0, tk.END);   stretch_lo_entry.insert(0, f"{depth_stretch_lo.get():.2f}")
-        stretch_hi_entry.delete(0, tk.END);   stretch_hi_entry.insert(0, f"{depth_stretch_hi.get():.2f}")
-    except Exception:
-        pass
-
-def apply_preset(preset_name: str):
-    """Load preset by name from PRESET_DIR and apply."""
-    path = os.path.join(PRESET_DIR, f"{preset_name}.json")
-    if not os.path.exists(path):
-        messagebox.showerror("Preset", f"Preset not found:\n{path}")
-        print(f"❌ Preset not found: {path}")
-        return
-    with open(path, 'r', encoding="utf-8") as f:
-        config = json.load(f)
-    _apply_preset_config(config)
-    print(f"✅ Applied preset: {preset_name}")
     
 def load_preset_dialog():
     """Pick any preset JSON (defaulting to PRESET_DIR) and apply it."""
@@ -285,10 +227,58 @@ def load_preset_dialog():
     except Exception as e:
         messagebox.showerror("Load Preset", f"Failed to load preset:\n{e}")
         
+def apply_3d_suffix(base_out: str, output_format: str, eye_mode: str) -> str:
+    base, ext = os.path.splitext(base_out)
+
+    # Normalize
+    fmt = output_format.strip().lower()
+    mode = eye_mode.strip().lower()
+
+    suffix = ""
+
+    if mode == "sbs":
+        if fmt == "full-sbs":
+            suffix = "_LRF_Full_SBS"
+        elif fmt == "half-sbs":
+            suffix = "_LRF_Half_SBS"
+        elif fmt == "vr":
+            suffix = "_VR"
+        elif fmt == "red-cyan anaglyph":
+            suffix = "_Anaglyph"
+        elif fmt == "passive interlaced":
+            suffix = "_Interlaced"
+    elif mode == "left":
+        suffix = "_LRF_Left"
+    elif mode == "right":
+        suffix = "_LRF_Right"
+    elif mode == "both":
+        # handled per-eye when you build left/right names
+        pass
+
+    # If no suffix matched, just return original
+    if not suffix:
+        return base_out
+
+    return f"{base}{suffix}{ext}"
+
 
 def handle_generate_3d():
     global process_thread, is_rendering
     try:
+        # 🔀 Read current mode ("Single", "Batch", "Image")
+        current_mode = mode.get().strip() if 'mode' in globals() else "Single"
+
+        # 🧩 If we're in Image mode, validate paths *before* spawning a thread
+        if current_mode == "Image":
+            if (not input_image_path.get().strip() or
+                not depth_image_path.get().strip() or
+                not output_image_path.get().strip()):
+                messagebox.showerror(
+                    "Missing paths",
+                    "Please select input image, depth map image, and output image path before rendering."
+                )
+                return
+
         if process_thread is not None and process_thread.is_alive():
             print("⚠️ 3D processing already running! Use Suspend/Resume/Cancel.")
             return
@@ -311,7 +301,7 @@ def handle_generate_3d():
         def _get_num(varname, default=0.0):
             return globals()[varname].get() if varname in globals() else default
 
-        # clip window
+        # clip window (video only; harmless if unused for images)
         start_s = _get_time(clip_start_var) if 'clip_start_var' in globals() else None
         end_s   = _get_time(clip_end_var)   if 'clip_end_var'   in globals() else None
         if start_s is not None and end_s is not None:
@@ -333,76 +323,136 @@ def handle_generate_3d():
         # 👇 read output-mode from the UI ("sbs"|"left"|"right"|"both")
         eye_mode = stereo_out_var.get().strip().lower()
 
-        # 👇 derive output names up-front
-        base_out = output_sbs_video_path.get()
-        base, ext = os.path.splitext(base_out)
-        left_out  = f"{base}_LEFT{ext}"
-        right_out = f"{base}_RIGHT{ext}"
+        # 👇 derive base output name depending on mode (Single / Batch / Image)
+        current_mode = mode.get().strip() if 'mode' in globals() else "Single"
+
+        if current_mode == "Image":
+            base_out = output_image_path.get().strip()
+        else:
+            base_out = output_sbs_video_path.get().strip()
+
+        if not base_out:
+            # For safety: if there's somehow no base_out, bail early
+            messagebox.showerror("Output path", "Please choose an output path before rendering.")
+            is_rendering = False
+            return
+
+        # Normalized format string from the 3D format dropdown
+        fmt = output_format.get().strip() if hasattr(output_format, "get") else str(output_format).strip()
+
+        # Precompute filenames with 3D suffixes
+        sbs_out   = apply_3d_suffix(base_out, fmt, "sbs")
+        left_out  = apply_3d_suffix(base_out, fmt, "left")
+        right_out = apply_3d_suffix(base_out, fmt, "right")
 
         # what we will run
         if eye_mode == "sbs":
-            jobs = [("sbs", base_out)]
+            jobs = [("sbs", sbs_out)]
         elif eye_mode == "left":
             jobs = [("left", left_out)]
         elif eye_mode == "right":
             jobs = [("right", right_out)]
         elif eye_mode == "both":
+            # two separate renders, each gets its own suffix
             jobs = [("left", left_out), ("right", right_out)]
         else:
-            # fallback
-            jobs = [("sbs", base_out)]
+            # fallback – treat as SBS
+            jobs = [("sbs", sbs_out)]
 
         def run_and_clear_flag():
             nonlocal start_s, end_s, sat, con, bri, ipd_value, preserve_hdr10, eye_mode
             created = []
             try:
-                for mode, out_path in jobs:
-                    print(f"▶️ Render pass: {mode} → {out_path}")
+                for mode_name, out_path in jobs:
+                    print(f"▶️ Render pass: {mode_name} → {out_path}")
 
-                    # NOTE: process_video must accept eye_mode + output_override (see patch below)
-                    out_path_done = process_video(
-                        input_video_path,
-                        selected_depth_map,
-                        output_sbs_video_path,   # still pass your Tk var (unused if output_override)
-                        selected_codec,
-                        fg_shift, mg_shift, bg_shift,
-                        sharpness_factor,
-                        output_format,
-                        selected_aspect_ratio, aspect_ratios,
-                        feather_strength, blur_ksize,
-                        progress, progress_label,
-                        suspend_flag, cancel_flag,
-                        use_ffmpeg, preserve_hdr10,
-                        selected_ffmpeg_codec, crf_value,
-                        use_subject_tracking,
-                        use_floating_window,
-                        max_pixel_shift,
-                        auto_crop_black_bars,
-                        parallax_balance,
-                        preserve_original_aspect,
-                        zero_parallax_strength,
-                        enable_edge_masking,
-                        enable_feathering,
-                        skip_blank_frames,
-                        dof_strength,
-                        convergence_strength,
-                        enable_dynamic_convergence,
-                        depth_pop_gamma, depth_pop_mid,
-                        depth_stretch_lo, depth_stretch_hi,
-                        fg_pop_multiplier, bg_push_multiplier,
-                        subject_lock_strength,
-                        sat, con, bri,
-                        ipd_value,
-                        start_s, end_s,
-                        eye_mode=mode,              # 👈 NEW
-                        output_override=out_path    # 👈 NEW
-                    )
+                    # 🖼️ IMAGE MODE: use render_sbs_3d_image(...)
+                    if current_mode == "Image":
+                        out_path_done = render_sbs_3d_image(
+                            input_image_path=input_image_path.get(),
+                            depth_image_path=depth_image_path.get(),
+                            output_image_path=out_path,
+                            fg_shift=fg_shift.get(),
+                            mg_shift=mg_shift.get(),
+                            bg_shift=bg_shift.get(),
+                            sharpness_factor=sharpness_factor.get(),
+                            output_format=output_format.get(),
+                            selected_aspect_ratio=selected_aspect_ratio,
+                            aspect_ratios=aspect_ratios,
+                            feather_strength=feather_strength.get(),
+                            blur_ksize=blur_ksize.get(),
+                            use_subject_tracking=use_subject_tracking.get(),
+                            use_floating_window=use_floating_window.get(),
+                            max_pixel_shift_percent=max_pixel_shift.get(),
+                            auto_crop_black_bars=auto_crop_black_bars.get(),
+                            parallax_balance=parallax_balance.get(),
+                            zero_parallax_strength=zero_parallax_strength.get(),
+                            enable_edge_masking=enable_edge_masking.get(),
+                            enable_feathering=enable_feathering.get(),
+                            dof_strength=dof_strength.get(),
+                            convergence_strength=convergence_strength.get(),
+                            enable_dynamic_convergence=enable_dynamic_convergence.get(),
+                            ipd_factor=ipd_value,
+                            depth_pop_gamma=depth_pop_gamma.get(),
+                            depth_pop_mid=depth_pop_mid.get(),
+                            depth_stretch_lo=depth_stretch_lo.get(),
+                            depth_stretch_hi=depth_stretch_hi.get(),
+                            fg_pop_multiplier=fg_pop_multiplier.get(),
+                            bg_push_multiplier=bg_push_multiplier.get(),
+                            subject_lock_strength=subject_lock_strength.get(),
+                            color_saturation=sat,
+                            color_contrast=con,
+                            color_brightness=bri,
+                            eye_mode=mode_name,
+                        )
+
+                    # 🎬 VIDEO MODES ("Single" or batch queue): use process_video(...)
+                    else:
+                        out_path_done = process_video(
+                            input_video_path,
+                            selected_depth_map,
+                            output_sbs_video_path,
+                            selected_codec,
+                            fg_shift, mg_shift, bg_shift,
+                            sharpness_factor,
+                            output_format,
+                            selected_aspect_ratio, aspect_ratios,
+                            feather_strength, blur_ksize,
+                            progress, progress_label,
+                            suspend_flag, cancel_flag,
+                            use_ffmpeg, preserve_hdr10,
+                            selected_ffmpeg_codec, crf_value,
+                            use_subject_tracking,
+                            use_floating_window,
+                            max_pixel_shift,
+                            auto_crop_black_bars,
+                            parallax_balance,
+                            preserve_original_aspect,
+                            zero_parallax_strength,
+                            enable_edge_masking,
+                            enable_feathering,
+                            skip_blank_frames,
+                            dof_strength,
+                            convergence_strength,
+                            enable_dynamic_convergence,
+                            depth_pop_gamma, depth_pop_mid,
+                            depth_stretch_lo, depth_stretch_hi,
+                            fg_pop_multiplier, bg_push_multiplier,
+                            subject_lock_strength,
+                            sat, con, bri,
+                            ipd_value,
+                            start_s, end_s,
+                            eye_mode=mode_name,
+                            output_override=out_path,
+                            keep_original_audio=keep_original_audio.get()
+                        )
+
                     if out_path_done:
                         created.append(out_path_done)
                     if cancel_flag.is_set():
                         break
 
-                # UI notify
+                # UI notify (on main thread)
                 ui_root = progress_label.winfo_toplevel()
                 if created:
                     msg = "Created file(s):\n" + "\n".join(created)
@@ -647,9 +697,9 @@ def reset_settings():
     output_format.set("Full-SBS")
 
     # 🧠 3D Shifting Parameters
-    fg_shift.set(8.0)
-    mg_shift.set(1.5)
-    bg_shift.set(-2.5)
+    fg_shift.set(5.0)
+    mg_shift.set(0.5)
+    bg_shift.set(-1.5)
 
     # --- NEW: Pop & Subject Controls ---
     depth_pop_gamma.set(0.85)          # mid-contrast gamma curve for depth
@@ -691,8 +741,6 @@ def reset_settings():
     contrast.set(1.00)     # 0.00..2.00
     brightness.set(0.00)   # -0.50..+0.50
 
-    
-
     # 🖼️ UI Resets
     try:
         video_thumbnail_label.config(image="", text="No preview")
@@ -727,7 +775,7 @@ def reset_settings():
     enable_edge_masking.set(True)      # whichever default you want
     enable_feathering.set(True)        # whichever default you want
 
-    # --- Aspect ratio choice (if you expose it in UI) ---
+    # --- Aspect ratio choice ---
     try:
         selected_aspect_ratio.set("Default (16:9)")
     except Exception:
@@ -1013,7 +1061,7 @@ class ScrollableFrame(ttk.Frame):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.6")
+root.title("VisionDepth3D v3.7")
 root.geometry("1734x792+131+119")
 root.resizable(True, True)
 
@@ -1242,9 +1290,9 @@ def build_dark_header(root, on_language_change):
         command=lambda: messagebox.showinfo(
             "About VisionDepth3D",
             (
-                "VisionDepth3D v3.6\n"
+                "VisionDepth3D v3.6.3\n"
                 "----------------------------\n"
-                "A hybrid real-time 2D-to-3D conversion suite for cinema and VR.\n\n"
+                "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
                 " • Depth map blending (multi-model)\n"
                 " • Depth-weighted parallax shifting\n"
@@ -1259,13 +1307,10 @@ def build_dark_header(root, on_language_change):
     )
     MENUS["HELP_IDX"]["about"] = help_menu.index("end")
 
-    
-
-
     _menu_add(help_menu, t("Help.OfficialWebsite"), open_website,               "F2"); MENUS["HELP_IDX"]["website"] = help_menu.index("end")
     _menu_add(help_menu, t("Help.Reddit"),          open_reddit,                "F3"); MENUS["HELP_IDX"]["reddit"]  = help_menu.index("end")
-    _menu_add(help_menu, t("Help.Docs"),            open_method,                "F4"); MENUS["HELP_IDX"]["docs"]    = help_menu.index("end")
-    _menu_add(help_menu, t("Help.StarGithub"),      open_github,                "F5"); MENUS["HELP_IDX"]["star"]    = help_menu.index("end")
+    _menu_add(help_menu, t("Help.StarGithub"),      open_github,                "F4"); MENUS["HELP_IDX"]["star"]    = help_menu.index("end")
+    _menu_add(help_menu, t("Help.Docs"),            open_method,                "F5"); MENUS["HELP_IDX"]["docs"]    = help_menu.index("end")
 
     help_menu.add_separator()
 
@@ -1364,9 +1409,9 @@ header.grid(row=0, column=0, sticky="ew")
 # Shortcuts
 
 root.bind_all("<Control-q>", lambda e: root.quit())
-root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.5\n"
+root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.7\n"
                 "----------------------------\n"
-                "A hybrid real-time 2D-to-3D conversion suite for cinema and VR.\n\n"
+                "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
                 " • 25+ AI depth estimation models\n"
                 " • Depth-weighted parallax shifting\n"
@@ -1407,10 +1452,10 @@ root.bind_all("<Control-a>", lambda e: launch_audio_gui())              # Audio 
 
 
 # Arrow key navigation between tabs
-root.bind_all("<Left>",  lambda e: tab_control.select(frametools_tab))
-root.bind_all("<Up>",    lambda e: tab_control.select(depth_estimation_frame))
-root.bind_all("<Right>", lambda e: tab_control.select(depth_blend_frame))
-root.bind_all("<Down>",  lambda e: tab_control.select(visiondepth_frame))
+root.bind_all("<Control-Left>",  lambda e: tab_control.select(frametools_tab))
+root.bind_all("<Control-Up>",    lambda e: tab_control.select(depth_estimation_frame))
+root.bind_all("<Control-Right>", lambda e: tab_control.select(depth_blend_frame))
+root.bind_all("<Control-Down>",  lambda e: tab_control.select(visiondepth_frame))
 
 
 
@@ -1444,7 +1489,7 @@ main_content.pack(side="right", fill="both", expand=True)
 
 # --- Depth Blender Tab (scrollable, dark) ---
 depth_blend_frame = ttk.Frame(tab_control, style="VD3D.TFrame")
-tab_control.add(depth_blend_frame, text="Depth-Blender")
+tab_control.add(depth_blend_frame, text="Depth Blender")
 depth_blend_index = tab_control.index("end") - 1
 
 scroll_area = ScrollableFrame(depth_blend_frame, vscroll=True, hscroll=False,
@@ -1516,7 +1561,7 @@ class DepthBlenderTab(ttk.Frame):
         self.out_path = tk.StringVar()
         self.w_var = tk.StringVar()
         self.h_var = tk.StringVar()
-        self.use_gpu = tk.BooleanVar(value=TORCH_CUDA)
+        self.use_gpu = tk.BooleanVar(value=(TORCH_DEVICE_NAME != "cpu"))
 
         # params
         self.white_strength = tk.DoubleVar(value=1.0)
@@ -1613,15 +1658,20 @@ class DepthBlenderTab(ttk.Frame):
         self.gpu_row = ttk.Frame(left, style="VD3D.TFrame")
         self.gpu_row.pack(fill="x", padx=6, pady=0)
 
+        gpu_label = f"Use GPU ({TORCH_DEVICE_NAME})"
         self.gpu_btn = ttk.Checkbutton(
             self.gpu_row,
-            text="Use GPU (PyTorch CUDA)",
+            text=gpu_label,
             variable=self.use_gpu,
             command=lambda: self._schedule_preview(120),
             style="VD3D.TCheckbutton"
         )
-        self.gpu_btn.pack(anchor="w")
 
+        self.gpu_btn.pack(anchor="w")
+        
+        if TORCH_DEVICE_NAME == "cpu":
+            self.gpu_btn.state(["disabled"])
+                
         # --- Inputs ---
         self.paths = ttk.LabelFrame(left, text="Inputs", style="VD3D.TLabelframe")
         self.paths.pack(fill="x", padx=6, pady=6)
@@ -1759,10 +1809,9 @@ class DepthBlenderTab(ttk.Frame):
         tooltip_refs["DB.SigmaC"]   = CreateToolTip(self.lbl_sigmaC,lambda: t("Tooltip.DB.SigmaColor"))
         tooltip_refs["DB.SigmaS"]   = CreateToolTip(self.lbl_sigmaS,lambda: t("Tooltip.DB.SigmaSpace"))
         
-        tooltip_refs["DB.PreviewFrame"]   = CreateToolTip(self.scrub,lambda: t("Tooltip.DB.PreviewFrame"))
-        tooltip_refs["DB.BlendParms"]   = CreateToolTip(self.parms,lambda: t("Tooltip.DB.BlendParms"))
-        tooltip_refs["DB.ModeTitle"]   = CreateToolTip(self.mode_frame,lambda: t("DB.ModeTitle"))
-        tooltip_refs["DB.TitleLbl"]   = CreateToolTip(self.title_lbl,lambda: t("DB.TitleLbl"))
+        tooltip_refs["DB.PreviewFrame"]   = CreateToolTip(self.scrub,     lambda: t("Tooltip.DB.PreviewFrame"))
+        tooltip_refs["DB.BlendParms"]     = CreateToolTip(self.parms,     lambda: t("Tooltip.DB.BlendParms"))
+        tooltip_refs["DB.ModeTitle"]      = CreateToolTip(self.mode_frame,lambda: t("Tooltip.DB.ModeTitle"))
         
 
     def refresh_labels(self):
@@ -1800,7 +1849,7 @@ class DepthBlenderTab(ttk.Frame):
         _cfg(self.rb_frames,  text=t("Folders (frames)"))
         _cfg(self.rb_videos,  text=t("Videos"))
 
-        _cfg(self.gpu_btn,    text=t("Use GPU (PyTorch CUDA)"))
+        _cfg(self.gpu_btn, text=f"Use GPU ({TORCH_DEVICE_NAME})")
 
         # Parameter section title lives on the labelframe itself:
         # Find the LabelFrame by keeping a handle if you need to localize its 'text' too.
@@ -2080,6 +2129,7 @@ class DepthBlenderTab(ttk.Frame):
 
         except Exception:
             pass
+            
     def _draw_preview_placeholder(self):
         c = self.preview_canvas
         if not c: return
@@ -2140,8 +2190,8 @@ class DepthBlenderTab(ttk.Frame):
 # Mount the Depth Blender UI inside the tab
 depth_blender_ui = DepthBlenderTab(depthblend_content_frame)
 depth_blender_ui.pack(fill="both", expand=True)
-# --- Depth Content ---
 
+# --- Depth Content ---
 local_model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "weights"))
 os.makedirs(local_model_dir, exist_ok=True)
 
@@ -2151,7 +2201,7 @@ def load_supported_models():
 
         # Marigold
         "Marigold Depth v1.1 (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "Marigold Depth v1.0":              "prs-eth/marigold-depth-v1-0",
+        "Marigold Depth v1.0":             "prs-eth/marigold-depth-v1-0",
 
         # Distill-Any-Depth
         "Distill-Any-Depth Large (xingyang1)": "xingyang1/Distill-Any-Depth-Large-hf",
@@ -2159,13 +2209,22 @@ def load_supported_models():
         "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
-        # Depth Anything v2
+        # Depth Anything
+        "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
+        
+#        "DA3-GIANT":              "depth-anything/DA3-GIANT",
+#        "DA3-LARGE":              "depth-anything/DA3-LARGE",
+#        "DA3-BASE":               "depth-anything/DA3-BASE",
+#        "DA3-SMALL":               "depth-anything/DA3-SMALL",
+        "Video Depth Anything Large":              "depth-anything/Video-Depth-Anything-Large",
+        "Video Depth Anything Small":              "depth-anything/Video-Depth-Anything-Small",
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
         "Depth Anything v2 Metric Indoor (Large)": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "Depth Anything v2 Metric Outdoor (Large)":"depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-        "Depth Anything v2 Giant (safetensors)": "Nap/depth_anything_v2_vitg",
+
+        "Depth Anything v2 Giant (safetensors)":   "dav2:vitg_fp32",
 
         # Depth Anything v1
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
@@ -2176,7 +2235,6 @@ def load_supported_models():
         # Prompt Depth
         "Prompt Depth Anything VITS Transparent": "depth-anything/prompt-depth-anything-vits-transparent-hf",
         
-
         # Other popular models
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -2185,9 +2243,6 @@ def load_supported_models():
         "DPT Large (Manojb)":          "Manojb/dpt-large",
         "DPT BEiT Large 512":          "Intel/dpt-beit-large-512",
         "MiDaS v2 (Qualcomm)":         "qualcomm/Midas-V2",
-
-        # Local ONNX wrapper
-        "Video Depth Anything (ONNX)": "videodepthanything:VideoDepthAnything",
     }
 
 
@@ -2202,14 +2257,52 @@ def load_supported_models():
     return models
 
 supported_models = load_supported_models()
-
 selected_model = tk.StringVar(root, value="-- Select Model --")
 colormap_var = tk.StringVar(root, value="Default")
 invert_var = tk.BooleanVar(root, value=False)
 save_frames_var = tk.BooleanVar(value=False)
 output_dir = tk.StringVar(value="")
-# near other UI vars
-use_fp16_var = tk.BooleanVar(value=CUDA_AVAILABLE)  # default ON only if CUDA present
+
+def fp16_supported():
+    try:
+        import torch
+        # If GPU exists and supports half precision
+        return torch.cuda.is_available() or getattr(torch.version, "hip", None) is not None
+    except Exception:
+        return False
+
+use_fp16_var = tk.BooleanVar(value=fp16_supported())
+
+FFMPEG_CODEC_MAP = {
+    # Software (CPU) Encoders
+    "H.264 / AVC (libx264 - CPU)": "libx264",
+    "H.265 / HEVC (libx265 - CPU)": "libx265",
+    "AV1 (libaom - CPU)": "libaom-av1",
+    "AV1 (SVT - CPU, faster)": "libsvtav1",
+    "MPEG-4 (mp4v - CPU)": "mp4v",
+    "XviD (AVI - CPU)": "XVID",
+    "DivX (AVI - CPU)": "DIVX",
+
+    # NVIDIA NVENC
+    "H.264 / AVC (NVENC - NVIDIA GPU)": "h264_nvenc",
+    "H.265 / HEVC (NVENC - NVIDIA GPU)": "hevc_nvenc",
+    "AV1 (NVENC - NVIDIA RTX 40+ GPU)": "av1_nvenc",
+
+    # AMD AMF
+    "H.264 / AVC (AMF - AMD GPU)": "h264_amf",
+    "H.265 / HEVC (AMF - AMD GPU)": "hevc_amf",
+    "AV1 (AMF - AMD RDNA3+)": "av1_amf",
+
+    # Intel QSV
+    "H.264 / AVC (QSV - Intel GPU)": "h264_qsv",
+    "H.265 / HEVC (QSV - Intel GPU)": "hevc_qsv",
+    "VP9 (QSV - Intel GPU)": "vp9_qsv",
+    "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
+}
+
+codec_var = tk.StringVar(value=list(FFMPEG_CODEC_MAP.keys())[0])  # Default first option
+
+
 
 INFERENCE_RESOLUTIONS = {
     "Original": None,
@@ -2218,7 +2311,7 @@ INFERENCE_RESOLUTIONS = {
     "256x256": (256, 256),
     "384x384": (384, 384),
     "448x448": (448, 448),
-    "512x512 (VDA)": (512, 512),
+    "518x518 (VDA)": (518, 518),
     "576x576": (576, 576),
     "640x640": (640, 640),
     "704x704": (704, 704),
@@ -2442,13 +2535,36 @@ offload_mode_dropdown = ttk.Combobox(
 offload_mode_dropdown.set("none")
 offload_mode_dropdown.pack()
 
+# Disable offload selection if unsupported
+if not offload_available():
+    offload_mode_dropdown.set("none")
+    offload_mode_dropdown.configure(state="disabled")
+
+
 float_16_btn = tk.Checkbutton(
     sidebar,
-    text="Use float16 (CUDA)",
+    text="Use float16",
     variable=use_fp16_var,
     bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
 )
 float_16_btn.pack()
+
+codec_label = ttk.Label(
+    sidebar,
+    text=t("Video Codec:"),
+    style="VD3D.TLabel"
+)
+codec_label.pack(pady=(10, 2))
+
+codec_dropdown = ttk.Combobox(
+    sidebar,
+    textvariable=codec_var,
+    values=list(FFMPEG_CODEC_MAP.keys()),
+    state="readonly",
+    width=28,
+    style="VD3D.TEntry"
+)
+codec_dropdown.pack(pady=(0,10))
 
 
 progress_bar = ttk.Progressbar(
@@ -2463,10 +2579,36 @@ status_label = tk.Label(
 )
 status_label.pack(pady=5)
 
-cancel_depth_button = tk.Button(
-    sidebar, text=t("Cancel"), command=cancel_processing, bg="red", fg="white"
+pause_depth_button = tk.Button(
+    sidebar,
+    text="Pause",
+    command=request_depth_pause,
+    bg="#444444",
+    fg="white",
+    width=20
 )
-cancel_depth_button.pack(pady=5)
+pause_depth_button.pack(pady=(5,2))
+
+resume_depth_button = tk.Button(
+    sidebar,
+    text="Resume",
+    command=request_depth_resume,
+    bg="#5c8d5c",
+    fg="white",
+    width=20
+)
+resume_depth_button.pack(pady=2)
+
+cancel_depth_button = tk.Button(
+    sidebar,
+    text="Cancel",
+    command=request_depth_cancel,
+    bg="#aa3333",
+    fg="white",
+    width=20
+)
+cancel_depth_button.pack(pady=2)
+
 
 # --- Depth Content: Image previews ---
 # --- Top Frame: For the original image ---
@@ -2529,6 +2671,7 @@ process_video_button = tk.Button(
         invert_var,
         inference_steps_entry,
         offload_mode_dropdown,
+        codec_var,
     ),
     width=25,
     bg="#4a4a4a",
@@ -2548,7 +2691,8 @@ process_video_folder_button = tk.Button(
         progress_bar,
         cancel_requested,
         invert_var,
-        save_frames_var.get()  # Optional, if used
+        save_frames_var.get(),        # Optional, if used
+        codec_var,
     ),
     width=25,
     bg="#4a4a4a",
@@ -2999,6 +3143,8 @@ subject_lock_strength = tk.DoubleVar(value=1.00)
 saturation = tk.DoubleVar(value=1.00)   # 0.00..2.00
 contrast   = tk.DoubleVar(value=1.00)   # 0.00..2.00
 brightness = tk.DoubleVar(value=0.00)   # -0.50..+0.50
+keep_original_audio = tk.BooleanVar(value=True)
+
 
 
 # --- Clip range (optional) ---
@@ -3012,6 +3158,10 @@ ipd_factor_var  = tk.DoubleVar(value=1.00)    # 0.5..1.5 typical
 stereo_out_var   = tk.StringVar(value="sbs")   # sbs | left | right | both
 delete_fsbs_var  = tk.BooleanVar(value=False)  # delete full SBS after split
 preserve_hdr10_var = tk.BooleanVar(value=False)
+
+input_image_path  = tk.StringVar()
+depth_image_path  = tk.StringVar()
+output_image_path = tk.StringVar()
 
 
 aspect_ratios = {
@@ -3120,6 +3270,34 @@ gui_variables = {
     
 
 }
+
+def select_input_image(input_image_path_var):
+    path = filedialog.askopenfilename(
+        filetypes=[("Image files", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp")]
+    )
+    if path:
+        input_image_path_var.set(path)
+
+
+def select_depth_image(depth_image_path_var):
+    path = filedialog.askopenfilename(
+        filetypes=[("Image files", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp")]
+    )
+    if path:
+        depth_image_path_var.set(path)
+
+
+def select_output_image(output_image_path_var):
+    path = filedialog.asksaveasfilename(
+        defaultextension=".png",
+        filetypes=[
+            ("PNG files", "*.png"),
+            ("JPEG files", "*.jpg;*.jpeg"),
+            ("TIFF files", "*.tif;*.tiff"),
+        ],
+    )
+    if path:
+        output_image_path_var.set(path)
 
 
 def clear_clip():
@@ -3581,9 +3759,10 @@ preset_var = tk.StringVar(value="Select Preset")
 preset_menu = ttk.Combobox(
     options_frame,
     textvariable=preset_var,
+    style="VD3D.TEntry",
     values=["Balanced Depth", "IMAX Depth", "Pop-Out 3D"],
     state="readonly",          # prevent typing
-    width=18                   # tweak to taste
+    width=20                   # tweak to taste
 )
 preset_menu.grid(row=8, column=3, sticky="e", padx=10, pady=4)
 
@@ -3798,8 +3977,7 @@ encoding_frame.grid(row=2, column=0, sticky="new", pady=(8, 0))
 # Make columns evenly resize & give a minimum so controls don't squash
 for i in range(6):
     encoding_frame.columnconfigure(i, weight=1, minsize=110)
-
-# ───────── Row 0: Stereo output + Delete SBS ─────────
+# ───────── Row 0: Stereo output + Renderer + Keep Audio + Delete SBS + HDR ─────────
 StereoOutput_label = tk.Label(
     encoding_frame,
     text="Left/Right Output",
@@ -3817,13 +3995,26 @@ tk.OptionMenu(
 use_ffmpeg_checkbox = tk.Checkbutton(
     encoding_frame,
     text=t("Use FFmpeg Renderer"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+    bg="#1c1c1c",
+    fg="white",
+    selectcolor="#2b2b2b",
     variable=use_ffmpeg,
-    anchor="w",
-    justify="left"
+    anchor="w"
 )
 use_ffmpeg_checkbox.grid(row=0, column=2, sticky="w", padx=5)
 
+keep_audio_checkbox = tk.Checkbutton(
+    encoding_frame,
+    text="Keep Original Audio",
+    variable=keep_original_audio,
+    bg="#1c1c1c",
+    fg="white",
+    activebackground="#1c1c1c",
+    selectcolor="#1c1c1c",
+    anchor="w",
+    justify="left"
+)
+keep_audio_checkbox.grid(row=0, column=3, sticky="w", padx=5)
 
 DeleteSBS_label = tk.Checkbutton(
     encoding_frame,
@@ -3832,9 +4023,11 @@ DeleteSBS_label = tk.Checkbutton(
     bg="#1c1c1c",
     fg="white",
     activebackground="#1c1c1c",
-    selectcolor="#1c1c1c"
+    selectcolor="#1c1c1c",
+    anchor="w",
+    justify="left"
 )
-DeleteSBS_label.grid(row=0, column=3, columnspan=2, sticky="w", padx=5)
+DeleteSBS_label.grid(row=0, column=4, sticky="w", padx=5)
 
 hdr_checkbox = tk.Checkbutton(
     encoding_frame,
@@ -3849,7 +4042,7 @@ hdr_checkbox = tk.Checkbutton(
     anchor="w",
     justify="left"
 )
-hdr_checkbox.grid(row=0, column=4, columnspan=2, sticky="w", padx=5)
+hdr_checkbox.grid(row=0, column=5, sticky="w", padx=5)
 
 
 # ───────── Row 1: Aspect • FFmpeg Codec • Codec ─────────
@@ -3942,7 +4135,6 @@ tk.Scale(
     bd=0
 ).grid(row=2, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
 
-
 # --- Clip Range UI ---
 clip_frame = tk.LabelFrame(
     right_col,
@@ -3966,17 +4158,28 @@ def _time_validate(s: str) -> bool:
 
 vcmd = (clip_frame.register(_time_validate), "%P")
 
-tk.Label(clip_frame, text="Start (HH:MM:SS[.ms] or seconds):").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+start_clip_range_label = tk.Label(
+    clip_frame, text="Start (HH:MM:SS[.ms] or seconds):"
+)
+start_clip_range_label.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+
 start_entry = tk.Entry(clip_frame, textvariable=clip_start_var, width=18, validate="key", validatecommand=vcmd)
 start_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
 
-tk.Label(clip_frame, text="End (HH:MM:SS[.ms] or seconds):").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+end_clip_range_label = tk.Label(
+    clip_frame, text="End (HH:MM:SS[.ms] or seconds):"
+)
+end_clip_range_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
+
 end_entry = tk.Entry(clip_frame, textvariable=clip_end_var, width=18, validate="key", validatecommand=vcmd)
 end_entry.grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
 btns = tk.Frame(clip_frame)
 btns.grid(row=0, column=2, rowspan=2, padx=6, pady=4, sticky="e")
-tk.Button(btns, text="Clear", command=clear_clip).grid(row=0, column=0, padx=4)
+clear_button_label = tk.Button(
+    btns, text="Clear", command=clear_clip
+)
+clear_button_label.grid(row=0, column=0, padx=4)
 
 # ── INPUT SOURCES (own frame) ──────────────────────────────────────────────
 inputs_frame = tk.LabelFrame(
@@ -4009,15 +4212,20 @@ ttk.Combobox(
     textvariable=mode,
     style="VD3D.TEntry",
     state="readonly",
-    values=["Single", "Batch"])\
+    values=["Single", "Batch", "Image"])\
 .grid(row=0, column=1, pady=5, padx=5, sticky="w")
 
 # --- Frame Containers (children of inputs_frame) ---
 single_frame = tk.Frame(inputs_frame, bg="#1e1e1e")
 batch_frame  = tk.Frame(inputs_frame, bg="#1e1e1e")
+image_frame  = tk.Frame(inputs_frame, bg="#1e1e1e")
+
 single_frame.grid(row=1, column=0, columnspan=6, sticky="ew")
 batch_frame.grid(row=1, column=0, columnspan=6, sticky="ew")
+image_frame.grid(row=1, column=0, columnspan=6, sticky="ew")
+
 batch_frame.grid_remove()
+image_frame.grid_remove()
 
 # --- Single Input Fields ---
 select_input_video_button = ttk.Button(
@@ -4068,6 +4276,53 @@ ttk.Entry(
 
 ).grid(row=2, column=1, pady=5, padx=5, sticky="ew")
 
+# --- Image Input Fields ---
+image_select_input_button = ttk.Button(
+    image_frame,
+    text=t("Select Input Image"),
+    command=lambda: select_input_image(input_image_path),
+    style="VD3D.TButton"
+)
+image_select_input_button.grid(row=0, column=0, pady=5, sticky="ew")
+
+ttk.Entry(
+    image_frame,
+    textvariable=input_image_path,
+    style="VD3D.TEntry",
+    width=50,
+).grid(row=0, column=1, pady=5, padx=5, sticky="ew")
+
+image_select_depth_button = ttk.Button(
+    image_frame,
+    text=t("Select Depth Map Image"),
+    command=lambda: select_depth_image(depth_image_path),
+    style="VD3D.TButton",
+)
+image_select_depth_button.grid(row=1, column=0, pady=5, sticky="ew")
+
+ttk.Entry(
+    image_frame,
+    textvariable=depth_image_path,
+    width=50,
+    style="VD3D.TEntry",
+).grid(row=1, column=1, pady=5, padx=5, sticky="ew")
+
+image_select_output_button = ttk.Button(
+    image_frame,
+    text=t("Select Output Image"),
+    command=lambda: select_output_image(output_image_path),
+    style="VD3D.TButton",
+)
+image_select_output_button.grid(row=2, column=0, pady=5, sticky="ew")
+
+ttk.Entry(
+    image_frame,
+    textvariable=output_image_path,
+    width=50,
+    style="VD3D.TEntry",
+).grid(row=2, column=1, pady=5, padx=5, sticky="ew")
+
+
 # --- Batch Input Fields ---
 def add_to_listbox(listbox, filetypes):
     files = filedialog.askopenfilenames(filetypes=filetypes)
@@ -4096,14 +4351,20 @@ batch_depth_button = ttk.Button(
 )
 batch_depth_button.grid(row=1, column=0, pady=5, sticky="ew")
 
-# --- Toggle Mode Visibility ---
 def toggle_mode(*args):
-    if mode.get() == "Single":
+    m = mode.get()
+    if m == "Single":
         batch_frame.grid_remove()
+        image_frame.grid_remove()
         single_frame.grid()
-    else:
+    elif m == "Batch":
         single_frame.grid_remove()
+        image_frame.grid_remove()
         batch_frame.grid()
+    elif m == "Image":
+        single_frame.grid_remove()
+        batch_frame.grid_remove()
+        image_frame.grid()
 
 mode.trace_add("write", toggle_mode)
 toggle_mode()  # Init
@@ -4180,7 +4441,7 @@ option_menu.pack(side="left", padx=5)
 # Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(
     button_frame,
-    text=t("Generate 3D Video"),
+    text=t("Generate 3D"),
     bg="green",
     fg="white",
     cursor="hand2",
@@ -4340,6 +4601,8 @@ tooltip_refs["ProcessImage"] = CreateToolTip(process_image_button, lambda: t("To
 tooltip_refs["ProcessImageFolder"] = CreateToolTip(process_image_folder_button, lambda: t("Tooltip.ProcessImageFolder"))
 tooltip_refs["ProcessVideo"] = CreateToolTip(process_video_button, lambda: t("Tooltip.ProcessVideo"))
 tooltip_refs["ProcessVideoFolder"] = CreateToolTip(process_video_folder_button, lambda: t("Tooltip.ProcessVideoFolder"))
+tooltip_refs["SelectedDepthCodec"] = CreateToolTip(codec_label, lambda: t("Tooltip.SelectedDepthCodec"))
+
 
 
 # -- 3D Render Tab --
@@ -4350,6 +4613,9 @@ tooltip_refs["ResumeButton"] = CreateToolTip(resume_button, lambda: t("Tooltip.R
 tooltip_refs["CancelButton"] = CreateToolTip(cancel_button, lambda: t("Tooltip.CancelButton"))
 tooltip_refs["ResetButton"] = CreateToolTip(reset_button, lambda: t("Tooltip.ResetButton"))
 tooltip_refs["ColorResetButton"] = CreateToolTip(color_reset_button, lambda: t("Tooltip.ColorResetButton"))
+tooltip_refs["ClipRangeLabel"] = CreateToolTip(clip_frame, lambda: t("Tooltip.ClipRangeLabel"))
+tooltip_refs["StartClipRangeLabel"] = CreateToolTip(start_clip_range_label, lambda: t("Tooltip.StartClipRangeLabel"))
+tooltip_refs["EndClipRangeLabel"] = CreateToolTip(end_clip_range_label, lambda: t("Tooltip.EndClipRangeLabel"))
 
 tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, lambda: t("Tooltip.OptionMenu"))
 tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, lambda: t("Tooltip.AspectPreview"))
@@ -4395,6 +4661,8 @@ tooltip_refs["NVENCCQ"] = CreateToolTip(nvenc_cq_value_label, lambda: t("Tooltip
 tooltip_refs["SelectedCodec"] = CreateToolTip(selected_codec_label, lambda: t("Tooltip.SelectedCodec"))
 tooltip_refs["FFmpegCodec"] = CreateToolTip(selected_ffmpeg_codec_label, lambda: t("Tooltip.FFmpegCodec"))
 tooltip_refs["AspectRatio"] = CreateToolTip(selected_aspect_ratio_label, lambda: t("Tooltip.AspectRatio"))
+tooltip_refs["KeepAudio"] = CreateToolTip(keep_audio_checkbox, lambda: t("Tooltip.KeepAudio"))
+tooltip_refs["Float16Button"] = CreateToolTip(float_16_btn, lambda: t("Tooltip.Float16Button"))
 
 # --- IPD Controls ---
 tooltip_refs["IPDShift"] = CreateToolTip(ipd_label, lambda: t("Tooltip.IPDShift"))
@@ -4443,6 +4711,7 @@ def refresh_ui_labels():
     tab_control.tab(depth_tab_index, text=t("Depth Estimation"))
     tab_control.tab(visiondepth_tab_index, text=t("3D Video Generator"))
     tab_control.tab(frametools_tab_index, text=t("FrameTools"))
+    tab_control.tab(depth_blend_index, text=t("Depth Blender"))
 
     # Depth tab
     _cfg(selected_model_label, text=t("Model"))
@@ -4462,6 +4731,11 @@ def refresh_ui_labels():
     _cfg(process_image_folder_button, text=t("Process Image Folder"))
     _cfg(process_video_button, text=t("Process Video"))
     _cfg(process_video_folder_button, text=t("Process Video Folder"))
+    _cfg(float_16_btn, text=t("Use float16"))
+    _cfg(codec_label, text=t("Video Codec:"))
+    _cfg(pause_depth_button, text=t("Pause"))
+    _cfg(resume_depth_button, text=t("Resume"))
+    _cfg(cancel_depth_button, text=t("Cancel"))
     
 
     # 3D Render tab — existing controls
@@ -4472,14 +4746,16 @@ def refresh_ui_labels():
     _cfg(select_input_video_button, text=t("Select Input Video"))
     _cfg(select_depth_map_button, text=t("Select Depth Map"))
     _cfg(select_output_video_button, text=t("Select Output Video"))
+    _cfg(image_select_input_button, text=t("Select Input Image"))
+    _cfg(image_select_depth_button, text=t("Select Depth Map Image"))
+    _cfg(image_select_output_button, text=t("Select Output Image"))
     _cfg(format_button, text=t("3D Format"))
-    _cfg(start_button, text=t("Generate 3D Video"))
+    _cfg(start_button, text=t("Generate 3D"))
     _cfg(batch_start_button, text=t("Start Batch Render"))
     _cfg(preview_button, text=t("Open Preview"))
     _cfg(suspend_button, text=t("Suspend"))
     _cfg(resume_button, text=t("Resume"))
     _cfg(cancel_button, text=t("Cancel"))
-    _cfg(cancel_depth_button, text=t("Cancel"))
     _cfg(reset_button, text=t("Reset to Defaults"))
     _cfg(color_reset_button, text=t("Reset"))
     _cfg(inputs_frame, text=t("Input Sources"))
@@ -4534,6 +4810,11 @@ def refresh_ui_labels():
     _cfg(StereoOutput_label, text=t("Left/Right Output"))
     _cfg(DeleteSBS_label, text=t("Delete SBS after"))
     _cfg(hdr_checkbox, text=t("Preserve HDR10"))
+    _cfg(keep_audio_checkbox , text=t("Keep Original Audio"))
+    _cfg(clip_frame, text=t("Clip Range (optional)"))
+    _cfg(start_clip_range_label, text=t("Start (HH:MM:SS[.ms] or seconds):"))
+    _cfg(end_clip_range_label, text=t("End (HH:MM:SS[.ms] or seconds):"))
+    _cfg(clear_button_label, text=t("Clear"))
 
     # FrameTools tab
     _cfg(extract_frames_button, text=t("Extract Frames from Video"))
@@ -4617,6 +4898,8 @@ def apply_preset(preset_name):
     auto_crop_black_bars.set(bool(config.get("auto_crop_black_bars", False)))
     skip_blank_frames.set(bool(config.get("skip_blank_frames", False)))
     enable_dynamic_convergence.set(bool(config.get("enable_dynamic_convergence", True)))
+    use_subject_tracking.set(bool(config.get("use_subject_tracking", True)))
+
 
     # --- NEW: pop & subject controls (with sane clamps) ---
     def _clamp(v, lo, hi): return max(lo, min(hi, v))
@@ -4705,6 +4988,7 @@ def save_current_preset(name="custom_preset.json"):
         "use_floating_window": use_floating_window.get(),
         "auto_crop_black_bars": auto_crop_black_bars.get(),
         "skip_blank_frames": skip_blank_frames.get(),
+        "use_subject_tracking": use_subject_tracking.get(),
         "dof_strength": dof_strength.get(),
         "convergence_strength": convergence_strength.get(),
         "enable_dynamic_convergence": enable_dynamic_convergence.get(),
@@ -4741,10 +5025,6 @@ def save_current_preset(name="custom_preset.json"):
     preset_menu.set(os.path.splitext(name)[0])
 
 
-
-
-
-
 # Ensure settings are saved when the program closes
 def on_exit():
     save_settings()
@@ -4755,8 +5035,3 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
-
-
-
-
-
