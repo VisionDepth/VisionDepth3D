@@ -3,17 +3,24 @@ import os, gc, cv2, math, time, numpy as np, threading, queue, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 
-# --- Optional GPU (PyTorch/CUDA) ---
+# --- Universal PyTorch device selector ---
 try:
     import torch
-    TORCH_CUDA = torch.cuda.is_available()
-    if TORCH_CUDA:
-        torch.set_grad_enabled(False)
-        torch.backends.cudnn.benchmark = True
-except Exception:
-    torch = None
-    TORCH_CUDA = False
+    torch.set_grad_enabled(False)
 
+    if torch.cuda.is_available():
+        device = torch.device("cuda")  # NVIDIA or AMD ROCm if compiled with CUDA runtime
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")   # Apple Silicon GPU
+    else:
+        device = torch.device("cpu")
+
+    print(f"[DB] Compute device: {device.type}")
+
+except Exception as e:
+    print(f"[DB] PyTorch not available: {e}")
+    torch = None
+    device = None
 
 # ------------ Core blending ------------
 def detect_white_threshold(image, percentile=95):
@@ -62,8 +69,7 @@ def lighten_beta(v1_map, v2_map,
     tg = (min(tile_grid[0], w), min(tile_grid[1], h))
 
     # --- GPU path (torch) for mask/feathering + norm ---
-    if use_gpu and TORCH_CUDA:
-        device = "cuda"
+    if use_gpu and (device is not None and device.type != "cpu"):
         sigma = max(1.0, (int(blur_k) - 1) / 6.0)  # approx from kernel size
         blended = _blend_whites_torch(v1_map, v2_map, blur_sigma=sigma,
                                       white_strength=float(white_strength), device=device)
@@ -87,6 +93,27 @@ def lighten_beta(v1_map, v2_map,
     blended = boost_whites(blended, thr, boost_percent=30)
     return blended
 
+def _draw_preview_placeholder(self):
+    self.preview_canvas.delete("all")
+    self.preview_canvas.create_text(
+        self.preview_canvas.winfo_width() // 2,
+        self.preview_canvas.winfo_height() // 2,
+        text="Preview will appear here",
+        fill="#666",
+        font=("Segoe UI", 14, "italic")
+    )
+
+def _redraw_preview(self, imgtk=None):
+    if imgtk:
+        self._preview_imgtk = imgtk  # keep reference
+        self.preview_canvas.delete("all")
+        cw = self.preview_canvas.winfo_width()
+        ch = self.preview_canvas.winfo_height()
+        w = imgtk.width()
+        h = imgtk.height()
+        x = (cw - w) // 2
+        y = (ch - h) // 2
+        self._preview_canvas_img = self.preview_canvas.create_image(x, y, anchor="nw", image=imgtk)
 
 # ------------ Torch helpers ------------
 def _to_torch_u8_gray(np_u8):
@@ -340,7 +367,7 @@ class App(tk.Tk):
         self.out_path = tk.StringVar()
         self.w_var = tk.StringVar()
         self.h_var = tk.StringVar()
-        self.use_gpu = tk.BooleanVar(value=TORCH_CUDA)
+        self.use_gpu = tk.BooleanVar(value=(device is not None and device.type != "cpu"))
 
         # params
         self.white_strength = tk.DoubleVar(value=1.0)
@@ -428,11 +455,16 @@ class App(tk.Tk):
         ttk.Radiobutton(mode_frame, text="Videos", variable=self.mode, value="videos",
                         command=self._toggle_mode).grid(row=0, column=1, sticky="w", padx=12, pady=4)
 
-        gpu_row = ttk.Frame(parent); gpu_row.pack(fill="x", padx=6, pady=0)
-        ttk.Checkbutton(gpu_row, text="Use GPU (PyTorch CUDA)", variable=self.use_gpu,
+        gpu_type = device.type if device else "cpu"
+        ttk.Checkbutton(gpu_row, text=f"Use GPU ({gpu_type})",
+                        variable=self.use_gpu,
                         command=lambda: self._schedule_preview(120)).pack(anchor="w")
-        if not TORCH_CUDA:
-            ttk.Label(gpu_row, text="CUDA not found, running on CPU.", foreground="#c77").pack(anchor="w")
+
+                        
+        if device is None or device.type == "cpu":
+            ttk.Label(gpu_row, text="GPU not available. Using CPU.", foreground="#c77").pack(anchor="w")
+        else:
+            ttk.Label(gpu_row, text=f"GPU Mode: {device.type}", foreground="#7c7").pack(anchor="w")
 
         # Paths
         paths = ttk.LabelFrame(parent, text="Inputs")
@@ -749,7 +781,7 @@ class App(tk.Tk):
             im = Image.fromarray(cv2.cvtColor(panel, cv2.COLOR_BGR2RGB))
             imgtk = ImageTk.PhotoImage(im)
             self._preview_imgtk = imgtk  # keep ref
-            self.preview_label.after(0, lambda: self.preview_label.configure(image=imgtk))
+            self.preview_canvas.after(0, lambda: self._redraw_preview(imgtk))
         except Exception:
             # best-effort: show nothing
             pass
