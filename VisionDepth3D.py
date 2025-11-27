@@ -2209,22 +2209,21 @@ def load_supported_models():
         "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
-        # Depth Anything
+        # Depth Anything v2
+        # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
-        
+
 #        "DA3-GIANT":              "depth-anything/DA3-GIANT",
 #        "DA3-LARGE":              "depth-anything/DA3-LARGE",
 #        "DA3-BASE":               "depth-anything/DA3-BASE",
 #        "DA3-SMALL":               "depth-anything/DA3-SMALL",
-        "Video Depth Anything Large":              "depth-anything/Video-Depth-Anything-Large",
-        "Video Depth Anything Small":              "depth-anything/Video-Depth-Anything-Small",
+
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
         "Depth Anything v2 Metric Indoor (Large)": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "Depth Anything v2 Metric Outdoor (Large)":"depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-
-        "Depth Anything v2 Giant (safetensors)":   "dav2:vitg_fp32",
+        "Depth Anything v2 Giant (safetensors)": "dav2:vitg_fp32",
 
         # Depth Anything v1
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
@@ -2235,7 +2234,11 @@ def load_supported_models():
         # Prompt Depth
         "Prompt Depth Anything VITS Transparent": "depth-anything/prompt-depth-anything-vits-transparent-hf",
         
+
         # Other popular models
+        "DA-2 (Haodongli)":            "haodongli/DA-2",
+        "Bridge (Dingning)":           "Dingning/BRIDGE",
+        "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
         "MiDaS 3.0 (DPT-Hybrid)":      "Intel/dpt-hybrid-midas",
@@ -2243,7 +2246,9 @@ def load_supported_models():
         "DPT Large (Manojb)":          "Manojb/dpt-large",
         "DPT BEiT Large 512":          "Intel/dpt-beit-large-512",
         "MiDaS v2 (Qualcomm)":         "qualcomm/Midas-V2",
+
     }
+
 
 
     # ✅ auto-add local folders as “[Local] {folder}”
@@ -5035,3 +5040,4 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
+
