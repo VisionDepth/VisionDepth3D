@@ -268,7 +268,7 @@
 ## Guide Sheet: Install
 
 ### 📌 System Requirements
-- ✔️ This program runs on python 3.12
+- ✔️ This program runs on python 3.13
 - ✔️ This program has been tested on cuda 12.8
 - ✔️ Conda (Optional, Recommended for Simplicity)
 
@@ -302,7 +302,7 @@
    ```
    git clone https://github.com/VisionDepth/VisionDepth3D.git
    cd VisionDepth3D-main
-   conda create -n VD3D python=3.12
+   conda create -n VD3D python=3.13
    conda activate VD3D
    pip install -r requirements.txt
    ```
