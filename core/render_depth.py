@@ -916,13 +916,11 @@ def load_supported_models():
         # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
 
-
 #        "DA3-GIANT":              "depth-anything/DA3-GIANT",
 #        "DA3-LARGE":              "depth-anything/DA3-LARGE",
 #        "DA3-BASE":               "depth-anything/DA3-BASE",
-        "DA3-SMALL":               "depth-anything/DA3-SMALL",
-        "Video Depth Anything Large":              "depth-anything/Video-Depth-Anything-Large",
-        "Video Depth Anything Small":              "depth-anything/Video-Depth-Anything-Small",
+#        "DA3-SMALL":               "depth-anything/DA3-SMALL",
+
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
@@ -952,7 +950,6 @@ def load_supported_models():
         "DPT BEiT Large 512":          "Intel/dpt-beit-large-512",
         "MiDaS v2 (Qualcomm)":         "qualcomm/Midas-V2",
 
-        # Local ONNX wrapper
     }
 
 
@@ -975,103 +972,17 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
     and local/remote ONNX directories. Also normalizes non-standard HF weight names.
     """
     # --- DepthAnything v2 adapter: dav2:<spec> or path to *.safetensors ---
-    if isinstance(checkpoint, str) and checkpoint.startswith("dav2:"):
+    if isinstance(checkpoint, str) and (checkpoint.startswith("dav2:") or checkpoint.endswith(".safetensors")):
         from core.adapters.depthanything_adapter import load_da_v2_adapter
-        spec = checkpoint.split(":", 1)[1].strip()
-        print(f"Loading DA-V2 adapter for: {spec}")
-        return load_da_v2_adapter(spec, cache_dir=local_model_dir)
-
-    # --- bare .safetensors checkpoint pointing to a local HF-style folder ---
-    if isinstance(checkpoint, str) and checkpoint.endswith(".safetensors"):
+        spec = checkpoint.split(":", 1)[1].strip() if checkpoint.startswith("dav2:") else checkpoint
+        print(f"🧩 Loading DA-V2 adapter for: {spec}")
         try:
-            folder = os.path.dirname(checkpoint)
-            fixed_dir = _ensure_expected_weight_name(folder)
-
-            dtype_local = torch.float16 if (torch.cuda.is_available() and use_fp16) else torch.float32
-            try:
-                model = AutoModelForDepthEstimation.from_pretrained(fixed_dir, torch_dtype=dtype_local)
-            except TypeError:
-                model = AutoModelForDepthEstimation.from_pretrained(fixed_dir)
-
-            try:
-                from transformers import AutoProcessor as _Processor
-            except Exception:
-                from transformers import AutoImageProcessor as _Processor
-
-            processor = _Processor.from_pretrained(fixed_dir)
-            print(f"📂 Loaded local safetensors HF model from {fixed_dir}")
-            return model, processor
+            return load_da_v2_adapter(spec, cache_dir=local_model_dir)
         except Exception as e:
-            print(f"❌ Local .safetensors load failed: {e}")
-            return None, None
-    
-        # --- bare .pth or .pt checkpoint (Depth Anything v2 style) ---
-    if isinstance(checkpoint, str) and (checkpoint.endswith(".pth") or checkpoint.endswith(".pt")):
-        try:
-            print(f"🧩 Loading .pth checkpoint: {checkpoint}")
-            sd = torch.load(checkpoint, map_location="cpu")
-            # many repos save as {"state_dict": ...}
-            if isinstance(sd, dict) and "state_dict" in sd and isinstance(sd["state_dict"], dict):
-                sd = sd["state_dict"]
-
-            # Heuristic: pick a backbone by filename
-            ck_lower = os.path.basename(checkpoint).lower()
-            if "vitg" in ck_lower or "giant" in ck_lower:
-                backbone = "vitg"
-            elif "vitl" in ck_lower or "large" in ck_lower:
-                backbone = "vitl"
-            elif "vitb" in ck_lower or "base" in ck_lower:
-                backbone = "vitb"
-            else:
-                backbone = "vits"
-
-            # Build DA-V2 model class you already vendored
-            net = DepthAnythingV2(backbone=backbone)
-            missing, unexpected = net.load_state_dict(sd, strict=False)
-            if missing:
-                print(f"ℹ️ Missing keys: {len(missing)} (tolerated)")
-            if unexpected:
-                print(f"ℹ️ Unexpected keys: {len(unexpected)} (tolerated)")
-
-            device = torch_device
-            net = net.to(torch_device)
-
-
-            # simple preprocessor (ImageNet)
-            IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)
-            IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)
-            if device == "cuda":
-                IMAGENET_MEAN = IMAGENET_MEAN.to(torch_device)
-                IMAGENET_STD  = IMAGENET_STD.to(torch_device)
-
-            @torch.no_grad()
-            def _pth_da2_callable(images, inference_size=None, **_kw):
-                if not isinstance(images, list):
-                    images = [images]
-                outs = []
-                for img in images:
-                    if inference_size:
-                        img = img.resize(inference_size, Image.BICUBIC)
-                    x = torch.from_numpy(np.array(img).astype(np.float32)/255.0).permute(2,0,1).unsqueeze(0)
-                    if device == "cuda":
-                        x = x.to(torch_device, non_blocking=True)
-                    x = (x - IMAGENET_MEAN) / IMAGENET_STD
-                    pred = net(x)  # expects to return [B,1,H,W] or [B,H,W]
-                    if isinstance(pred, (list, tuple)):  # be lenient
-                        pred = pred[0]
-                    if pred.ndim == 4 and pred.shape[1] == 1:
-                        pred = pred[:,0]
-                    outs.append({"predicted_depth": pred.squeeze(0)})
-                return outs
-
-            # Tag it so the runner treats it like a normal callable
-            _pth_da2_callable._is_marigold = False
-            return _pth_da2_callable, {}
-        except Exception as e:
-            print(f"❌ .pth load failed: {e}")
+            print(f"❌ DA-V2 adapter failed: {e}")
             return None, None
 
-    
+
     # (optional) generic onnx: prefix
     if isinstance(checkpoint, str) and checkpoint.startswith("onnx:"):
         rel = checkpoint.split(":", 1)[1].strip()
@@ -1080,7 +991,7 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         return load_onnx_model(model_dir, device=provider)
 
     # --- Local path provided ---
-    if isinstance(checkpoint, str) and os.path.isdir(checkpoint):
+    if os.path.isdir(checkpoint):
         # Local ONNX model detection
         if os.path.exists(os.path.join(checkpoint, "model.onnx")):
             provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
@@ -1089,33 +1000,20 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
 
         # Local HF (tolerant to custom *.safetensors names)
         try:
-            repo_dir = _ensure_expected_weight_name(checkpoint)
-            dtype_local = torch.float16 if (torch.cuda.is_available() and use_fp16) else torch.float32
-            try:
-                model = AutoModelForDepthEstimation.from_pretrained(repo_dir, torch_dtype=dtype_local)
-            except TypeError:
-                # older transformers may not accept torch_dtype kw
-                model = AutoModelForDepthEstimation.from_pretrained(repo_dir)
-
-            try:
-                from transformers import AutoProcessor
-                Processor = AutoProcessor
-            except Exception:
-                from transformers import AutoImageProcessor as Processor
-
-            processor = Processor.from_pretrained(repo_dir)
-            print(f"📂 Loaded local Hugging Face model from {repo_dir}")
+            fixed_dir = _ensure_expected_weight_name(checkpoint)
+            model = AutoModelForDepthEstimation.from_pretrained(fixed_dir)
+            processor = AutoProcessor.from_pretrained(fixed_dir)
+            print(f"📂 Loaded local Hugging Face model from {fixed_dir}")
             return model, processor
         except Exception as e:
             print(f"❌ Failed to load local model: {e}")
             return None, None
 
-
     # === Diffusion Model Check (depth-first, then generic) ===
     if isinstance(checkpoint, str) and checkpoint.startswith("diffusers:"):
         model_id = checkpoint.split(":", 1)[1].strip()
-        device = TORCH_DEVICE_NAME
-        dtype  = torch.float16 if (device in ("cuda", "hip", "mps") and use_fp16) else torch.float32
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype  = torch.float16 if (torch.cuda.is_available() and use_fp16) else torch.float32
 
         # 1) Try Marigold depth pipeline
         try:
@@ -1181,53 +1079,35 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
 
 
     # --- Hugging Face online model (tolerant to custom names) ---
-    safe_folder_name = checkpoint.replace("/", "_") if isinstance(checkpoint, str) else "model"
+    safe_folder_name = checkpoint.replace("/", "_")
     local_path = os.path.join(local_model_dir, safe_folder_name)
-
     try:
+        # Try standard load first
         model = AutoModelForDepthEstimation.from_pretrained(checkpoint, cache_dir=local_path)
-        try:
-            from transformers import AutoProcessor as _Processor
-        except Exception:
-            from transformers import AutoImageProcessor as _Processor
-        processor = _Processor.from_pretrained(checkpoint, cache_dir=local_path)
+        processor = AutoProcessor.from_pretrained(checkpoint, cache_dir=local_path)
         print(f"⬇️ Downloaded model from Hugging Face: {checkpoint}")
         return model, processor
-
     except Exception as e1:
         print(f"⚠️ Standard HF load failed, trying normalization: {e1}")
         try:
+            # Pull a snapshot, normalize names, then load from the local folder
             from huggingface_hub import snapshot_download
-            snap_dir = snapshot_download(
-                repo_id=checkpoint,
-                cache_dir=local_path,
-                local_files_only=False,
-                local_dir_use_symlinks=False,  # avoids WinError 1314 on Windows
-                max_workers=1
-            )
+            snap_dir = snapshot_download(repo_id=checkpoint, cache_dir=local_path, local_files_only=False)
+            # Local HF folder load
+            fixed_dir = _ensure_expected_weight_name(checkpoint)
+            if torch.cuda.is_available() and use_fp16:
+                model = AutoModelForDepthEstimation.from_pretrained(fixed_dir, dtype=dtype)
+            else:
+                model = AutoModelForDepthEstimation.from_pretrained(fixed_dir)
+                try:
+                    p0 = next(model.parameters())
+                    print(f"🧪 Depth model loaded | dtype={p0.dtype} device={p0.device}")
+                except Exception:
+                    pass
+            processor = AutoProcessor.from_pretrained(fixed_dir)
 
-            repo_dir = _ensure_expected_weight_name(snap_dir)
-            dtype_local = torch.float16 if (torch.cuda.is_available() and use_fp16) else torch.float32
-            try:
-                model = AutoModelForDepthEstimation.from_pretrained(repo_dir, torch_dtype=dtype_local)
-            except TypeError:
-                model = AutoModelForDepthEstimation.from_pretrained(repo_dir)
-
-            try:
-                from transformers import AutoProcessor as _Processor
-            except Exception:
-                from transformers import AutoImageProcessor as _Processor
-            processor = _Processor.from_pretrained(repo_dir)
-
-            try:
-                p0 = next(model.parameters())
-                print(f"🧪 Depth model loaded | dtype={p0.dtype} device={p0.device}")
-            except Exception:
-                pass
-
-            print(f"🛠️ Normalized non-standard weights; loaded from {repo_dir}")
+            print(f"🛠️ Normalized non-standard weights; loaded from {fixed_dir}")
             return model, processor
-
         except Exception as e2:
             print(f"❌ Failed to load Hugging Face model after normalization: {e2}")
             return None, None
@@ -1242,58 +1122,44 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
 
     print(f"🧠 Loading ONNX model from: {model_path}")
 
-    # Try with ALL graph optimizations disabled (prevents bad rename/fusion issues)
     so = ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    # Stay conservative for VDA and friends
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     so.intra_op_num_threads = 1
     so.inter_op_num_threads = 1
-    # More stability especially on AMD/DirectML
-    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
 
-
-    # Build dynamic provider list
+    # Multi backend detection, but still safe
     available = ort.get_available_providers()
     providers = []
 
-    # GPU providers in priority order
     gpu_priority = [
-        "CUDAExecutionProvider",     # NVIDIA CUDA
-        "ROCMExecutionProvider",     # AMD ROCm Linux
-        "DmlExecutionProvider",      # DirectML (AMD/Intel Windows)
-        "CoreMLExecutionProvider",   # Apple GPU (M1/M2/M3)
-        "OpenVINOExecutionProvider"  # Intel optimized accel
+        "CUDAExecutionProvider",
+        "ROCMExecutionProvider",
+        "DmlExecutionProvider",
+        "CoreMLExecutionProvider",
+        "OpenVINOExecutionProvider",
     ]
-
     for p in gpu_priority:
         if p in available:
             providers.append(p)
             break
 
-    # Always add CPU fallback
+    # Always have CPU fallback
     providers.append("CPUExecutionProvider")
-
     print(f"🔧 ONNX Providers selected: {providers}")
 
-    # Attempt 1: disabled opts + chosen providers
     try:
         session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
     except Exception as e1:
-        print(f"⚠️ ORT init failed (opts disabled, {providers}): {e1}")
-        # Attempt 2: CPU only, still with opts disabled
+        print(f"⚠️ ORT init failed ({providers}): {e1}")
         try:
             session = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
         except Exception as e2:
-            print(f"💥 ORT CPU fallback failed (opts disabled): {e2}")
-            # As a last resort, try default options (may still fail on bad exports)
-            try:
-                session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-            except Exception as e3:
-                print(f"💥 ORT final fallback failed: {e3}")
-                return None, None
+            print(f"💥 ORT CPU fallback failed: {e2}")
+            return None, None
 
-    # Introspect IO (handy if the export expects multiple inputs)
+    # Introspect IO
     try:
         in_names = [i.name for i in session.get_inputs()]
         out_names = [o.name for o in session.get_outputs()]
@@ -1301,29 +1167,16 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
     except Exception:
         pass
 
-    # Pull basic shape info from the FIRST input (your current runner assumes 1 input)
     input_info = session.get_inputs()[0]
     output_info = session.get_outputs()[0]
-
     input_name = input_info.name
     output_name = output_info.name
     input_shape = input_info.shape
     input_rank = len(input_shape)
-    
-    fixed_HW = None  # (W, H)
-    try:
-        if input_rank == 5 and isinstance(input_shape[3], int) and isinstance(input_shape[4], int):
-            fixed_HW = (int(input_shape[4]), int(input_shape[3]))  # (W,H) from [..., H, W]
-        elif input_rank == 4 and isinstance(input_shape[2], int) and isinstance(input_shape[3], int):
-            fixed_HW = (int(input_shape[3]), int(input_shape[2]))  # (W,H) from [B, C, H, W]
-    except Exception:
-        fixed_HW = None
 
-    # ImageNet normalization for VDA / DINOv2
     IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-    # Detect fixed T for video models (e.g., [1, 32, 3, H, W])
     fixed_T = None
     try:
         if input_rank >= 2 and isinstance(input_shape[1], int):
@@ -1344,17 +1197,14 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
         return arrs
 
     def run_onnx(images, inference_size=None):
-        # Use fixed HW if the model requires it
-        if fixed_HW is not None:
-            inference_size = fixed_HW
-        elif inference_size is None:
+        if inference_size is None:
             raise ValueError("❌ Must provide inference_size for ONNX.")
 
+        # Keep your VDA safe snapping
         W, H = int(inference_size[0]), int(inference_size[1])
-        # Do NOT snap when fixed_HW is set
-        if fixed_HW is None:
-            W, H = snap_for_vda(W, H, base=32)
-        inference_size = (W, H)     
+        W, H = snap_for_vda(W, H, base=32)
+        inference_size = (W, H)
+
         img_batch = _prep_images(images, inference_size)
 
         if input_rank == 5:
@@ -1380,15 +1230,13 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
         else:
             return [{"predicted_depth": torch.tensor(output[b])} for b in range(output.shape[0])]
 
-
     run_onnx._is_marigold = False
     return run_onnx, {
         "input_rank": input_rank,
         "fixed_T": fixed_T,
-        "fixed_HW": fixed_HW,
         "session": session,
         "provider": providers[0] if providers else "CPUExecutionProvider",
-        "is_onnx": True
+        "is_onnx": True,
     }
 
 
@@ -2733,4 +2581,3 @@ if hasattr(threading, "excepthook"):
     def _thread_hook(args):
         _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
     threading.excepthook = _thread_hook
-
