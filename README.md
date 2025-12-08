@@ -46,7 +46,11 @@
 	  </a>
 	</p>
 
+---
 
+# Notice
+VisionDepth3D is licensed under a proprietary, no-derivatives license.  
+Forking, redistributing, modifying, or creating derivative works is strictly prohibited.
 
 ---
 
