@@ -97,7 +97,7 @@
   "Encoding Settings": "Configuración de codificación",
   "Processing Options": "Opciones de procesamiento",
   "Depth Map (3D): None": "Mapa de profundidad (3D): Ninguno",
-  "Pop & Subject Controls": "Controles de Pop y Sujeto",
+  "Depth & Parallax Controls": "Controles de profundidad y paralaje",
   "Depth Pop Gamma": "Gamma de profundidad",
   "Pop Mid (0..1)": "Pop medio (0..1)",
   "Stretch Lo": "Estiramiento bajo",
@@ -183,12 +183,18 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 Detección de escenas (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "Umbral de sensibilidad (más bajo = más cortes):",
   "Detect Scenes & Extract": "Detectar escenas y extraer",
+  "Settings": "Configuración",
+  "Open Encoder Settings…": "Abrir ajustes de codificación…",
+  "Open Processing Options…": "Abrir opciones de procesamiento…",
+
+
+
   "_Tooltips": "",
   "Tooltip.SceneDetect": "Usa PySceneDetect para encontrar automáticamente cambios de escena en el video para dividir o procesar por lotes.",
   "Tooltip.SceneDetectThreshold": "Ajusta la sensibilidad de la detección de escenas. Más bajo = más cortes; más alto = menos cortes.",
   "Tooltip.DetectScenesExtract": "Ejecuta la detección de escenas y extrae automáticamente las escenas detectadas para un procesamiento adicional.",
   "Tooltip.ModeSelect": "Elige entre el modo de renderizado único (generar un solo video 3D) o el modo por lotes (procesar varios pares de video + mapa de profundidad).",
-  "Tooltip.ApplyEntries": "Aplica los valores actuales de los controles Pop y Sujeto para actualizar la vista previa y los parámetros de renderizado.",
+  "Tooltip.ApplyEntries": "Aplica los valores actuales de profundidad y paralaje para actualizar la vista previa y los parámetros de renderizado.",
   "Tooltip.Model": "Selecciona un modelo de estimación de profundidad desde Hugging Face. Los modelos más grandes ofrecen mayor precisión pero requieren más VRAM y tiempo.",
   "Tooltip.OutputDirLabel": "Muestra la carpeta de salida actualmente seleccionada donde se guardarán todos los mapas de profundidad y videos generados.",
   "Tooltip.OutputDirButton": "Abre un cuadro de diálogo para seleccionar la carpeta donde se almacenarán todos los resultados procesados.",
@@ -288,5 +294,6 @@
   "Tooltip.EndClipRangeLabel": "Déjalo vacío para renderizar hasta el final. Acepta HH:MM:SS[.ms] o segundos.",
   "Tooltip.Float16Button": "Utiliza precisión de 16 bits (float16) para una inferencia de profundidad más rápida cuando sea compatible. Puede cambiar ligeramente la precisión de la profundidad.",
   "Tooltip.Livebtn": "Inicia Live 3D con entradas externas (webcam, tarjeta de captura o pantalla).",
+  "Tooltip.InferenceRes": "Controla el tamaño de la resolución que se envía al modelo de profundidad seleccionado. Mantén 'Original' para enviar la resolución completa al modelo de profundidad.",
   "Tooltip.Output": "Elige si sobrescribir la carpeta de fotogramas v2 o seleccionar tu propia ruta"
 }

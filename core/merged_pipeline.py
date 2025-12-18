@@ -11,6 +11,12 @@ from tqdm import tqdm
 import subprocess
 from queue import Queue
 from tkinter.simpledialog import askstring
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
@@ -42,26 +48,91 @@ else:
     device = ["CPUExecutionProvider"]
 
 provider_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU-only"
-print(f"Upscaler ONNX: {provider_txt}")
-print(f"Providers: {device}")
+print(f"Frametool Upscaler ONNX: {provider_txt}")
+
 
 # ✅ Load RIFE
 rife_path = resource_path(os.path.join("weights", "RIFE_fp32.onnx"))
 
 try:
     rife_session = ort.InferenceSession(rife_path, sess_options=session_options, providers=device)
-    print("✅ RIFE model loaded.")
+    print("FPS Upscale Model: RIFE model loaded.")
 except Exception as e:
     print(f"❌ Failed to load RIFE model: {e}")
     rife_session = None
 
-esrgan_session = None  # Lazy-load ESRGAN
+esrgan_session = None  # ONNX ESRGAN / other ONNX SR
+srresnet_model = None  # PyTorch SRResNet
+srresnet_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# which backend is currently active: "onnx", "srresnet", or "none"
+UPSCALE_BACKEND = "none"
+
+# =========================
+#  SRResNet Upscaler (PyTorch, .pth)
+# =========================
+
+class SRResBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return residual + out
 
 
+class SRResNet(nn.Module):
+    def __init__(self, num_blocks: int = 16, upscale_factor: int = 4):
+        super().__init__()
 
-def normalize_frame(img, target_size):
+        self.upscale_factor = upscale_factor
+
+        # Initial feature extraction
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, padding=4)
+        self.relu = nn.ReLU(inplace=True)
+
+        # Residual blocks
+        self.res_blocks = nn.Sequential(*[SRResBlock(64) for _ in range(num_blocks)])
+
+        # Conv after residuals
+        self.conv_res = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn_res = nn.BatchNorm2d(64)
+
+        # Upsampling (PixelShuffle)
+        up_layers = []
+        for _ in range(int(math.log2(upscale_factor))):
+            up_layers += [
+                nn.Conv2d(64, 256, 3, padding=1),
+                nn.PixelShuffle(2),
+                nn.ReLU(inplace=True),
+            ]
+        self.upsample = nn.Sequential(*up_layers)
+
+        # Final output
+        self.conv_out = nn.Conv2d(64, 3, kernel_size=9, padding=4)
+
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        residual = x
+        x = self.res_blocks(x)
+        x = self.bn_res(self.conv_res(x))
+        x = x + residual
+        x = self.upsample(x)
+        x = self.conv_out(x)
+        return x
+
+
+def normalize_frame(img, target_size=None):
     """
-    Return uint8 BGR frame exactly target_size (w,h).
+    Return uint8 BGR frame.
+    If target_size is given, resize to (w,h).
     Handles None, grayscale, BGRA, float.
     """
     if img is None:
@@ -80,12 +151,12 @@ def normalize_frame(img, target_size):
             img = img * 255.0
         img = img.astype(np.uint8)
 
-    w, h = target_size
-    if img.shape[1] != w or img.shape[0] != h:
-        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+    if target_size is not None:
+        w, h = target_size
+        if img.shape[1] != w or img.shape[0] != h:
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+
     return img
-
-
 
 def ui_set_status(widget, text):
     try:
@@ -177,9 +248,7 @@ def _frame_to_bytes(frame):
         frame = np.ascontiguousarray(frame)
     return frame.tobytes()
 
-
-
-def _frame_loader(file_list, target_size):
+def _frame_loader(file_list, target_size=None):
     q = Queue(maxsize=8)
     stop = object()
 
@@ -189,7 +258,11 @@ def _frame_loader(file_list, target_size):
             if img is None:
                 continue
             if target_size:
-                img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC)
+                img = cv2.resize(
+                    img,
+                    target_size,
+                    interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC
+                )
             q.put(img)
         q.put(stop)
 
@@ -330,22 +403,107 @@ def blend_images(original, upscaled, mode="OFF"):
     alpha_map = {"LOW": 0.85, "MEDIUM": 0.5, "HIGH": 0.25}
     alpha = alpha_map.get(mode.upper(), 1.0)
     return cv2.addWeighted(upscaled, alpha, original, 1 - alpha, 0)
-    
-def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_Gx4_fp16",
-               target_size=None, tile=None, tile_pad=8):
+
+def init_upscaler(model_path: str, enable_upscale: bool):
     """
-    Patched: preserves original behavior but adds shape/channel/dtype safety.
-    - Normalizes input (BGR uint8, no alpha).
-    - Safely handles ESRGAN output dtype/layout.
-    - Ensures `upscaled` matches `original` (and optional target_size) before blending.
+    Decide which backend to use based on model_path extension:
+      - .onnx -> ONNX / ESRGAN
+      - .pth  -> PyTorch SRResNet super-res
     """
-    global esrgan_session
+    global esrgan_session, srresnet_model, UPSCALE_BACKEND
+
+    esrgan_session = None
+    srresnet_model = None
+    UPSCALE_BACKEND = "none"
+
+    if not enable_upscale or not model_path:
+        print("Upscaler disabled.")
+        return
+
+    # Make sure we resolve correctly inside PyInstaller bundle too
+    model_path = resource_path(model_path)
+    ext = os.path.splitext(model_path)[1].lower()
+
+    if ext == ".onnx":
+        try:
+            print(f"📦 Loading ONNX upscaler from {model_path}")
+            esrgan_session = ort.InferenceSession(
+                model_path, sess_options=session_options, providers=device
+            )
+            UPSCALE_BACKEND = "onnx"
+            mode_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU"
+            print(f"⚡ ONNX upscaler ready [{mode_txt}]")
+        except Exception as e:
+            UPSCALE_BACKEND = "none"
+            print(f"❌ Failed to load ONNX upscaler: {e}")
+
+    elif ext == ".pth":
+        try:
+            print(f"📦 Loading SRResNet (.pth) upscaler from {model_path}")
+            model = SRResNet(num_blocks=16, upscale_factor=4)
+            state = torch.load(model_path, map_location=srresnet_device)
+            model.load_state_dict(state)
+            model.to(srresnet_device)
+            model.eval()
+            srresnet_model = model
+            UPSCALE_BACKEND = "srresnet"
+            mode_txt = "CUDA" if srresnet_device.type == "cuda" else "CPU"
+            print(f"⚡ SRResNet upscaler ready [{mode_txt}]")
+        except Exception as e:
+            UPSCALE_BACKEND = "none"
+            print(f"❌ Failed to load SRResNet model: {e}")
+
+    else:
+        print(f"❌ Unknown upscaler model extension: {ext}. Supported: .onnx, .pth")
+        UPSCALE_BACKEND = "none"
+
+
+def _run_srresnet(frame_bgr: np.ndarray, scale: int = 4) -> np.ndarray:
+    """
+    Run your trained SRResNet on a single BGR uint8 frame.
+    Returns a BGR uint8 image (native 4x HR from the model).
+    """
+    global srresnet_model, srresnet_device
+    if srresnet_model is None:
+        return frame_bgr
+
+    # BGR uint8 -> RGB [0,1] tensor
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    rgb = np.transpose(rgb, (2, 0, 1))  # C,H,W
+    tensor = torch.from_numpy(rgb).unsqueeze(0).to(srresnet_device)
+
+    with torch.no_grad():
+        sr = srresnet_model(tensor)
+
+    sr = sr.clamp(0.0, 1.0).cpu().numpy()[0]
+    sr = np.transpose(sr, (1, 2, 0))  # H,W,C
+    sr = (sr * 255.0).round().astype(np.uint8)
+    sr = cv2.cvtColor(sr, cv2.COLOR_RGB2BGR)
+    return sr
+
+
+def run_esrgan(frame,
+               blend_mode="OFF",
+               input_res_pct=100,
+               model_name="RealESR_Gx4_fp16",
+               target_size=None,
+               tile=None,
+               tile_pad=8):
+    """
+    Generic upscaler entrypoint.
+
+    Backends:
+      - ONNX ESRGAN (UPSCALE_BACKEND == "onnx")
+      - PyTorch SRResNet (.pth) (UPSCALE_BACKEND == "srresnet")
+
+    Always returns a BGR uint8 frame matching target_size if given.
+    """
+    global esrgan_session, srresnet_model, UPSCALE_BACKEND
     if frame is None:
         return frame
 
-    # --- helpers (local to avoid touching other code) ---
+    # --- helpers ---
     def _to_bgr_uint8(img):
-        # channels
         if img is None:
             return None
         if img.ndim == 2:
@@ -353,7 +511,6 @@ def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_G
         elif img.ndim == 3 and img.shape[2] == 4:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-        # dtype/range
         if img.dtype != np.uint8:
             img = np.clip(img, 0, 255)
             if img.max() <= 1.0:
@@ -369,18 +526,21 @@ def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_G
             img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
         return img
 
-    # --- normalize input (but keep your legacy flow) ---
     frame = _to_bgr_uint8(frame)
     original = frame.copy()
 
-    if not esrgan_session:
-        # legacy early-out unchanged
+    # No upscaler loaded
+    backend_has_model = (
+        (UPSCALE_BACKEND == "onnx" and esrgan_session is not None) or
+        (UPSCALE_BACKEND == "srresnet" and srresnet_model is not None)
+    )
+    if not backend_has_model:
         out = original
         if target_size:
             out = _fit_size(out, target_size)
         return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
 
-    # legacy: optional pre-scale for input_res_pct
+    # Optional pre-scale (applies to both backends)
     if input_res_pct != 100:
         h, w = frame.shape[:2]
         new_w = max(1, int(w * input_res_pct / 100))
@@ -388,53 +548,64 @@ def run_esrgan(frame, blend_mode="OFF", input_res_pct=100, model_name="RealESR_G
         frame = cv2.resize(
             frame,
             (new_w, new_h),
-            interpolation=cv2.INTER_AREA if input_res_pct < 100 else cv2.INTER_CUBIC
+            interpolation=cv2.INTER_AREA if input_res_pct < 100 else cv2.INTER_CUBIC,
         )
 
-    # inference (tiled or single)
+    # --- Actual backend inference ---
+    if UPSCALE_BACKEND == "srresnet":
+        # SRResNet path: use its native 4x output
+        upscaled = _run_srresnet(frame, scale=4)
+
+        upscaled = _to_bgr_uint8(upscaled)
+
+        # If a specific output size was requested, resize there directly
+        if target_size:
+            upscaled = _fit_size(upscaled, target_size)
+            original_for_blend = _fit_size(original, target_size)
+        else:
+            h_hr, w_hr = upscaled.shape[:2]
+            original_for_blend = _fit_size(original, (w_hr, h_hr))
+
+        return blend_images(original_for_blend, upscaled, mode=blend_mode)
+
+    # ---- ONNX Real-ESRGAN branch ----
     if tile:
         upscaled = _esrgan_tiled(frame, tile, tile_pad)
     else:
         tensor = preprocess_esr(frame)
         try:
-            output = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: tensor})[0]
-            # Your postprocess likely returns HWC uint8 already; still normalize just in case
+            output = esrgan_session.run(
+                None, {esrgan_session.get_inputs()[0].name: tensor}
+            )[0]
             upscaled = postprocess_esr(output)
         except Exception as e:
             print(f"❌ ESRGAN failed: {e}")
-            # legacy fallback: return original
             out = original
             if target_size:
                 out = _fit_size(out, target_size)
             return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
 
-    # --- normalize ESRGAN output in case it's float/CHW/RGB ---
-    # If postprocess already returns BGR uint8 HxWx3, this is a no-op.
     upscaled = _to_bgr_uint8(upscaled)
 
-    # legacy scale heuristic from your code
+    # 2x vs 4x heuristic for ONNX models
     scale = 2 if "x2" in model_name.lower() else 4
 
-    # bring upscaled to what the code expects next (first to the pre-input_res size * scale)
-    # i.e., upscaled should match (frame.shape * scale) then be brought back to original
     upscaled = cv2.resize(
         upscaled,
         (frame.shape[1] * scale, frame.shape[0] * scale),
-        interpolation=cv2.INTER_CUBIC
+        interpolation=cv2.INTER_CUBIC,
     )
 
-    # match original frame size for blending
     upscaled = _fit_size(upscaled, (original.shape[1], original.shape[0]))
 
-    # optional final target size for downstream writer
     if target_size:
         upscaled = _fit_size(upscaled, target_size)
         original_for_blend = _fit_size(original, target_size)
     else:
         original_for_blend = original
 
-    # final blend (unchanged behavior, just guaranteed same size/channels now)
     return blend_images(original_for_blend, upscaled, mode=blend_mode)
+
 
 
 def _esrgan_tiled(img, tile, pad):
@@ -471,16 +642,8 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     input_res_pct = settings.get("input_res_pct", 100)
     model_path = settings.get("model_path", "weights/RealESR_Gx4_fp16.onnx")
 
-    if enable_upscale:
-        if not os.path.exists(model_path):
-            print(f"❌ ESRGAN model missing: {model_path}")
-            esrgan_session = None
-        else:
-            print(f"📦 Loading ESRGAN from {model_path}")
-            esrgan_session = ort.InferenceSession(model_path, sess_options=session_options, providers=device)
-            mode_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU"
-            print(f"⚡ ESRGAN ready [{mode_txt}]")
-
+    # Initialize upscaler (ONNX or SRResNet) based on model_path extension
+    init_upscaler(model_path, enable_upscale)
 
     files = natural_sort([
         os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
@@ -496,7 +659,10 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     start = time.time()
 
     target_size = (width, height)
-    file_iter = _frame_loader(files, target_size)
+
+    # 🔥 Important: keep native resolution for the SR model / RIFE
+    file_iter = _frame_loader(files, None)
+
 
     prev = next(file_iter, None)
     if prev is None:
@@ -579,15 +745,8 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
     start = time.time()
     target_size = (width, height)
 
-    # ONNX ESRGAN session (optional)
-    try:
-        if enable_up and os.path.exists(model_path):
-            esrgan_session = ort.InferenceSession(model_path, sess_options=session_options, providers=device)
-        else:
-            esrgan_session = None
-    except Exception as e:
-        esrgan_session = None
-        print(f"ESRGAN session init failed: {e}")
+    # Initialize upscaler (ONNX or SRResNet) based on model_path extension
+    init_upscaler(model_path, enable_up)
 
     # Sorted frame list
     files = natural_sort([

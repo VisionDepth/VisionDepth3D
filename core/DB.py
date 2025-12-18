@@ -15,10 +15,10 @@ try:
     else:
         device = torch.device("cpu")
 
-    print(f"[DB] Compute device: {device.type}")
+    print(f"Depth Blender Compute device: {device.type.upper()}")
 
 except Exception as e:
-    print(f"[DB] PyTorch not available: {e}")
+    print(f"Depth Blender: PyTorch not available: {e}")
     torch = None
     device = None
 

@@ -23,7 +23,31 @@ import onnxruntime as ort
 import matplotlib.cm as cm
 from PIL import Image, ImageTk, ImageOps
 
-from transformers import AutoProcessor, AutoModelForDepthEstimation, pipeline
+
+# =========================
+# Force Hugging Face caches into VD3D /weights
+# Must be set BEFORE importing transformers/diffusers
+# =========================
+
+def _vd3d_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+_VD3D_WEIGHTS = os.path.join(_vd3d_base_dir(), "weights")
+os.makedirs(_VD3D_WEIGHTS, exist_ok=True)
+
+# Hugging Face + Transformers + Datasets caches
+os.environ.setdefault("HF_HOME", _VD3D_WEIGHTS)
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(_VD3D_WEIGHTS, "hub"))
+os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(_VD3D_WEIGHTS, "datasets"))
+
+# Optional: silence symlink warning on Windows
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
+
+from transformers import AutoProcessor, AutoModelForDepthEstimation, AutoImageProcessor, pipeline
 from diffusers import EulerDiscreteScheduler, AutoencoderKL
 
 from safetensors.torch import load_file
@@ -133,17 +157,17 @@ def pick_torch_device():
             # If ROCm build, this attribute exists and prints version (e.g., "6.1")
             hip_ver = getattr(torch.version, "hip", None)
             if hip_ver is not None:
-                print(f"🔥 ROCm detected! HIP runtime version: {hip_ver}")
+                print(f"Depth Estimation: ROCm detected! HIP runtime version: {hip_ver}")
                 return torch.device("cuda")  # ROCm uses CUDA-like device name
         except Exception:
             pass
         
-        print("🐉 CUDA (NVIDIA) detected!")
+        print("Depth Estimation: CUDA")
         return torch.device("cuda")
 
     # Apple Metal
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        print("🍎 MPS detected")
+        print("Depth Estimation: MPS detected")
         return torch.device("mps")
 
     # CPU fallback
@@ -281,7 +305,6 @@ def infer_depth_tile(model_call, rgb_np, inference_size, tile=TILE_SIZE, pad=TIL
             cws, chs = r14(cw), r14(ch)
             if (cw, ch) != (cws, chs):
                 crop_rgb = cv2.resize(crop_rgb, (cws, chs), interpolation=cv2.INTER_CUBIC)
-
             
             pil      = Image.fromarray(crop_rgb)
 
@@ -458,6 +481,43 @@ def _run_pipe_or_tile(images_pil, inference_size):
     else:
         return [{"predicted_depth": res}]
 
+class TemporalDepthNormalizer:
+    """
+    Keeps a smooth running [lo, hi] range over time so video depth
+    doesn't 'breathe' when scene stats change a bit.
+    """
+    def __init__(self, pclip=(1.0, 99.0), momentum=0.95):
+        self.p_lo, self.p_hi = pclip
+        self.m = float(momentum)
+        self.lo = None
+        self.hi = None
+
+    def __call__(self, depth_f: np.ndarray) -> np.ndarray:
+        d = np.asarray(depth_f, dtype=np.float32)
+        if not np.isfinite(d).all():
+            d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Per-frame percentiles
+        fr_lo = float(np.percentile(d, self.p_lo))
+        fr_hi = float(np.percentile(d, self.p_hi))
+
+        # Init or EMA smooth
+        if self.lo is None or self.hi is None:
+            self.lo, self.hi = fr_lo, fr_hi
+        else:
+            self.lo = self.m * self.lo + (1.0 - self.m) * fr_lo
+            self.hi = self.m * self.hi + (1.0 - self.m) * fr_hi
+
+        # Guard degenerate
+        if self.hi - self.lo < 1e-6:
+            dmin, dmax = float(d.min()), float(d.max())
+            if dmax - dmin < 1e-6:
+                return np.full_like(d, 0.5, dtype=np.float32)
+            d = (d - dmin) / (dmax - dmin + 1e-6)
+            return np.clip(d, 0.0, 1.0)
+
+        d = (d - self.lo) / (self.hi - self.lo + 1e-6)
+        return np.clip(d, 0.0, 1.0)
 
 def apply_offload_if_supported(model_callable, caps, mode: str):
     """
@@ -828,14 +888,7 @@ def convert_depth_to_grayscale(depth):
 
 # === Setup: Local weights directory ===
 def get_weights_dir():
-    if getattr(sys, 'frozen', False):
-        # PyInstaller bundle: use dir of the .exe
-        base_path = os.path.dirname(sys.executable)
-    else:
-        # Source run: use the parent of the current file (core/ -> project root)
-        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-    return os.path.join(base_path, "weights")
+    return _VD3D_WEIGHTS
 
 local_model_dir = get_weights_dir()
 os.makedirs(local_model_dir, exist_ok=True)
@@ -850,7 +903,7 @@ INFERENCE_RESOLUTIONS = {
     "256x256": (256, 256),
     "384x384": (384, 384),
     "448x448": (448, 448),
-    "518x518 (VDA)": (518, 518),
+    "518x518": (518, 518),
     "576x576": (576, 576),
     "640x640": (640, 640),
     "704x704": (704, 704),
@@ -904,17 +957,18 @@ def load_supported_models():
 
         # Marigold
         "Marigold Depth v1.1 (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "Marigold Depth v1.0":             "prs-eth/marigold-depth-v1-0",
+        "Marigold Depth v1.0":             "diffusers:prs-eth/marigold-depth-v1-0",
 
         # Distill-Any-Depth
         "Distill-Any-Depth Large (xingyang1)": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (xingyang1)": "xingyang1/Distill-Any-Depth-Small-hf",
-        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
-        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
+#        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
+#        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
         # Depth Anything v2
         # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
+        "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
 
 #        "DA3-GIANT":              "depth-anything/DA3-GIANT",
 #        "DA3-LARGE":              "depth-anything/DA3-LARGE",
@@ -932,15 +986,15 @@ def load_supported_models():
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
         "Depth Anything v1 Base":     "LiheYoung/depth-anything-base-hf",
         "Depth Anything v1 Small":    "LiheYoung/depth-anything-small-hf",
-        "Depth Anything v1 ViT-L/14": "LiheYoung/depth_anything_vitl14",
+#        "Depth Anything v1 ViT-L/14": "LiheYoung/depth_anything_vitl14",
         
         # Prompt Depth
         "Prompt Depth Anything VITS Transparent": "depth-anything/prompt-depth-anything-vits-transparent-hf",
         
 
         # Other popular models
-        "DA-2 (Haodongli)":            "haodongli/DA-2",
-        "Bridge (Dingning)":           "Dingning/BRIDGE",
+#        "DA-2 (Haodongli)":            "haodongli/DA-2",
+#        "Bridge (Dingning)":           "Dingning/BRIDGE",
         "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -952,12 +1006,12 @@ def load_supported_models():
 
     }
 
-
     # ✅ auto-add local folders as “[Local] {folder}”
     for folder in os.listdir(local_model_dir):
         folder_path = os.path.join(local_model_dir, folder)
         if os.path.isdir(folder_path):
             if (os.path.exists(os.path.join(folder_path, "config.json")) or
+                os.path.exists(os.path.join(folder_path, "config.yaml")) or
                 os.path.exists(os.path.join(folder_path, "model.onnx"))):
                 models[f"[Local] {folder}"] = folder_path
 
@@ -965,12 +1019,61 @@ def load_supported_models():
 
 supported_models = load_supported_models()
 
+def _load_flexible_processor(model_dir, cache_dir=None, prefer_fast=True):
+    """
+    Try AutoProcessor first, then AutoImageProcessor.
+    Prefer fast processors when available, but always fall back safely.
+    """
+    def _try(cls, **kw):
+        if cache_dir is not None:
+            kw["cache_dir"] = cache_dir
+        return cls.from_pretrained(model_dir, **kw)
+
+    # 1) AutoProcessor path
+    for use_fast in ([True, False] if prefer_fast else [False, True]):
+        try:
+            return _try(AutoProcessor, use_fast=use_fast)
+        except TypeError:
+            # Some processors do not accept use_fast
+            try:
+                return _try(AutoProcessor)
+            except Exception as e:
+                last = e
+        except Exception as e:
+            last = e
+
+    print(f"ℹ️ AutoProcessor failed for {model_dir}: {last}")
+
+    # 2) AutoImageProcessor path
+    for use_fast in ([True, False] if prefer_fast else [False, True]):
+        try:
+            return _try(AutoImageProcessor, use_fast=use_fast)
+        except TypeError:
+            # Some processors do not accept use_fast
+            try:
+                return _try(AutoImageProcessor)
+            except Exception as e:
+                last = e
+        except Exception as e:
+            last = e
+
+    print(f"❌ AutoImageProcessor also failed for {model_dir}: {last}")
+    return None
+
 
 def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
     """
     Handles HF Transformers checkpoints, Diffusers pipelines, DepthCrafter adapters,
     and local/remote ONNX directories. Also normalizes non-standard HF weight names.
     """
+
+    # Decide a torch dtype once at the top
+    use_fp16 = bool(use_fp16)
+    if torch.cuda.is_available() and use_fp16:
+        dtype = torch.float16
+    else:
+        dtype = torch.float32
+
     # --- DepthAnything v2 adapter: dav2:<spec> or path to *.safetensors ---
     if isinstance(checkpoint, str) and (checkpoint.startswith("dav2:") or checkpoint.endswith(".safetensors")):
         from core.adapters.depthanything_adapter import load_da_v2_adapter
@@ -982,8 +1085,17 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
             print(f"❌ DA-V2 adapter failed: {e}")
             return None, None
 
+    # --- LBM Adapter ---
+    if isinstance(checkpoint, str) and "lbm" in checkpoint.lower():
+        from core.adapters.lbm_adapter import load_lbm_adapter
+        print(f"🧩 Loading LBM adapter for: {checkpoint}")
+        try:
+            return load_lbm_adapter(spec=checkpoint, cache_dir=local_model_dir)
+        except Exception as e:
+            print(f"❌ LBM adapter failed: {e}")
+            return None, None
 
-    # (optional) generic onnx: prefix
+    # --- Generic ONNX prefix ---
     if isinstance(checkpoint, str) and checkpoint.startswith("onnx:"):
         rel = checkpoint.split(":", 1)[1].strip()
         model_dir = rel if os.path.isabs(rel) else os.path.join(local_model_dir, rel)
@@ -1001,8 +1113,11 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         # Local HF (tolerant to custom *.safetensors names)
         try:
             fixed_dir = _ensure_expected_weight_name(checkpoint)
-            model = AutoModelForDepthEstimation.from_pretrained(fixed_dir)
-            processor = AutoProcessor.from_pretrained(fixed_dir)
+            model = AutoModelForDepthEstimation.from_pretrained(
+                fixed_dir,
+                torch_dtype=dtype if torch.cuda.is_available() else None,
+            )
+            processor = _load_flexible_processor(fixed_dir, prefer_fast=True)
             print(f"📂 Loaded local Hugging Face model from {fixed_dir}")
             return model, processor
         except Exception as e:
@@ -1013,20 +1128,19 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
     if isinstance(checkpoint, str) and checkpoint.startswith("diffusers:"):
         model_id = checkpoint.split(":", 1)[1].strip()
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype  = torch.float16 if (torch.cuda.is_available() and use_fp16) else torch.float32
 
         # 1) Try Marigold depth pipeline
         try:
             from diffusers import MarigoldDepthPipeline
             pipe = MarigoldDepthPipeline.from_pretrained(
                 model_id,
-                variant="fp16" if dtype == torch.float16 else None,
+                variant="fp16" if (dtype == torch.float16) else None,
                 torch_dtype=dtype,
-                cache_dir=local_model_dir
+                cache_dir=local_model_dir,
             ).to(device)
 
             def diffusion_pipe(images, inference_size=None, **kw):
-                steps    = int(kw.get("num_inference_steps", 4))
+                steps = int(kw.get("num_inference_steps", 4))
                 ensemble = int(kw.get("ensemble_size", 5))
                 if not isinstance(images, list):
                     images = [images]
@@ -1045,7 +1159,7 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
                 "is_diffusion": True,
                 "diffusion_kind": "depth",
                 "supports_steps": True,
-                "supports_offload": True,  # accelerate-based
+                "supports_offload": True,
             }
             return diffusion_pipe, caps
 
@@ -1056,7 +1170,9 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         try:
             from diffusers import DiffusionPipeline
             gpipe = DiffusionPipeline.from_pretrained(
-                model_id, torch_dtype=dtype, cache_dir=local_model_dir
+                model_id,
+                torch_dtype=dtype,
+                cache_dir=local_model_dir,
             ).to(device)
 
             def generic_diffusers_call(x, **kw):
@@ -1064,27 +1180,28 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
                 out = gpipe(prompt, num_inference_steps=int(kw.get("num_inference_steps", 20)))
                 return [{"generated_image": out.images[0]}]
 
-            print(f"🎨 Generic Diffusers pipeline loaded: {model_id}")
+            print(f"🎨 Generic diffusers pipeline loaded: {model_id}")
             generic_diffusers_call._is_generic_diffusers = True
-            # ensure_model_downloaded(...) generic diffusers return:
             return generic_diffusers_call, {
                 "is_diffusion": True,
                 "diffusion_kind": "t2i",
-                "supports_offload": True,   # <- add this
+                "supports_offload": True,
             }
 
         except Exception as e_gen:
             print(f"❌ Failed to load any diffusers pipeline: {e_gen}")
             return None, None
 
-
     # --- Hugging Face online model (tolerant to custom names) ---
     safe_folder_name = checkpoint.replace("/", "_")
     local_path = os.path.join(local_model_dir, safe_folder_name)
     try:
         # Try standard load first
-        model = AutoModelForDepthEstimation.from_pretrained(checkpoint, cache_dir=local_path)
-        processor = AutoProcessor.from_pretrained(checkpoint, cache_dir=local_path)
+        model = AutoModelForDepthEstimation.from_pretrained(
+            checkpoint,
+            cache_dir=local_path,
+        )
+        processor = _load_flexible_processor(checkpoint, cache_dir=local_path, prefer_fast=True)
         print(f"⬇️ Downloaded model from Hugging Face: {checkpoint}")
         return model, processor
     except Exception as e1:
@@ -1092,11 +1209,18 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         try:
             # Pull a snapshot, normalize names, then load from the local folder
             from huggingface_hub import snapshot_download
-            snap_dir = snapshot_download(repo_id=checkpoint, cache_dir=local_path, local_files_only=False)
+            snap_dir = snapshot_download(
+                repo_id=checkpoint,
+                cache_dir=local_path,
+                local_files_only=False,
+            )
             # Local HF folder load
-            fixed_dir = _ensure_expected_weight_name(checkpoint)
+            fixed_dir = _ensure_expected_weight_name(snap_dir)
             if torch.cuda.is_available() and use_fp16:
-                model = AutoModelForDepthEstimation.from_pretrained(fixed_dir, dtype=dtype)
+                model = AutoModelForDepthEstimation.from_pretrained(
+                    fixed_dir,
+                    torch_dtype=dtype,
+                )
             else:
                 model = AutoModelForDepthEstimation.from_pretrained(fixed_dir)
                 try:
@@ -1104,13 +1228,17 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
                     print(f"🧪 Depth model loaded | dtype={p0.dtype} device={p0.device}")
                 except Exception:
                     pass
-            processor = AutoProcessor.from_pretrained(fixed_dir)
+
+            processor = _load_flexible_processor(fixed_dir, cache_dir=local_path, prefer_fast=True)
+            if processor is None:
+                print("⚠️ Processor missing, but model loaded. Using raw transforms later.")
 
             print(f"🛠️ Normalized non-standard weights; loaded from {fixed_dir}")
             return model, processor
         except Exception as e2:
             print(f"❌ Failed to load Hugging Face model after normalization: {e2}")
             return None, None
+
 
 
 def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
@@ -1179,12 +1307,21 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
 
     fixed_T = None
     try:
-        if input_rank >= 2 and isinstance(input_shape[1], int):
+        # Only really meaningful for 5D [B, T, C, H, W], but we kept the code
+        if input_rank >= 2 and isinstance(input_shape[1], int) and input_rank == 5:
             fixed_T = int(input_shape[1])
     except Exception:
         fixed_T = None
 
-    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank} | fixed_T={fixed_T}")
+    # 📝 Some ONNX exports are locked to a single input size (e.g. DistillAnyDepthBase)
+    fixed_HW = None
+    model_tag = os.path.basename(os.path.normpath(model_dir)).lower()
+    if "distillanydepthbase" in model_tag:
+        fixed_HW = (518, 518)
+        print(f"📐 Detected DistillAnyDepthBase ONNX – forcing fixed input size {fixed_HW}")
+
+    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank} | fixed_T={fixed_T} | fixed_HW={fixed_HW}")
+
 
     def _prep_images(images, inference_size):
         arrs = []
@@ -1197,13 +1334,18 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
         return arrs
 
     def run_onnx(images, inference_size=None):
-        if inference_size is None:
-            raise ValueError("❌ Must provide inference_size for ONNX.")
+        # Some models (like DistillAnyDepthBase) only work at one exact size.
+        if fixed_HW is not None:
+            W, H = fixed_HW
+        else:
+            if inference_size is None:
+                raise ValueError("❌ Must provide inference_size for ONNX.")
+            W, H = int(inference_size[0]), int(inference_size[1])
+            # Keep your VDA safe snapping for generic models
+            W, H = snap_for_vda(W, H, base=32)
 
-        # Keep your VDA safe snapping
-        W, H = int(inference_size[0]), int(inference_size[1])
-        W, H = snap_for_vda(W, H, base=32)
         inference_size = (W, H)
+
 
         img_batch = _prep_images(images, inference_size)
 
@@ -1234,6 +1376,7 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
     return run_onnx, {
         "input_rank": input_rank,
         "fixed_T": fixed_T,
+        "fixed_HW": fixed_HW,
         "session": session,
         "provider": providers[0] if providers else "CPUExecutionProvider",
         "is_onnx": True,
@@ -1302,7 +1445,13 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 pipe = model_callable
                 pipe_type = "onnx"
 
-                status_label_widget.after(0, lambda: start_spinner(status_label_widget, "Warming up ONNX model..."))
+                status_label_widget.after(
+                    0,
+                    lambda: start_spinner(status_label_widget, "Warming up ONNX model...")
+                )
+
+                warmup_ok = True
+
                 if not skip_warmup:
                     # --- Robust ONNX warm-up (handles stride quirks, fixed T, fixed H/W) ---
                     try:
@@ -1318,12 +1467,10 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         uW, uH = snap_for_vda(user_res[0], user_res[1], base=32)
 
                         if fixed_HW is not None:
-                            # Model enforces a specific size, only try that one
-                            sizes = [fixed_HW]  # e.g., (518, 518)
+                            sizes = [fixed_HW]
                         else:
-                            # Known good, /32-aligned options (stop at first that runs)
                             candidates = [
-                                (uW, uH),            # user's snapped choice first
+                                (uW, uH),
                                 (512, 288),
                                 (640, 360),
                                 (768, 432),
@@ -1333,7 +1480,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                                 (1152, 648),
                                 (1280, 720),
                                 (1536, 864),
-                                (512, 512),          # square options if the net allows
+                                (512, 512),
                                 (640, 640),
                                 (768, 768),
                             ]
@@ -1341,18 +1488,25 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                             for s in candidates:
                                 s = snap_for_vda(s[0], s[1], base=32)
                                 if s not in seen:
-                                    sizes.append(s); seen.add(s)
+                                    sizes.append(s)
+                                    seen.add(s)
 
                         last_err = None
                         warmed = False
                         for (W, H) in sizes:
                             try:
                                 if input_rank == 5:
-                                    dummy_batch = [Image.new("RGB", (W, H), (127, 127, 127)) for _ in range(warmup_T)]
+                                    dummy_batch = [
+                                        Image.new("RGB", (W, H), (127, 127, 127))
+                                        for _ in range(warmup_T)
+                                    ]
                                 else:
                                     dummy_batch = [Image.new("RGB", (W, H), (127, 127, 127))]
                                 _ = pipe(dummy_batch, inference_size=(W, H))
-                                print(f"ONNX model warmed up. Size={(W, H)}, T={warmup_T if input_rank==5 else 1}")
+                                print(
+                                    f"ONNX model warmed up. Size={(W, H)}, "
+                                    f"T={warmup_T if input_rank == 5 else 1}"
+                                )
                                 warmed = True
                                 meta["good_size"] = (W, H)
                                 setattr(pipe, "_good_size", (W, H))
@@ -1362,16 +1516,36 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                                 print(f"Warm-up trial failed at {(W, H)}: {err}")
 
                         if not warmed:
-                            raise RuntimeError(f"ONNX warm-up failed for all tried sizes {sizes}. Last error: {last_err}")
+                            raise RuntimeError(
+                                f"ONNX warm-up failed for all tried sizes {sizes}. Last error: {last_err}"
+                            )
 
                     except Exception as e:
+                        warmup_ok = False
+                        pipe = None
+                        pipe_type = None
                         print(f"ONNX warm-up failed: {e}")
                 else:
                     print("Skipping ONNX warm-up by request.")
 
+                if not warmup_ok:
+                    status_label_widget.after(
+                        0,
+                        lambda: stop_spinner(
+                            status_label_widget,
+                            f"❌ ONNX warm-up failed for {selected_checkpoint}. This export looks incompatible."
+                        )
+                    )
+                    return
+
                 dev_str = meta.get("provider", "CPUExecutionProvider")
-                status_label_widget.after(0, lambda: stop_spinner(
-                    status_label_widget, f"ONNX model loaded: {selected_checkpoint} (on {dev_str})"))
+                status_label_widget.after(
+                    0,
+                    lambda: stop_spinner(
+                        status_label_widget,
+                        f"ONNX model loaded: {selected_checkpoint} (on {dev_str})"
+                    )
+                )
 
             elif is_diffusion:
                 kind = caps.get("diffusion_kind", "depth")
@@ -2065,15 +2239,40 @@ def process_video2(
     
       
 ):
+    
+    def ui_set_progress(pct: int):
+        try:
+            pct = max(0, min(100, int(pct)))
+            progress_bar.after(0, lambda v=pct: progress_bar.config(value=v))
+        except Exception:
+            pass
+
+    def ui_set_status(text: str):
+        try:
+            status_label.after(0, lambda t=text: status_label.config(text=t))
+        except Exception:
+            pass
+
     global pipe, pipe_type
     global global_session_start_time
 
     # Detect output directory from UI
     output_dir = output_dir_var.get().strip()
     if not output_dir:
-        messagebox.showwarning("Missing Output Folder", "⚠️ Please select an output directory before processing.")
-        status_label.config(text="❌ Output directory not selected.")
+        def _warn():
+            messagebox.showwarning(
+                "Missing Output Folder",
+                "⚠️ Please select an output directory before processing."
+            )
+            status_label.config(text="❌ Output directory not selected.")
+            try:
+                progress_bar.config(value=0)
+            except Exception:
+                pass
+
+        status_label.after(0, _warn)
         return 0
+
 
     os.makedirs(output_dir, exist_ok=True)
     input_dir, input_filename = os.path.split(file_path)
@@ -2268,6 +2467,13 @@ def process_video2(
     global_session_start_time = time.time()
     previous_depth = None
     
+    # Smooth per-video depth normalization to avoid global flicker
+    temp_normalizer = TemporalDepthNormalizer(pclip=(1.0, 99.0), momentum=0.95)
+    prev_depth_u8 = None  # for light temporal smoothing
+    
+    from collections import deque
+    depth_history = deque(maxlen=3)  # or 5 if you want stronger smoothing
+
     try:
         # Define it here, before you start reading frames
         while True:
@@ -2381,23 +2587,43 @@ def process_video2(
 
                     try:
                         raw_depth = prediction["predicted_depth"]
-                        # Convert to uint8 depth (full frame or tiler)
-                        if USE_TILED_DEPTH or isinstance(raw_depth, np.ndarray):
-                            depth_u8 = _normalize_to_u8(
-                                raw_depth,
-                                (original_width, original_height),
-                                invert=invert_var.get()
-                            )
+
+                        # 1) Convert to 2D float32 [H, W]
+                        depth_f = _ensure_depth_np(raw_depth).squeeze()
+
+                        # 2) Global temporal normalization (fixes value flicker)
+                        depth_01 = temp_normalizer(depth_f)  # 0..1
+
+                        # 3) Convert to 8-bit
+                        depth_u8 = (depth_01 * 255.0 + 0.5).astype(np.uint8)
+                        if invert_var.get():
+                            depth_u8 = 255 - depth_u8
+
+                        # 4) Resize to full video resolution
+                        depth_u8 = cv2.resize(
+                            depth_u8,
+                            (original_width, original_height),
+                            interpolation=cv2.INTER_CUBIC
+                        )
+
+                        # 5) Light temporal smoothing to calm geometry flicker
+                        alpha = 0.2
+                        if prev_depth_u8 is None:
+                            smoothed_u8 = depth_u8
                         else:
-                            # old path: tensor/other -> grayscale (your helper)
-                            depth_u8 = convert_depth_to_grayscale(raw_depth)
-                            if invert_var.get():
-                                depth_u8 = 255 - depth_u8
-                            depth_u8 = cv2.resize(
-                                depth_u8,
-                                (original_width, original_height),
-                                interpolation=cv2.INTER_CUBIC
-                            )
+                            smoothed_u8 = (
+                                alpha * prev_depth_u8.astype(np.float32)
+                                + (1.0 - alpha) * depth_u8.astype(np.float32)
+                            ).astype(np.uint8)
+                        prev_depth_u8 = smoothed_u8
+
+                        # Optional: extra temporal median filter across a short history
+#                        depth_history.append(smoothed_u8)
+#                        if len(depth_history) > 1:
+#                            stack = np.stack(depth_history, axis=0)  # [T, H, W]
+#                            depth_u8 = np.median(stack, axis=0).astype(np.uint8)
+#                       else:
+#                           depth_u8 = smoothed_u8
 
                         # letterbox handling (unchanged)
                         if ignore_letterbox_bars and (bars_top or bars_bottom):
@@ -2453,25 +2679,30 @@ def process_video2(
             remaining_frames = total_frames - total_processed_frames
             eta = remaining_frames / avg_fps if avg_fps > 0 else 0
 
-            progress = int(((frames_processed_all + total_processed_frames) / total_frames_all) * 100)
-            elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-            eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+            eta_str     = time.strftime("%H:%M:%S", time.gmtime(eta)) if eta > 0 else "--:--:--"
 
-            status_label.config(
-                text=f"🎬 {frames_processed_all + total_processed_frames}/{total_frames_all} frames | "
-                     f"FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} | Processing: {name}"
+            progress = int(((frames_processed_all + total_processed_frames) / total_frames_all) * 100)
+
+            status_text = (
+                f"🎬 {frames_processed_all + total_processed_frames}/{total_frames_all} frames | "
+                f"FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str} | Processing: {name}"
             )
 
-            status_label.update_idletasks()
+            ui_set_status(status_text)
+            ui_set_progress(progress)
+
     finally:
         # Always release handles and clean up GPU/CPU memory
         cleanup_video_handles(cap, out)
 
         if cancel_requested.is_set():
-            print("🛑 Cancelled: Video not fully processed.")
+            ui_set_status("🛑 Cancelled.")
+            ui_set_progress(0)
         else:
-            print(f"✅ Video saved: {output_path}")
-        
+            ui_set_status(f"✅ Done: {output_path}")
+            ui_set_progress(100)
+
     return frame_count
 
 
@@ -2531,7 +2762,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         cancel_requested.clear()
         suspend_flag.clear()
         status_label.config(text="🔄 Processing video...")
-        progress_bar.config(mode="determinate", maximum=100, value=0)
+        progess_bar.config(mode="determinate", maximum=100, value=0)
 
         cap = cv2.VideoCapture(file_path)
         total_frames_all = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -2576,8 +2807,8 @@ def _log_ex(exctype, value, tb):
 
 sys.excepthook = _log_ex
 
-# Python 3.8+: catch in threads too
 if hasattr(threading, "excepthook"):
     def _thread_hook(args):
         _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
     threading.excepthook = _thread_hook
+

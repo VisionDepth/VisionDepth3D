@@ -33,7 +33,7 @@ def pick_torch_device():
     return torch.device("cpu")
 
 torch_device = pick_torch_device()
-print(f"🔥 Torch compute device: {torch_device}")
+print(f"3D Pipeline running on Torch device: {torch_device.type.upper()}")
 
 # Load ONNX model
 #MODEL_PATH = 'weights/backward_warping_model.onnx'
@@ -114,21 +114,25 @@ def merge_audio_from_source(final_video, original_video, output_with_audio):
         "ffmpeg", "-y",
         "-i", final_video,
         "-i", original_video,
-        "-map", "0:v",
-        "-map", "1:a",
+        "-map", "0:v:0",
+        "-map", "1:a?",          # optional audio
         "-c:v", "copy",
         "-c:a", "copy",
+        "-shortest",             # stop when video ends
         output_with_audio
     ]
 
     process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     if process.returncode == 0 and os.path.exists(output_with_audio):
-        try: os.remove(final_video)   # replace silently
-        except: pass
+        try:
+            os.remove(final_video)  # replace silently
+        except Exception:
+            pass
         return output_with_audio
 
     return final_video  # fallback
+
 
 
 def ffmpeg_yuv10_reader(path, width, height):
@@ -481,30 +485,58 @@ def tensor_to_frame(tensor):
     frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     return cv2.cvtColor(frame_cpu, cv2.COLOR_RGB2BGR)
 
-def detect_black_bars(frame_tensor, threshold=10): 
+def detect_black_bars(
+    frame_tensor: torch.Tensor,
+    threshold: float = 8.0,       # brightness threshold in 0–255 space
+    min_bar_height: int = 8,      # ignore tiny bands
+    overscan_px: int = 2          # crop a bit *past* the detected edge
+):
     """
-    Detect black bars on top and bottom once.
-    Returns: (top_crop, bottom_crop) in pixels
+    Detects top and bottom black bars on a [3, H, W] tensor (0..1 floats).
+
+    Returns (top_crop, bottom_crop) in pixels. We:
+      * work in luma (average over channels)
+      * scan from top and bottom until rows get brighter than `threshold`
+      * only accept bars at least `min_bar_height` high
+      * overshoot by `overscan_px` so we remove the transition line too
     """
-    frame_np = (frame_tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    gray = cv2.cvtColor(frame_np, cv2.COLOR_RGB2GRAY)
+    if frame_tensor.dim() != 3:
+        raise ValueError(f"Expected [3, H, W] tensor, got {frame_tensor.shape}")
 
-    h = gray.shape[0]
-    top_crop, bottom_crop = 0, 0
+    _, H, W = frame_tensor.shape
 
-    # Scan from top
-    for i in range(h):
-        if np.mean(gray[i]) > threshold:
-            top_crop = i
-            break
+    # grayscale-ish: average over channels -> [H, W] in 0..1
+    gray = frame_tensor.mean(dim=0)
+    # mean brightness per row in 0..255
+    row_means = (gray.mean(dim=1) * 255.0).cpu()
 
-    # Scan from bottom
-    for i in range(h - 1, -1, -1):
-        if np.mean(gray[i]) > threshold:
-            bottom_crop = h - i - 1
-            break
+    # scan from top
+    top_idx = 0
+    while top_idx < H // 2 and row_means[top_idx] < threshold:
+        top_idx += 1
 
-    return top_crop, bottom_crop
+    # scan from bottom
+    bottom_idx = H - 1
+    while bottom_idx > H // 2 and row_means[bottom_idx] < threshold:
+        bottom_idx -= 1
+
+    raw_top_bar = top_idx
+    raw_bottom_bar = (H - 1) - bottom_idx
+
+    # If bars are tiny or basically not there, skip cropping
+    if raw_top_bar < min_bar_height and raw_bottom_bar < min_bar_height:
+        return 0, 0
+
+    # Overscan a couple of pixels inside the picture to kill the bright line
+    top_crop = max(0, raw_top_bar - overscan_px)
+    bottom_crop = max(0, raw_bottom_bar - overscan_px)
+
+    # Safety: never crop almost everything away
+    if top_crop + bottom_crop > H - 16:
+        return 0, 0
+
+    return int(top_crop), int(bottom_crop)
+
 
 
 def crop_black_bars_torch(frame_tensor, cached_crop=None, threshold=10):
@@ -1571,13 +1603,8 @@ def render_sbs_3d(
             depth_tensor = depth_to_tensor(depth)
 
             if auto_crop_black_bars:
-                mean_brightness = torch.mean(frame_tensor).item() * 255
-                if mean_brightness > 20:  # avoid false detection during fade-in
-                    new_top, new_bottom = detect_black_bars(frame_tensor)
-                    if abs(new_top - cached_crop[0]) > 20 or abs(new_bottom - cached_crop[1]) > 20:
-                        cached_crop = (new_top, new_bottom)
-                        print(f"📏 Auto-crop updated → top={new_top}px, bottom={new_bottom}px")
-
+                # Reuse the first-frame crop for the entire clip so frame and depth
+                # stay perfectly aligned and do not jitter.
                 frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
                 depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
 
@@ -2046,12 +2073,11 @@ def render_sbs_3d_image(
     # Optional black bar crop (same logic as video path)
     cached_crop = (0, 0)
     if auto_crop_black_bars:
-        top_crop, bottom_crop = detect_black_bars(frame_tensor)
-        cached_crop = (top_crop, bottom_crop)
-        if top_crop > 0 or bottom_crop > 0:
-            print(f"📏 Auto-crop detected black bars on still: top={top_crop}px, bottom={bottom_crop}px")
+        # Reuse the first-frame crop for the entire clip so frame and depth
+        # stay perfectly aligned and do not jitter.
         frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
         depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
+
 
     # Crop to selected cinema aspect ratio
     _, h, w = frame_tensor.shape
@@ -2412,13 +2438,17 @@ def select_input_video(
     cap.release()
 
     if ret:
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(frame_rgb)
-        img.thumbnail((300, 200))
-        img_tk = ImageTk.PhotoImage(img)
+        THUMB_W, THUMB_H = 160, 90
 
-        video_thumbnail_label.config(image=img_tk)
-        video_thumbnail_label.image = img_tk
+        if ret:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+            img.thumbnail((THUMB_W, THUMB_H), Image.LANCZOS)
+            img_tk = ImageTk.PhotoImage(img)
+
+            video_thumbnail_label.config(image=img_tk)
+            video_thumbnail_label.image = img_tk
+
 
         video_specs_label.config(text=f"Video Info:\nResolution: {width}x{height}\nFPS: {fps:.2f}")
     else:
@@ -2426,15 +2456,6 @@ def select_input_video(
 
     # ✅ Call the UI update function
     update_aspect_preview()
-
-def update_thumbnail(thumbnail_path):
-    thumbnail_image = Image.open(thumbnail_path)
-    thumbnail_image = thumbnail_image.resize(
-        (300, 250), Image.LANCZOS
-    )  # Adjust the size as needed
-    thumbnail_photo = ImageTk.PhotoImage(thumbnail_image)
-    video_thumbnail_label.config(image=thumbnail_photo)
-    video_thumbnail_label.image = thumbnail_photo
 
 
 def select_output_video(output_sbs_video_path):
@@ -2638,11 +2659,15 @@ def process_video(
     # 🔊 Inject original audio if toggle enabled
     if keep_original_audio:
         print("🔊 Merging original audio into final render…")
-        merged_output = os.path.splitext(final_render_path)[0] + "_audio.mp4"
+
+        base, ext = os.path.splitext(final_render_path)
+        merged_output = base + "_audio" + ext  # keep .mkv/.mp4/.mov etc
+
         final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output)
         print("🎧 Audio merge done!")
 
     return final_render_path
+
 
 
 def render_with_ffmpeg(

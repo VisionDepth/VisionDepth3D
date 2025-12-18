@@ -104,7 +104,7 @@
   "Depth Map (3D): None": "深度マップ (3D)：なし",
   "+ Add Video": "＋ ビデオを追加",
   "+ Add Depth Map": "＋ 深度マップを追加",
-  "Pop & Subject Controls": "ポップ＆被写体コントロール",
+  "Depth & Parallax Controls": "奥行き・視差コントロール",
   "Depth Pop Gamma": "奥行きポップガンマ",
   "Pop Mid (0..1)": "ポップ中間 (0..1)",
   "Stretch Lo": "ストレッチ低",
@@ -183,12 +183,18 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 シーン検出 (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "感度しきい値（低い = カット増加）：",
   "Detect Scenes & Extract": "シーン検出と抽出",
+  "Settings": "設定",
+  "Open Encoder Settings…": "エンコーダー設定を開く…",
+  "Open Processing Options…": "処理オプションを開く…",
+
+
+
   "_Tooltips": "",
   "Tooltip.SceneDetect": "PySceneDetectを使用して、ビデオ内のシーン変更を自動的に検出し、分割やバッチ処理に利用します。",
   "Tooltip.SceneDetectThreshold": "シーン検出の感度を調整します。低い値 = カット増加、高い値 = カット減少。",
   "Tooltip.DetectScenesExtract": "シーン検出を実行し、検出されたシーンを自動的に抽出して後処理に使用します。",
   "Tooltip.ModeSelect": "単一レンダリングモード（1本の3Dビデオを生成）とバッチモード（複数のビデオ＋深度マップのペアを処理）の間で選択します。",
-  "Tooltip.ApplyEntries": "現在のポップ＆被写体コントロールの値を適用して、プレビューとレンダリング設定を更新します。",
+  "Tooltip.ApplyEntries": "現在の奥行き・視差コントロールの値を適用し、プレビューおよびレンダリング設定を更新します。",
   "Tooltip.Model": "Hugging Faceの深度推定モデルを選択します。大きなモデルはより高い精度を提供しますが、VRAMと処理時間を多く消費します。",
   "Tooltip.OutputDirLabel": "生成されたすべての深度マップとビデオが保存される出力フォルダを表示します。",
   "Tooltip.OutputDirButton": "処理されたすべての結果を保存するフォルダを選択するダイアログを開きます。",
@@ -288,5 +294,6 @@
   "Tooltip.SelectedDepthCodec": "FFmpeg 書き出し用の高度なエンコーダーです。",
   "Tooltip.Float16Button": "対応している場合、16ビット（float16）精度でより高速に深度推定を行います。深度の精度がわずかに変化する場合があります。",
   "Tooltip.Livebtn": "外部入力（ウェブカメラ、キャプチャカード、画面）でLive 3Dを開始します。",
+  "Tooltip.InferenceRes": "選択した深度モデルに入力する解像度サイズを制御します。深度モデルにフル解像度を入力するには「Original」のままにしてください。",
   "Tooltip.Output": "v2 フレームフォルダを上書きするか、独自の出力パスを選択します"
 }
