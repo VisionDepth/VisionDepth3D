@@ -100,7 +100,7 @@
   "Use Subject Tracking": "Utiliser le suivi du sujet",
   "Floating Window": "Fenêtre flottante",
   "Enable Edge Masking": "Activer le masquage des bords",
-  "Pop & Subject Controls": "Contrôles de Pop et Sujet",
+  "Depth & Parallax Controls": "Contrôles de profondeur et de parallaxe",
   "Depth Pop Gamma": "Gamma de profondeur",
   "Pop Mid (0..1)": "Milieu du Pop (0..1)",
   "Stretch Lo": "Étirer Bas",
@@ -183,12 +183,20 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 Détection de scènes (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "Seuil de sensibilité (plus bas = plus de coupes) :",
   "Detect Scenes & Extract": "Détecter les scènes et extraire",
+  "Settings": "Paramètres",
+  "Open Encoder Settings…": "Ouvrir les paramètres d’encodage…",
+  "Open Processing Options…": "Ouvrir les options de traitement…",
+
+
+
+
+  
   "_Tooltips": "",
   "Tooltip.SceneDetect": "Utilise PySceneDetect pour détecter automatiquement les changements de scène dans la vidéo pour le découpage ou le traitement par lot.",
   "Tooltip.SceneDetectThreshold": "Ajuste la sensibilité de la détection des scènes. Plus bas = plus de coupes ; plus haut = moins de coupes.",
   "Tooltip.DetectScenesExtract": "Lance la détection de scènes et extrait automatiquement les scènes détectées pour un traitement ultérieur.",
   "Tooltip.ModeSelect": "Choisissez entre le mode rendu unique (générer une seule vidéo 3D) ou le mode par lot (traiter plusieurs paires vidéo + carte de profondeur).",
-  "Tooltip.ApplyEntries": "Applique les valeurs actuelles des contrôles Pop & Sujet pour mettre à jour l’aperçu et les paramètres de rendu.",
+"Tooltip.ApplyEntries": "Applique les valeurs actuelles des contrôles de profondeur et de parallaxe pour mettre à jour l’aperçu et les paramètres de rendu.",
   "Tooltip.UseFFmpeg": "Active le rendu avec FFmpeg pour un encodage plus rapide. ⚠️ Nécessite FFmpeg dans le PATH système.",
   "Tooltip.InferenceSteps": "Contrôle le nombre d'étapes utilisées par le modèle de diffusion pour estimer la profondeur. Une valeur plus élevée peut améliorer la qualité mais augmente le temps de traitement.",
   "Tooltip.CPUMode": "Détermine quelles parties du modèle sont transférées vers le CPU. Utilisez 'sequential' sur les systèmes avec peu de VRAM pour économiser de la mémoire GPU au détriment de la vitesse.",
@@ -288,6 +296,7 @@
   "Tooltip.EndClipRangeLabel": "Laisser vide pour rendre jusqu’à la fin. Accepte HH:MM:SS[.ms] ou des secondes.",
   "Tooltip.Float16Button": "Utilise une précision 16 bits (float16) pour un calcul de profondeur plus rapide lorsque c’est pris en charge. Peut modifier légèrement la précision de la profondeur.",
   "Tooltip.Livebtn": "Démarrer le Live 3D avec des sources externes (webcam, carte de capture ou écran).",
+  "Tooltip.InferenceRes": "Contrôle la taille de la résolution envoyée au modèle de profondeur sélectionné. Conservez 'Original' pour transmettre la résolution complète au modèle de profondeur.",
   "Tooltip.Output": "Choisissez d’écraser le dossier de frames v2 ou de définir votre propre chemin"
 
 }
