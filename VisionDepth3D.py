@@ -90,6 +90,7 @@ cancel_flag = Event()
 SETTINGS_FILE = "settings.json"
 translations = {}
 current_language = "en"
+_loaded_language = None
 tooltip_refs = {}
 
 # global dict to store menu references and indices
@@ -223,7 +224,7 @@ def load_preset_dialog():
                 preset_var.set(base)
         except Exception:
             pass
-        print(f"✅ Loaded preset from file: {path}")
+        print(f"Loaded preset from file: {path}")
     except Exception as e:
         messagebox.showerror("Load Preset", f"Failed to load preset:\n{e}")
         
@@ -525,24 +526,31 @@ def is_render_done():
     return process_thread is None or not process_thread.is_alive()
 
 
-def set_language(lang_code):
+def set_language(lang_code, *, save=True):
     global current_language
     current_language = lang_code
     load_language(lang_code)
     refresh_ui_labels()
     refresh_menu_labels()
-    save_settings()  # Persist the language selection
+    if save:
+        save_settings()
 
 def load_language(lang_code):
-    global translations
+    global translations, _loaded_language
+
+    if _loaded_language == lang_code:
+        return  # already loaded, skip duplicate
+
     try:
         path = f"languages/{lang_code}.json"
         with open(path, "r", encoding="utf-8") as f:
             translations = json.load(f)
-            print(f"✅ Loaded '{lang_code}' with {len(translations)} keys from {path}")
+        _loaded_language = lang_code
+        print(f"UI Language Loaded: '{lang_code}' with {len(translations)}")
     except Exception as e:
         print(f"⚠️ Failed to load language '{lang_code}': {e}")
         translations = {}
+        _loaded_language = None
 
 def t(key):
     return translations.get(key, key)
@@ -598,7 +606,7 @@ def save_settings():
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4)
 
-    print("💾 Settings saved.")
+    print("Settings saved.")
 
     
 def prompt_and_save_preset():
@@ -648,8 +656,10 @@ def load_settings():
             cap.release()
 
             if ret:
+                THUMB_W, THUMB_H = 160, 90   # ⭐ sweet spot
+                
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(rgb).resize((128, 72), Image.LANCZOS)
+                img = Image.fromarray(rgb).resize((THUMB_W, THUMB_H), Image.LANCZOS)
                 img_tk = ImageTk.PhotoImage(img)
                 video_thumbnail_label.config(image=img_tk)
                 video_thumbnail_label.image = img_tk  # Retain reference
@@ -677,13 +687,12 @@ def load_settings():
 
     # ✅ Restore language and window size
     if "language" in settings:
-        current_language = settings["language"]
-        load_language(current_language)
+        set_language(settings["language"], save=False)
 
     if "window_geometry" in settings:
         root.geometry(settings["window_geometry"])
 
-    print("✅ Settings loaded from file.")
+    print("Settings loaded from file.")
 
 def reset_settings():
     """Resets all GUI values and UI elements to their default states."""
@@ -1061,11 +1070,16 @@ class ScrollableFrame(ttk.Frame):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.7")
-root.geometry("1734x792+131+119")
+root.title("VisionDepth3D v3.8")
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+
+target_w = min(1600, screen_w - 80)
+target_h = min(900,  screen_h - 120)
+
+root.geometry(f"{target_w}x{target_h}+40+40")
 root.resizable(True, True)
 
-# Apply dark ttk styles once
 setup_dark_ttk(root)
 
 # Root grid
@@ -1142,6 +1156,18 @@ def apply_vd3d_dark_styles(root):
     style.configure("VD3D.TEntry", fieldbackground=TXT, foreground=FG, bordercolor=TR)
     style.configure("VD3D.TRadiobutton", background=BG, foreground=FG)
     style.configure("VD3D.TCheckbutton", background=BG, foreground=FG)
+    # Make default ttk input widgets readable (Live GUI uses default styles)
+    style.configure("TEntry", fieldbackground=TXT, foreground=FG, insertcolor=FG)
+    style.configure("TSpinbox", fieldbackground=TXT, foreground=FG, insertcolor=FG)
+    style.configure("TCombobox", fieldbackground=TXT, foreground=FG)
+
+    # Ensure readonly combobox also uses the dark field background
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", TXT)],
+        foreground=[("readonly", FG)],
+    )
+
 
     # sliders + progress
     style.configure("VD3D.Horizontal.TScale", background=BG, troughcolor=TR)
@@ -1220,8 +1246,15 @@ def build_dark_header(root, on_language_change):
     lang_var = tk.StringVar(value="en")
     lang_btn = ttk.Menubutton(hdr, text="🌐 Language", style="VD.Menu.TMenubutton")
     lang_menu = mk_menu()
-    for code, label in [("en","English"),("fr","Français"),("de","German"),
-                        ("es","Español"),("ja","Japanese")]:
+    for code, label in [
+        ("en", "English"),
+        ("fr", "Français"),
+        ("de", "Deutsch"),
+        ("es", "Español"),
+        ("ja", "日本語"),
+        ("zh-CN", "中文 (简体)"),
+    ]:
+
         lang_menu.add_radiobutton(
             label=label, variable=lang_var, value=code,
             command=lambda c=code: (lang_var.set(c), on_language_change(c))
@@ -1290,7 +1323,7 @@ def build_dark_header(root, on_language_change):
         command=lambda: messagebox.showinfo(
             "About VisionDepth3D",
             (
-                "VisionDepth3D v3.6.3\n"
+                "VisionDepth3D v3.8\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1409,7 +1442,7 @@ header.grid(row=0, column=0, sticky="ew")
 # Shortcuts
 
 root.bind_all("<Control-q>", lambda e: root.quit())
-root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.7\n"
+root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.8\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1503,11 +1536,16 @@ visiondepth_frame = ttk.Frame(tab_control, style="VD3D.TFrame")
 tab_control.add(visiondepth_frame, text="3D Video Generator")
 visiondepth_tab_index = tab_control.index("end") - 1
 
-scroll_area = ScrollableFrame(visiondepth_frame, vscroll=False, hscroll=False,
-                              bg=BG_MAIN, inner_bg=BG_MAIN)
+scroll_area = ScrollableFrame(
+    visiondepth_frame,
+    vscroll=True,
+    hscroll=False,
+    bg=BG_MAIN,
+    inner_bg=BG_MAIN,
+)
 scroll_area.pack(fill="both", expand=True)
-visiondepth_content_frame = scroll_area.inner  # parent for your 3D widgets
 
+visiondepth_content_frame = scroll_area.inner
 parent = visiondepth_content_frame
 
 left_col  = ttk.Frame(parent, style="VD3D.TFrame")
@@ -1516,10 +1554,11 @@ right_col = ttk.Frame(parent, style="VD3D.TFrame")
 left_col.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=10)
 right_col.grid(row=0, column=1, sticky="nsew", padx=(6, 12), pady=10)
 
-# allow both columns to expand horizontally, but let only the right grow tall
-parent.grid_columnconfigure(0, weight=1, minsize=680)   # tweak minsize to taste
-parent.grid_columnconfigure(1, weight=1)
+# IMPORTANT: don't lock the left column with a big minsize if you want stacking
+parent.grid_columnconfigure(0, weight=1, minsize=0)
+parent.grid_columnconfigure(1, weight=1, minsize=0)
 parent.grid_rowconfigure(0, weight=1)
+parent.grid_rowconfigure(1, weight=0)
 
 left_col.grid_rowconfigure(99, weight=1)
 
@@ -1527,19 +1566,30 @@ left_col.grid_rowconfigure(99, weight=1)
 visiondepth_content_frame.grid_columnconfigure(0, weight=1)
 visiondepth_content_frame.grid_columnconfigure(1, weight=1)
 
-def relayout(event=None):
-    w = visiondepth_content_frame.winfo_width()
-    if w < 1400:
-        # stack right under left
-        right_col.grid(row=1, column=0, sticky="nsew")
-        visiondepth_content_frame.grid_columnconfigure(1, weight=0)
-    else:
-        # two columns side by side
-        right_col.grid(row=0, column=1, sticky="nsew")
-        visiondepth_content_frame.grid_columnconfigure(1, weight=1)
+STACK_BREAKPOINT = 1200  # tweak: 1000–1400 depending on your UI width
 
-visiondepth_content_frame.bind("<Configure>", relayout)
-relayout()
+def update_3d_tab_layout(event=None):
+    w = parent.winfo_width()
+    if w <= 1:
+        return
+
+    if w < STACK_BREAKPOINT:
+        # STACKED: right goes under left
+        left_col.grid_configure(row=0, column=0, columnspan=2, sticky="nsew", padx=12, pady=(10, 6))
+        right_col.grid_configure(row=1, column=0, columnspan=2, sticky="nsew", padx=12, pady=(6, 10))
+        parent.grid_rowconfigure(0, weight=0)
+        parent.grid_rowconfigure(1, weight=1)
+    else:
+        # SIDE-BY-SIDE
+        left_col.grid_configure(row=0, column=0, columnspan=1, sticky="nsew", padx=(12, 6), pady=10)
+        right_col.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", padx=(6, 12), pady=10)
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=0)
+
+# Bind to something that actually resizes (the tab frame is usually reliable)
+visiondepth_frame.bind("<Configure>", update_3d_tab_layout)
+visiondepth_frame.after(0, update_3d_tab_layout)
+
 
 # --- Depthblend Content ---
 class DepthBlenderTab(ttk.Frame):
@@ -2201,23 +2251,27 @@ def load_supported_models():
 
         # Marigold
         "Marigold Depth v1.1 (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
-        "Marigold Depth v1.0":             "prs-eth/marigold-depth-v1-0",
+        "Marigold Depth v1.0":             "diffusers:prs-eth/marigold-depth-v1-0",
 
         # Distill-Any-Depth
         "Distill-Any-Depth Large (xingyang1)": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (xingyang1)": "xingyang1/Distill-Any-Depth-Small-hf",
-        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
-        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
+#        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
+#        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
-        # Depth Anything v2
+
         # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
+        "Distill-Any-Depth Large(ONNX)": "onnx:DistillAnyDepthLarge",
+        "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
+        "Distill-Any-Depth Small(ONNX)": "onnx:DistillAnyDepthSmall",
 
 #        "DA3-GIANT":              "depth-anything/DA3-GIANT",
 #        "DA3-LARGE":              "depth-anything/DA3-LARGE",
 #        "DA3-BASE":               "depth-anything/DA3-BASE",
 #        "DA3-SMALL":               "depth-anything/DA3-SMALL",
 
+        # Depth Anything v2
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
@@ -2229,15 +2283,15 @@ def load_supported_models():
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
         "Depth Anything v1 Base":     "LiheYoung/depth-anything-base-hf",
         "Depth Anything v1 Small":    "LiheYoung/depth-anything-small-hf",
-        "Depth Anything v1 ViT-L/14": "LiheYoung/depth_anything_vitl14",
+#        "Depth Anything v1 ViT-L/14": "LiheYoung/depth_anything_vitl14",
         
         # Prompt Depth
         "Prompt Depth Anything VITS Transparent": "depth-anything/prompt-depth-anything-vits-transparent-hf",
         
 
         # Other popular models
-        "DA-2 (Haodongli)":            "haodongli/DA-2",
-        "Bridge (Dingning)":           "Dingning/BRIDGE",
+#        "DA-2 (Haodongli)":            "haodongli/DA-2",
+#        "Bridge (Dingning)":           "Dingning/BRIDGE",
         "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -2248,7 +2302,6 @@ def load_supported_models():
         "MiDaS v2 (Qualcomm)":         "qualcomm/Midas-V2",
 
     }
-
 
 
     # ✅ auto-add local folders as “[Local] {folder}”
@@ -2316,7 +2369,7 @@ INFERENCE_RESOLUTIONS = {
     "256x256": (256, 256),
     "384x384": (384, 384),
     "448x448": (448, 448),
-    "518x518 (VDA)": (518, 518),
+    "518x518": (518, 518),
     "576x576": (576, 576),
     "640x640": (640, 640),
     "704x704": (704, 704),
@@ -2435,7 +2488,7 @@ invert_checkbox = tk.Checkbutton(
 invert_checkbox.pack(pady=5)
 
 save_frames_checkbox = tk.Checkbutton(
-    sidebar, text=t(" Save Frames"), variable=save_frames_var, bg="#1c1c1c", fg="white",  selectcolor="#2b2b2b"
+    sidebar, text=t("Save Frames"), variable=save_frames_var, bg="#1c1c1c", fg="white",  selectcolor="#2b2b2b"
 )
 save_frames_checkbox.pack(pady=5)
 
@@ -2576,7 +2629,7 @@ progress_bar = ttk.Progressbar(
     sidebar,
     mode="determinate",
     style="VD3D.Horizontal.TProgressbar",
-    length=180
+    length=300
 )
 progress_bar.pack(pady=10)
 status_label = tk.Label(
@@ -2724,11 +2777,13 @@ ft3d_enable_upscale = tk.BooleanVar(value=False)
 ft3d_fps_multiplier = tk.IntVar(value=2)
 ft3d_blend_mode = tk.StringVar(value="OFF")
 ft3d_input_res_pct = tk.IntVar(value=100)
-ft3d_selected_model = tk.StringVar(value="VD-GAN")
+ft3d_selected_model = tk.StringVar(value="RealESR_Gx4_fp16")
 
 
 
 REAL_ESRGAN_MODELS = {
+#    "VD_SRResNet_x4_v1": "weights/VD_SRResNet_x4_v1.pth",
+#    "VD_SRResNet_x4_v1_tuned": "weights/VD_SRResNet_x4_v1_tuned.pth",
     "RealESR_Gx4_fp16": "weights/RealESR_Gx4_fp16.onnx",
     "RealESRGAN_x4_fp16": "weights/RealESRGANx4_fp16.onnx",
     "RealESR_Animex4_fp16": "weights/RealESR_Animex4_fp16.onnx",
@@ -3311,7 +3366,8 @@ def clear_clip():
 
 # Layout frames
 
-top_widgets_frame = tk.LabelFrame(
+# 🔳 Video Info group
+video_info_frame = tk.LabelFrame(
     right_col,
     text=t("Video Info"),
     bg="#1c1c1c",
@@ -3321,54 +3377,83 @@ top_widgets_frame = tk.LabelFrame(
     padx=10,
     pady=10
 )
-top_widgets_frame.grid(row=0, column=0, sticky="new")
+video_info_frame.grid(row=0, column=0, sticky="new", pady=(0, 8))
 
-
-# Thumbnail
-video_thumbnail_label = tk.Label(
-    top_widgets_frame,
-    text=t("No Thumbnail"),
-    bg="#1c1c1c", fg="white"
+# --- left: thumbnail container ---
+preview_container = tk.Frame(
+    video_info_frame,
+    width=384,
+    height=216,
+    bg="#1c1c1c"
 )
-video_thumbnail_label.grid(row=0, column=0, padx=10, pady=5)
+preview_container.grid(row=0, column=0, rowspan=2, sticky="nw")
+preview_container.grid_propagate(False)
+
+video_thumbnail_label = tk.Label(
+    preview_container,
+    text=t("No Thumbnail"),
+    bg="#1c1c1c",
+    fg="white"
+)
+video_thumbnail_label.pack(fill="both", expand=True, padx=5, pady=5)
+
+# --- right: text + aspect + depth info ---
+top_widgets_frame = tk.Frame(video_info_frame, bg="#1c1c1c")
+top_widgets_frame.grid(row=0, column=1, sticky="nw", padx=(10, 0))
 
 video_specs_label = tk.Label(
     top_widgets_frame,
     text=t("Resolution: N/A\nFPS: N/A"),
-    justify="left", bg="#1c1c1c", fg="white"
+    justify="left",
+    bg="#1c1c1c",
+    fg="white"
 )
-video_specs_label.grid(row=0, column=1, padx=10, pady=5)
+video_specs_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
 
 aspect_preview_label = tk.Label(
     top_widgets_frame,
     text="",
     font=("Segoe UI", 8, "italic"),
-    bg="#1c1c1c", fg="white")
-aspect_preview_label.grid(row=1, column=0, sticky="w", padx=5)
-
-# 🔁 Bind aspect ratio dropdown to preview label
-selected_aspect_ratio.trace_add("write", update_aspect_preview)
-update_aspect_preview()
+    bg="#1c1c1c",
+    fg="white"
+)
+aspect_preview_label.grid(row=2, column=0, sticky="w", padx=5, pady=(0, 5))
 
 depth_map_label = tk.Label(
     top_widgets_frame,
     text=t("Depth Map (3D): None"),
-    bg="#1c1c1c", fg="white",
-    justify="left", wraplength=200
+    bg="#1c1c1c",
+    fg="white",
+    justify="left",
+    wraplength=220
 )
-depth_map_label.grid(row=1, column=1, padx=10, pady=5)
+depth_map_label.grid(row=1, column=2, rowspan=2, padx=10, pady=5, sticky="nw")
+
+# --- bottom: progress bar + label ---
+progress_frame = tk.Frame(video_info_frame, bg="#1c1c1c")
+progress_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(5, 0))
+progress_frame.grid_columnconfigure(0, weight=1)
 
 progress = ttk.Progressbar(
-    top_widgets_frame,
+    progress_frame,
     style="VD3D.Horizontal.TProgressbar",
     length=300,
     mode="determinate"
 )
-progress.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
+progress.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
 
-progress_label = tk.Label(top_widgets_frame, text="0%", font=("Arial", 10), bg="#1c1c1c", fg="white")
-progress_label.grid(row=1, column=2, padx=10, pady=5, sticky="ew")
+progress_label = tk.Label(
+    progress_frame,
+    text="0%",
+    font=("Arial", 10),
+    bg="#1c1c1c",
+    fg="white"
+)
+progress_label.grid(row=0, column=0, padx=5, pady=5, sticky="e")
 
+# 🔁 Bind aspect ratio dropdown to preview label
+selected_aspect_ratio.trace_add("write", update_aspect_preview)
+update_aspect_preview()
 
 preview_button = ttk.Button(
     top_widgets_frame,
@@ -3377,7 +3462,7 @@ preview_button = ttk.Button(
     style="VD3D.TButton",
 )
 
-preview_button.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+preview_button.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
 
 # Audio Tool Button
 audio_tool_button = ttk.Button(
@@ -3386,7 +3471,7 @@ audio_tool_button = ttk.Button(
     command=launch_audio_gui,
     style="VD3D.TButton",
 )
-audio_tool_button.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+audio_tool_button.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
 
 live_button = ttk.Button(
     top_widgets_frame,
@@ -3394,13 +3479,12 @@ live_button = ttk.Button(
     command=launch_live_gui,
     style="VD3D.TButton",
 )
-live_button.grid(row=2, column=2, padx=10, pady=5, sticky="ew")
-
+live_button.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
 
 # Processing Options
 options_frame = tk.LabelFrame(
     left_col,
-    text=t("Pop & Subject Controls"),
+    text=t("Depth & Parallax Controls"),
     bg="#1c1c1c",
     fg="white",
     font=("Segoe UI", 10, "bold"),
@@ -3561,23 +3645,18 @@ stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 
 
 
-# Row 4
-fg_shift_label = tk.Label(
+bg_shift_label = tk.Label(
     options_frame,
     text=t("Foreground Shift"),
-    bg="#1c1c1c",
-    fg="white"
+    bg="#1c1c1c", fg="white"
 )
-fg_shift_label.grid(row=4, column=0, sticky="w")
+bg_shift_label.grid(row=4, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=0,
-    to=30,
-    resolution=0.5,
-    orient=tk.HORIZONTAL,
-    variable=fg_shift,
-    bg="#1c1c1c", fg="white",
+    from_=-20, to=20, 
+    resolution=0.1, orient=tk.HORIZONTAL,
+    variable=bg_shift, bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
 ).grid(row=4, column=1, sticky="ew")
 
@@ -3612,7 +3691,7 @@ mg_shift_label.grid(row=5, column=0, sticky="w")
 tk.Scale(
     options_frame, 
     from_=-10, to=10,
-    resolution=0.5,
+    resolution=0.1,
     orient=tk.HORIZONTAL, variable=mg_shift,
     bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
@@ -3634,22 +3713,26 @@ tk.Scale(
     cursor="sb_h_double_arrow"
 ).grid(row=5, column=3, sticky="ew")
 
-#Row 6
-bg_shift_label = tk.Label(
+# Row 6
+fg_shift_label = tk.Label(
     options_frame,
     text=t("Background Shift"),
-    bg="#1c1c1c", fg="white"
+    bg="#1c1c1c",
+    fg="white"
 )
-bg_shift_label.grid(row=6, column=0, sticky="w")
+fg_shift_label.grid(row=6, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-20, to=0, 
-    resolution=0.5, orient=tk.HORIZONTAL,
-    variable=bg_shift, bg="#1c1c1c", fg="white",
+    from_=-20,
+    to=20,
+    resolution=0.1,
+    orient=tk.HORIZONTAL,
+    variable=fg_shift,
+    bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
 ).grid(row=6, column=1, sticky="ew")
- 
+
 parallax_balance_label = tk.Label(
     options_frame,
     text=t("Parallax Balance"),
@@ -3786,112 +3869,145 @@ save_preset_button = ttk.Button(
 )
 save_preset_button.grid(row=9, column=3, sticky="e")
 
-pop_frame = tk.LabelFrame(
-    left_col,
-    text=t("Processing Options"),
-    bg="#1c1c1c", fg="white",
-    font=("Segoe UI", 10, "bold"),
-    labelanchor="nw", padx=10, pady=10
-)
-pop_frame.grid(row=0, column=0, sticky="new") 
+def open_processing_dialog():
+    dlg = tk.Toplevel(root)
+    dlg.title(t("Processing Options"))
+    dlg.configure(bg="#1c1c1c")
+    dlg.transient(root)
+    dlg.grab_set()
 
-for i in range(4):
-    pop_frame.columnconfigure(i, weight=0)
+    pop_frame = tk.LabelFrame(
+        dlg,
+        text=t("Processing Options"),
+        bg="#1c1c1c",
+        fg="white",
+        font=("Segoe UI", 10, "bold"),
+        labelanchor="nw",
+        padx=10,
+        pady=10,
+    )
+    pop_frame.pack(fill="x", expand=False, padx=10, pady=10)
 
-
-# Row 0
-preserve_aspect_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Preserve Original Aspect Ratio"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=preserve_original_aspect
-)
-preserve_aspect_checkbox.grid(row=0, column=0, sticky="w", padx=5)
-
-auto_crop_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Auto Crop Black Bars"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=auto_crop_black_bars,
-    anchor="e",
-    justify="left"
-)
-auto_crop_checkbox.grid(row=0, column=1, sticky="w", padx=5)
-
-use_subject_tracking_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Stabilize Zero-Parallax (center-depth)"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=use_subject_tracking,
-    anchor="w",
-    justify="left"
-)
-use_subject_tracking_checkbox.grid(row=0, column=2, sticky="w", padx=5)
-
-# Row 1
-
-skip_blank_frames_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Skip Blank/White Frames"), bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=skip_blank_frames,
-    anchor="w",
-    justify="left"
-)
-skip_blank_frames_checkbox.grid(row=1, column=0, sticky="w", padx=5)
+    # Make columns evenly resize & give a minimum so controls don't squash
+    for i in range(3):
+        pop_frame.columnconfigure(i, weight=1, minsize=110)
 
 
-enable_edge_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Enable Edge Masking"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=enable_edge_masking,
-    anchor="w",
-    justify="left"
-)
-enable_edge_checkbox.grid(row=1, column=1, sticky="w", padx=5)
+    # Row 0
+    preserve_aspect_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Preserve Original Aspect Ratio"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=preserve_original_aspect
+    )
+    preserve_aspect_checkbox.grid(row=0, column=0, sticky="w", padx=5)
 
-enable_feathering_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Enable Feathering"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=enable_feathering,
-    anchor="w",
-    justify="left"
-)
-enable_feathering_checkbox.grid(row=1, column=2, sticky="w", padx=5)
+    auto_crop_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Auto Crop Black Bars"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=auto_crop_black_bars,
+        anchor="e",
+        justify="left"
+    )
+    auto_crop_checkbox.grid(row=0, column=1, sticky="w", padx=5)
+
+    use_subject_tracking_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Stabilize Zero-Parallax (center-depth)"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=use_subject_tracking,
+        anchor="w",
+        justify="left"
+    )
+    use_subject_tracking_checkbox.grid(row=0, column=2, sticky="w", padx=5)
+
+    # Row 1
+
+    skip_blank_frames_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Skip Blank/White Frames"), bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=skip_blank_frames,
+        anchor="w",
+        justify="left"
+    )
+    skip_blank_frames_checkbox.grid(row=1, column=0, sticky="w", padx=5)
 
 
-enable_dynamic_convergence_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Enable Dynamic Convergence"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=enable_dynamic_convergence,
-    anchor="w",
-    justify="left"
-)
-enable_dynamic_convergence_checkbox.grid(row=3, column=0, sticky="w", padx=5)
+    enable_edge_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Enable Edge Masking"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=enable_edge_masking,
+        anchor="w",
+        justify="left"
+    )
+    enable_edge_checkbox.grid(row=1, column=1, sticky="w", padx=5)
 
-ipd_toggle = tk.Checkbutton(
-    pop_frame,
-    text=t("Enable Stereo Scaling (IPD)"),
-    variable=ipd_enabled_var,
-    bg="#1c1c1c", fg="white",
-    selectcolor="#2b2b2b",
-    activebackground="#1c1c1c",
-    activeforeground="white",
-    highlightthickness=0
-)
-ipd_toggle.grid(row=3, column=1, sticky="w", padx=5)
+    enable_feathering_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Enable Feathering"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=enable_feathering,
+        anchor="w",
+        justify="left"
+    )
+    enable_feathering_checkbox.grid(row=1, column=2, sticky="w", padx=5)
 
-use_dfw_checkbox = tk.Checkbutton(
-    pop_frame,
-    text=t("Enable Floating Window (DFW)"),
-    bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
-    variable=use_floating_window,
-    anchor="e",
-    justify="left"
-)
-use_dfw_checkbox.grid(row=3, column=2, sticky="w", padx=5)
+
+    enable_dynamic_convergence_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Enable Dynamic Convergence"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=enable_dynamic_convergence,
+        anchor="w",
+        justify="left"
+    )
+    enable_dynamic_convergence_checkbox.grid(row=3, column=0, sticky="w", padx=5)
+
+    ipd_toggle = tk.Checkbutton(
+        pop_frame,
+        text=t("Enable Stereo Scaling (IPD)"),
+        variable=ipd_enabled_var,
+        bg="#1c1c1c", fg="white",
+        selectcolor="#2b2b2b",
+        activebackground="#1c1c1c",
+        activeforeground="white",
+        highlightthickness=0
+    )
+    ipd_toggle.grid(row=3, column=1, sticky="w", padx=5)
+
+    use_dfw_checkbox = tk.Checkbutton(
+        pop_frame,
+        text=t("Enable Floating Window (DFW)"),
+        bg="#1c1c1c", fg="white", selectcolor="#2b2b2b",
+        variable=use_floating_window,
+        anchor="e",
+        justify="left"
+    )
+    use_dfw_checkbox.grid(row=3, column=2, sticky="w", padx=5)
+    
+    # 🔹 Tooltips inside the dialog, using your existing language keys
+    CreateToolTip(preserve_aspect_checkbox,     lambda: t("Tooltip.PreserveAspect"))
+    CreateToolTip(auto_crop_checkbox,    lambda: t("Tooltip.AutoCrop"))
+    CreateToolTip(use_subject_tracking_checkbox,    lambda: t("Tooltip.SubjectTracking"))
+    CreateToolTip(use_dfw_checkbox,        lambda: t("Tooltip.FloatingWindow"))
+    CreateToolTip(enable_edge_checkbox,           lambda: t("Tooltip.EdgeMasking"))
+    CreateToolTip(enable_feathering_checkbox,  lambda: t("Tooltip.Feathering"))
+    CreateToolTip(skip_blank_frames_checkbox,  lambda: t("Tooltip.SkipBlankFrames"))
+#   CreateToolTip(use_ffmpeg_checkbox,         lambda: t("Tooltip.SelectedCodec"))
+    CreateToolTip(enable_dynamic_convergence_checkbox,              lambda: t("Tooltip.EnableDynConvergence"))
+    CreateToolTip(ipd_toggle,         lambda: t("Tooltip.EnableIPD"))
+
+    # Close button
+    tk.Button(
+        dlg,
+        text=t("Close"),
+        command=dlg.destroy,
+        bg="#2c2c2c",
+        fg="white",
+    ).pack(pady=(0, 10))
+
 
 
 color_frame = tk.LabelFrame(
@@ -3966,10 +4082,211 @@ color_reset_button = tk.Button(
 )
 color_reset_button.grid(row=1, column=3, sticky="e")
 
-# 🔲 Encoding Settings Group
+def open_encoding_dialog():
+    dlg = tk.Toplevel(root)
+    dlg.title(t("Encoding Settings"))
+    dlg.configure(bg="#1c1c1c")
+    dlg.transient(root)
+    dlg.grab_set()
+
+    frame = tk.LabelFrame(
+        dlg,
+        text=t("Encoding Settings"),
+        bg="#1c1c1c",
+        fg="white",
+        font=("Segoe UI", 10, "bold"),
+        labelanchor="nw",
+        padx=10,
+        pady=10,
+    )
+    frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # Make columns evenly resize & give a minimum so controls don't squash
+    for i in range(7):
+        frame.columnconfigure(i, weight=1, minsize=110)
+
+    # ───────── Row 0: Stereo output + Renderer + Keep Audio + Delete SBS + HDR ─────────
+    StereoOutput_label = tk.Label(
+        frame,
+        text=t("Left/Right Output"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    StereoOutput_label.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+
+    tk.OptionMenu(
+        frame,
+        stereo_out_var,
+        "sbs", "left", "right", "both"
+    ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+
+    use_ffmpeg_checkbox = tk.Checkbutton(
+        frame,
+        text=t("Use FFmpeg Renderer"),
+        bg="#1c1c1c",
+        fg="white",
+        selectcolor="#2b2b2b",
+        variable=use_ffmpeg,
+        anchor="w"
+    )
+    use_ffmpeg_checkbox.grid(row=0, column=2, sticky="w", padx=5)
+
+    keep_audio_checkbox = tk.Checkbutton(
+        frame,
+        text=t("Keep Original Audio"),
+        variable=keep_original_audio,
+        bg="#1c1c1c",
+        fg="white",
+        activebackground="#1c1c1c",
+        selectcolor="#1c1c1c",
+        anchor="w",
+        justify="left"
+    )
+    keep_audio_checkbox.grid(row=0, column=3, sticky="w", padx=5)
+
+    DeleteSBS_label = tk.Checkbutton(
+        frame,
+        text=t("Delete SBS after"),
+        variable=delete_fsbs_var,
+        bg="#1c1c1c",
+        fg="white",
+        activebackground="#1c1c1c",
+        selectcolor="#1c1c1c",
+        anchor="w",
+        justify="left"
+    )
+    DeleteSBS_label.grid(row=0, column=4, sticky="w", padx=5)
+
+    hdr_checkbox = tk.Checkbutton(
+        frame,
+        text=t("Preserve HDR10"),
+        variable=preserve_hdr10_var,
+        onvalue=True,
+        offvalue=False,
+        bg="#1c1c1c",
+        fg="white",
+        activebackground="#1c1c1c",
+        selectcolor="#1c1c1c",
+        anchor="w",
+        justify="left"
+    )
+    hdr_checkbox.grid(row=0, column=5, sticky="w", padx=5)
+
+    # ───────── Row 1: Aspect • FFmpeg Codec • Codec ─────────
+    selected_aspect_ratio_label = tk.Label(
+        frame,
+        text=t("Aspect Ratio:"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    selected_aspect_ratio_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
+
+    tk.OptionMenu(
+        frame,
+        selected_aspect_ratio,
+        *aspect_ratios.keys()
+    ).grid(row=1, column=1, sticky="ew", padx=6, pady=4)
+
+    selected_ffmpeg_codec_label = tk.Label(
+        frame,
+        text=t("FFmpeg Codec:"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    selected_ffmpeg_codec_label.grid(row=1, column=2, sticky="w", padx=6, pady=4)
+
+    tk.OptionMenu(
+        frame,
+        selected_ffmpeg_codec,
+        *FFMPEG_CODEC_MAP.keys()
+    ).grid(row=1, column=3, sticky="ew", padx=6, pady=4)
+
+    selected_codec_label = tk.Label(
+        frame,
+        text=t("Codec:"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    selected_codec_label.grid(row=1, column=4, sticky="w", padx=6, pady=4)
+
+    tk.OptionMenu(
+        frame,
+        selected_codec,
+        *codec_options
+    ).grid(row=1, column=5, sticky="ew", padx=6, pady=4)
+
+    # ───────── Row 2: CRF • NVENC CQ ─────────
+    crf_value_label = tk.Label(
+        frame,
+        text=t("CRF"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    crf_value_label.grid(row=2, column=0, sticky="w", padx=6, pady=6)
+
+    tk.Scale(
+        frame,
+        from_=0,
+        to=51,
+        resolution=1,
+        orient=tk.HORIZONTAL,
+        variable=crf_value,
+        length=150,
+        bg="#2b2b2b",
+        fg="white",
+        troughcolor="#444",
+        highlightthickness=0,
+        bd=0
+    ).grid(row=2, column=1, columnspan=2, sticky="ew", padx=6, pady=6)
+
+    nvenc_cq_value_label = tk.Label(
+        frame,
+        text=t("NVENC CQ"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    nvenc_cq_value_label.grid(row=2, column=3, sticky="w", padx=6, pady=6)
+
+    tk.Scale(
+        frame,
+        from_=0,
+        to=51,
+        resolution=1,
+        orient=tk.HORIZONTAL,
+        variable=nvenc_cq_value,
+        length=150,
+        bg="#2b2b2b",
+        fg="white",
+        troughcolor="#444",
+        highlightthickness=0,
+        bd=0
+    ).grid(row=2, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
+
+    # 🔹 Tooltips inside the dialog, using your existing language keys
+    CreateToolTip(StereoOutput_label,     lambda: t("Tooltip.LROutput"))
+    CreateToolTip(use_ffmpeg_checkbox,    lambda: t("Tooltip.UseFFmpeg"))
+    CreateToolTip(keep_audio_checkbox,    lambda: t("Tooltip.KeepAudio"))
+    CreateToolTip(DeleteSBS_label,        lambda: t("Tooltip.DeleteOutputbtn"))
+    CreateToolTip(hdr_checkbox,           lambda: t("Tooltip.HDRbtn"))
+    CreateToolTip(selected_aspect_ratio_label,  lambda: t("Tooltip.AspectRatio"))
+    CreateToolTip(selected_ffmpeg_codec_label,  lambda: t("Tooltip.FFmpegCodec"))
+    CreateToolTip(selected_codec_label,         lambda: t("Tooltip.SelectedCodec"))
+    CreateToolTip(crf_value_label,              lambda: t("Tooltip.CRF"))
+    CreateToolTip(nvenc_cq_value_label,         lambda: t("Tooltip.NVENCCQ"))
+    
+    # Close button
+    tk.Button(
+        dlg,
+        text=t("Close"),
+        command=dlg.destroy,
+        bg="#2c2c2c",
+        fg="white",
+    ).pack(pady=(0, 10))
+
+# 🔲 Encoding Settings Group (collapsed into a button)
 encoding_frame = tk.LabelFrame(
     right_col,
-    text=t("Encoding Settings"),
+    text=t("Settings"),
     bg="#1c1c1c",
     fg="white",
     font=("Segoe UI", 10, "bold"),
@@ -3979,166 +4296,23 @@ encoding_frame = tk.LabelFrame(
 )
 encoding_frame.grid(row=2, column=0, sticky="new", pady=(8, 0))
 
-# Make columns evenly resize & give a minimum so controls don't squash
-for i in range(6):
-    encoding_frame.columnconfigure(i, weight=1, minsize=110)
-# ───────── Row 0: Stereo output + Renderer + Keep Audio + Delete SBS + HDR ─────────
-StereoOutput_label = tk.Label(
+encoder_button = ttk.Button(
     encoding_frame,
-    text="Left/Right Output",
-    bg="#1c1c1c",
-    fg="white"
+    text=t("Open Encoder Settings…"),
+    command=open_encoding_dialog,
+    cursor="hand2",
+    style="VD3D.TButton",
 )
-StereoOutput_label.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+encoder_button.grid(row=1, column=0, pady=5, padx=5, sticky="ew")
 
-tk.OptionMenu(
+processing_button = ttk.Button(
     encoding_frame,
-    stereo_out_var,
-    "sbs", "left", "right", "both"
-).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
-
-use_ffmpeg_checkbox = tk.Checkbutton(
-    encoding_frame,
-    text=t("Use FFmpeg Renderer"),
-    bg="#1c1c1c",
-    fg="white",
-    selectcolor="#2b2b2b",
-    variable=use_ffmpeg,
-    anchor="w"
+    text=t("Open Processing Options…"),
+    command=open_processing_dialog,
+    cursor="hand2",
+    style="VD3D.TButton",
 )
-use_ffmpeg_checkbox.grid(row=0, column=2, sticky="w", padx=5)
-
-keep_audio_checkbox = tk.Checkbutton(
-    encoding_frame,
-    text="Keep Original Audio",
-    variable=keep_original_audio,
-    bg="#1c1c1c",
-    fg="white",
-    activebackground="#1c1c1c",
-    selectcolor="#1c1c1c",
-    anchor="w",
-    justify="left"
-)
-keep_audio_checkbox.grid(row=0, column=3, sticky="w", padx=5)
-
-DeleteSBS_label = tk.Checkbutton(
-    encoding_frame,
-    text="Delete SBS after",
-    variable=delete_fsbs_var,
-    bg="#1c1c1c",
-    fg="white",
-    activebackground="#1c1c1c",
-    selectcolor="#1c1c1c",
-    anchor="w",
-    justify="left"
-)
-DeleteSBS_label.grid(row=0, column=4, sticky="w", padx=5)
-
-hdr_checkbox = tk.Checkbutton(
-    encoding_frame,
-    text="Preserve HDR10",
-    variable=preserve_hdr10_var,
-    onvalue=True,
-    offvalue=False,
-    bg="#1c1c1c",
-    fg="white",
-    activebackground="#1c1c1c",
-    selectcolor="#1c1c1c",
-    anchor="w",
-    justify="left"
-)
-hdr_checkbox.grid(row=0, column=5, sticky="w", padx=5)
-
-
-# ───────── Row 1: Aspect • FFmpeg Codec • Codec ─────────
-selected_aspect_ratio_label = tk.Label(
-    encoding_frame,
-    text=t("Aspect Ratio:"),
-    bg="#1c1c1c",
-    fg="white"
-)
-selected_aspect_ratio_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
-
-tk.OptionMenu(
-    encoding_frame,
-    selected_aspect_ratio,
-    *aspect_ratios.keys()
-).grid(row=1, column=1, sticky="ew", padx=6, pady=4)
-
-selected_ffmpeg_codec_label = tk.Label(
-    encoding_frame,
-    text=t("FFmpeg Codec:"),
-    bg="#1c1c1c",
-    fg="white"
-)
-selected_ffmpeg_codec_label.grid(row=1, column=2, sticky="w", padx=6, pady=4)
-
-tk.OptionMenu(
-    encoding_frame,
-    selected_ffmpeg_codec,
-    *FFMPEG_CODEC_MAP.keys()
-).grid(row=1, column=3, sticky="ew", padx=6, pady=4)
-
-selected_codec_label = tk.Label(
-    encoding_frame,
-    text=t("Codec:"),
-    bg="#1c1c1c",
-    fg="white"
-)
-selected_codec_label.grid(row=1, column=4, sticky="w", padx=6, pady=4)
-
-tk.OptionMenu(
-    encoding_frame,
-    selected_codec,
-    *codec_options
-).grid(row=1, column=5, sticky="ew", padx=6, pady=4)
-
-# ───────── Row 2: CRF • NVENC CQ ─────────
-crf_value_label = tk.Label(
-    encoding_frame,
-    text=t("CRF"),
-    bg="#1c1c1c",
-    fg="white"
-)
-crf_value_label.grid(row=2, column=0, sticky="w", padx=6, pady=6)
-
-tk.Scale(
-    encoding_frame,
-    from_=0,
-    to=51,
-    resolution=1,
-    orient=tk.HORIZONTAL,
-    variable=crf_value,
-    length=150,
-    bg="#2b2b2b",
-    fg="white",
-    troughcolor="#444",
-    highlightthickness=0,
-    bd=0
-).grid(row=2, column=1, columnspan=2, sticky="ew", padx=6, pady=6)
-
-nvenc_cq_value_label = tk.Label(
-    encoding_frame,
-    text=t("NVENC CQ"),
-    bg="#1c1c1c",
-    fg="white"
-)
-nvenc_cq_value_label.grid(row=2, column=3, sticky="w", padx=6, pady=6)
-
-tk.Scale(
-    encoding_frame,
-    from_=0,
-    to=51,
-    resolution=1,
-    orient=tk.HORIZONTAL,
-    variable=nvenc_cq_value,
-    length=150,
-    bg="#2b2b2b",
-    fg="white",
-    troughcolor="#444",
-    highlightthickness=0,
-    bd=0
-).grid(row=2, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
+processing_button.grid(row=1, column=1,pady=5, padx=5, sticky="ew")
 
 # --- Clip Range UI ---
 clip_frame = tk.LabelFrame(
@@ -4429,7 +4603,7 @@ format_button = tk.Label(
     button_frame, text=t("3D Format"),
     bg="#1c1c1c", fg="white"
 )
-format_button.pack(side="left", padx=5)
+format_button.grid(row=0, column=0, pady=5, padx=5, sticky="ew")
 
 option_menu = tk.OptionMenu(
     button_frame,
@@ -4441,7 +4615,7 @@ option_menu = tk.OptionMenu(
     "Passive Interlaced",
 )
 option_menu.config(width=10, cursor="hand2")  # Adjust width to keep consistent look
-option_menu.pack(side="left", padx=5)
+option_menu.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
 
 # Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(
@@ -4456,7 +4630,7 @@ start_button = tk.Button(
     )
 )
 
-start_button.pack(side="left", padx=5)
+start_button.grid(row=1, column=0, pady=5, padx=5, sticky="ew")
 
 batch_start_button = tk.Button(
     button_frame,
@@ -4469,7 +4643,7 @@ batch_start_button = tk.Button(
         start_batch_processing()
     )
 )
-batch_start_button.pack(side="left", padx=5)
+batch_start_button.grid(row=1, column=1, pady=5, padx=5, sticky="ew")
 
 
 suspend_button = tk.Button(
@@ -4479,7 +4653,7 @@ suspend_button = tk.Button(
     bg="orange", fg="black",
     cursor="hand2"
 )
-suspend_button.pack(side="left", padx=5)
+suspend_button.grid(row=1, column=2, pady=5, padx=5, sticky="ew")
 
 resume_button = tk.Button(
     button_frame,
@@ -4488,7 +4662,7 @@ resume_button = tk.Button(
     bg="blue", fg="white",
     cursor="hand2"
 )
-resume_button.pack(side="left", padx=5)
+resume_button.grid(row=1, column=3, pady=5, padx=5, sticky="ew")
 
 cancel_button = tk.Button(
     button_frame,
@@ -4497,7 +4671,7 @@ cancel_button = tk.Button(
     bg="red", fg="white",
     cursor="hand2"
 )
-cancel_button.pack(side="left", padx=5)
+cancel_button.grid(row=1, column=4, pady=5, padx=5, sticky="ew")
 
 # Row 7 - Reset button centered
 reset_button = tk.Button(
@@ -4507,7 +4681,7 @@ reset_button = tk.Button(
     bg="#8B0000", fg="white",
     cursor="hand2"
 )
-reset_button.pack(side="left", padx=5)
+reset_button.grid(row=1, column=5, pady=5, padx=5, sticky="ew")
 
 
 # Load GitHub icon
@@ -4578,7 +4752,7 @@ def on_render_finished(created_files: list[str]):
 
 
 # give inner groups uniform column stretch (change 4 if you use more columns)
-for grp in (options_frame, pop_frame, color_frame):
+for grp in (options_frame, color_frame):
     for c in range(4):
         grp.grid_columnconfigure(c, weight=1)
 
@@ -4600,6 +4774,7 @@ tooltip_refs["SaveFramesCheckbox"] = CreateToolTip(save_frames_checkbox, lambda:
 tooltip_refs["BatchSizeEntry"] = CreateToolTip(batch_size_entry, lambda: t("Tooltip.BatchSizeEntry"))
 tooltip_refs["InputLabel"] = CreateToolTip(input_label, lambda: t("Tooltip.InputLabel"))
 tooltip_refs["InferenceSteps"] = CreateToolTip(inference_steps_label, lambda: t("Tooltip.InferenceSteps"))
+tooltip_refs["InferenceRes"] = CreateToolTip(inference_res_label, lambda: t("Tooltip.InferenceRes"))
 tooltip_refs["DepthLabel"] = CreateToolTip(output_label, lambda: t("Tooltip.DepthLabel"))
 tooltip_refs["CPUMode"] = CreateToolTip(offload_mode_label, lambda: t("Tooltip.CPUMode"))
 tooltip_refs["ProcessImage"] = CreateToolTip(process_image_button, lambda: t("Tooltip.ProcessImage"))
@@ -4607,8 +4782,6 @@ tooltip_refs["ProcessImageFolder"] = CreateToolTip(process_image_folder_button, 
 tooltip_refs["ProcessVideo"] = CreateToolTip(process_video_button, lambda: t("Tooltip.ProcessVideo"))
 tooltip_refs["ProcessVideoFolder"] = CreateToolTip(process_video_folder_button, lambda: t("Tooltip.ProcessVideoFolder"))
 tooltip_refs["SelectedDepthCodec"] = CreateToolTip(codec_label, lambda: t("Tooltip.SelectedDepthCodec"))
-
-
 
 # -- 3D Render Tab --
 tooltip_refs["StartButton"] = CreateToolTip(start_button, lambda: t("Tooltip.StartButton"))
@@ -4626,9 +4799,9 @@ tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, lambda: t("Tooltip.Optio
 tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, lambda: t("Tooltip.AspectPreview"))
 
 # Sliders
-tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, lambda: t("Tooltip.FGShift"))
+tooltip_refs["FGShift"] = CreateToolTip(bg_shift_label, lambda: t("Tooltip.FGShift"))
 tooltip_refs["MGShift"] = CreateToolTip(mg_shift_label, lambda: t("Tooltip.MGShift"))
-tooltip_refs["BGShift"] = CreateToolTip(bg_shift_label, lambda: t("Tooltip.BGShift"))
+tooltip_refs["BGShift"] = CreateToolTip(fg_shift_label, lambda: t("Tooltip.BGShift"))
 tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, lambda: t("Tooltip.Sharpness"))
 tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, lambda: t("Tooltip.ZeroParallaxStrength"))
 tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, lambda: t("Tooltip.ParallaxBalance"))
@@ -4637,15 +4810,15 @@ tooltip_refs["DOFStrength"] = CreateToolTip(dof_strength_label, lambda: t("Toolt
 tooltip_refs["ConvergenceStrength"] = CreateToolTip(convergence_strength_label, lambda: t("Tooltip.ConvergenceStrength"))
 
 # Checkboxes
-tooltip_refs["PreserveAspect"]  = CreateToolTip(preserve_aspect_checkbox, lambda: t("Tooltip.PreserveAspect"))
-tooltip_refs["AutoCrop"]        = CreateToolTip(auto_crop_checkbox, lambda: t("Tooltip.AutoCrop"))
-tooltip_refs["SubjectTracking"] = CreateToolTip(use_subject_tracking_checkbox, lambda: t("Tooltip.SubjectTracking"))
-tooltip_refs["FloatingWindow"]  = CreateToolTip(use_dfw_checkbox, lambda: t("Tooltip.FloatingWindow"))
-tooltip_refs["EdgeMasking"]     = CreateToolTip(enable_edge_checkbox, lambda: t("Tooltip.EdgeMasking"))
-tooltip_refs["Feathering"]      = CreateToolTip(enable_feathering_checkbox, lambda: t("Tooltip.Feathering"))
-tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, lambda: t("Tooltip.SkipBlankFrames"))
-tooltip_refs["UseFFmpeg"]       = CreateToolTip(use_ffmpeg_checkbox, lambda: t("Tooltip.UseFFmpeg"))
-tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, lambda: t("Tooltip.EnableDynConvergence"))
+#tooltip_refs["PreserveAspect"]  = CreateToolTip(preserve_aspect_checkbox, lambda: t("Tooltip.PreserveAspect"))
+#tooltip_refs["AutoCrop"]        = CreateToolTip(auto_crop_checkbox, lambda: t("Tooltip.AutoCrop"))
+#tooltip_refs["SubjectTracking"] = CreateToolTip(use_subject_tracking_checkbox, lambda: t("Tooltip.SubjectTracking"))
+#tooltip_refs["FloatingWindow"]  = CreateToolTip(use_dfw_checkbox, lambda: t("Tooltip.FloatingWindow"))
+#tooltip_refs["EdgeMasking"]     = CreateToolTip(enable_edge_checkbox, lambda: t("Tooltip.EdgeMasking"))
+#tooltip_refs["Feathering"]      = CreateToolTip(enable_feathering_checkbox, lambda: t("Tooltip.Feathering"))
+#tooltip_refs["SkipBlankFrames"] = CreateToolTip(skip_blank_frames_checkbox, lambda: t("Tooltip.SkipBlankFrames"))
+#tooltip_refs["UseFFmpeg"]       = CreateToolTip(use_ffmpeg_checkbox, lambda: t("Tooltip.UseFFmpeg"))
+#tooltip_refs["EnableDynConvergence"] = CreateToolTip(enable_dynamic_convergence_checkbox, lambda: t("Tooltip.EnableDynConvergence"))
 
 tooltip_refs["PopGamma"]        = CreateToolTip(pop_gamma_label, lambda: t("Tooltip.PopGamma"))
 tooltip_refs["PopMid"]          = CreateToolTip(pop_mid_label,   lambda: t("Tooltip.PopMid"))
@@ -4661,17 +4834,17 @@ tooltip_refs["Contrast"]   = CreateToolTip(contrast_label,   lambda: t("Tooltip.
 tooltip_refs["Brightness"] = CreateToolTip(brightness_label, lambda: t("Tooltip.Brightness"))
 
 # Encoding
-tooltip_refs["CRF"] = CreateToolTip(crf_value_label, lambda: t("Tooltip.CRF"))
-tooltip_refs["NVENCCQ"] = CreateToolTip(nvenc_cq_value_label, lambda: t("Tooltip.NVENCCQ"))
-tooltip_refs["SelectedCodec"] = CreateToolTip(selected_codec_label, lambda: t("Tooltip.SelectedCodec"))
-tooltip_refs["FFmpegCodec"] = CreateToolTip(selected_ffmpeg_codec_label, lambda: t("Tooltip.FFmpegCodec"))
-tooltip_refs["AspectRatio"] = CreateToolTip(selected_aspect_ratio_label, lambda: t("Tooltip.AspectRatio"))
-tooltip_refs["KeepAudio"] = CreateToolTip(keep_audio_checkbox, lambda: t("Tooltip.KeepAudio"))
+#tooltip_refs["CRF"] = CreateToolTip(crf_value_label, lambda: t("Tooltip.CRF"))
+#tooltip_refs["NVENCCQ"] = CreateToolTip(nvenc_cq_value_label, lambda: t("Tooltip.NVENCCQ"))
+#tooltip_refs["SelectedCodec"] = CreateToolTip(selected_codec_label, lambda: t("Tooltip.SelectedCodec"))
+#tooltip_refs["FFmpegCodec"] = CreateToolTip(selected_ffmpeg_codec_label, lambda: t("Tooltip.FFmpegCodec"))
+#tooltip_refs["AspectRatio"] = CreateToolTip(selected_aspect_ratio_label, lambda: t("Tooltip.AspectRatio"))
+#tooltip_refs["KeepAudio"] = CreateToolTip(keep_audio_checkbox, lambda: t("Tooltip.KeepAudio"))
 tooltip_refs["Float16Button"] = CreateToolTip(float_16_btn, lambda: t("Tooltip.Float16Button"))
 
 # --- IPD Controls ---
 tooltip_refs["IPDShift"] = CreateToolTip(ipd_label, lambda: t("Tooltip.IPDShift"))
-tooltip_refs["EnableIPD"] = CreateToolTip(ipd_toggle, lambda: t("Tooltip.EnableIPD"))
+#tooltip_refs["EnableIPD"] = CreateToolTip(ipd_toggle, lambda: t("Tooltip.EnableIPD"))
 
 tooltip_refs["AddVideo"] = CreateToolTip(batch_video_button, lambda: t("Tooltip.AddVideo"))
 tooltip_refs["AddDepthMap"] = CreateToolTip(batch_depth_button, lambda: t("Tooltip.AddDepthMap"))
@@ -4691,12 +4864,11 @@ tooltip_refs["ModelSelect"] = CreateToolTip(model_select, lambda: t("Tooltip.Mod
 tooltip_refs["SceneDetect"] = CreateToolTip(scene_detect_label,        lambda: t("Tooltip.SceneDetect"))
 tooltip_refs["SceneDetectThreshold"] = CreateToolTip(scene_detect_threshold, lambda: t("Tooltip.SceneDetectThreshold"))
 tooltip_refs["DetectScenesExtract"] = CreateToolTip(detect_scenes_button,     lambda: t("Tooltip.DetectScenesExtract"))
-tooltip_refs["LROutput"] = CreateToolTip(StereoOutput_label,        lambda: t("Tooltip.LROutput"))
-tooltip_refs["DeleteOutputbtn"] = CreateToolTip(DeleteSBS_label,        lambda: t("Tooltip.DeleteOutputbtn"))
-tooltip_refs["HDRbtn"] = CreateToolTip(hdr_checkbox,        lambda: t("Tooltip.HDRbtn"))
+#tooltip_refs["LROutput"] = CreateToolTip(StereoOutput_label,        lambda: t("Tooltip.LROutput"))
+#tooltip_refs["DeleteOutputbtn"] = CreateToolTip(DeleteSBS_label,        lambda: t("Tooltip.DeleteOutputbtn"))
+#tooltip_refs["HDRbtn"] = CreateToolTip(hdr_checkbox,        lambda: t("Tooltip.HDRbtn"))
 tooltip_refs["Livebtn"] = CreateToolTip(live_button,        lambda: t("Tooltip.Livebtn"))
 tooltip_refs["Audiobtn"] = CreateToolTip(audio_tool_button,        lambda: t("Tooltip.Audiobtn"))
-
 
 
 PRESET_DIR = "presets"
@@ -4772,9 +4944,9 @@ def refresh_ui_labels():
     
 
     # Parallax/quality sliders (existing)
-    _cfg(fg_shift_label, text=t("Foreground Shift"))
+    _cfg(bg_shift_label, text=t("Foreground Shift"))
     _cfg(mg_shift_label, text=t("Midground Shift"))
-    _cfg(bg_shift_label, text=t("Background Shift"))
+    _cfg(fg_shift_label, text=t("Background Shift"))
     _cfg(sharpness_factor_label, text=t("Sharpness Factor"))
     _cfg(zero_parallax_strength_label, text=t("Zero Parallax Strength"))
     _cfg(parallax_balance_label, text=t("Parallax Balance"))
@@ -4793,29 +4965,33 @@ def refresh_ui_labels():
     _cfg(apply_entries_btn, text=t("Apply Entries"))
 
     # Toggles / checkboxes (existing)
-    _cfg(preserve_aspect_checkbox, text=t("Preserve Original Aspect Ratio"))
-    _cfg(auto_crop_checkbox, text=t("Auto Crop Black Bars"))
-    _cfg(use_subject_tracking_checkbox, text=t("Stabilize Zero-Parallax (center-depth)"))
-    _cfg(use_dfw_checkbox, text=t("Enable Floating Window (DFW)"))
-    _cfg(use_ffmpeg_checkbox, text=t("Use FFmpeg Renderer"))
-    _cfg(enable_edge_checkbox, text=t("Enable Edge Masking"))
-    _cfg(enable_feathering_checkbox, text=t("Enable Feathering"))
-    _cfg(skip_blank_frames_checkbox, text=t("Skip Blank/White Frames"))
-    _cfg(enable_dynamic_convergence_checkbox, text=t("Enable Dynamic Convergence"))
+#    _cfg(pop_frame, text=t("Processing Options"))
+#    _cfg(preserve_aspect_checkbox, text=t("Preserve Original Aspect Ratio"))
+#    _cfg(auto_crop_checkbox, text=t("Auto Crop Black Bars"))
+#    _cfg(use_subject_tracking_checkbox, text=t("Stabilize Zero-Parallax (center-depth)"))
+#    _cfg(use_dfw_checkbox, text=t("Enable Floating Window (DFW)"))
+#    _cfg(use_ffmpeg_checkbox, text=t("Use FFmpeg Renderer"))
+#    _cfg(enable_edge_checkbox, text=t("Enable Edge Masking"))
+#    _cfg(enable_feathering_checkbox, text=t("Enable Feathering"))
+#    _cfg(skip_blank_frames_checkbox, text=t("Skip Blank/White Frames"))
+#    _cfg(enable_dynamic_convergence_checkbox, text=t("Enable Dynamic Convergence"))
 
     # Encoding settings
-    _cfg(selected_aspect_ratio_label, text=t("Aspect Ratio:"))
-    _cfg(selected_ffmpeg_codec_label, text=t("FFmpeg Codec:"))
-    _cfg(selected_codec_label, text=t("Codec:"))
-    _cfg(crf_value_label, text=t("CRF"))
-    _cfg(nvenc_cq_value_label, text=t("NVENC CQ"))
-    _cfg(encoding_frame, text=t("Encoding Settings"))
+    _cfg(encoding_frame, text=t("Settings"))
+    _cfg(encoder_button, text=t("Open Encoder Settings…"))
+    _cfg(processing_button, text=t("Open Processing Options…"))
+#    _cfg(selected_aspect_ratio_label, text=t("Aspect Ratio:"))
+#    _cfg(selected_ffmpeg_codec_label, text=t("FFmpeg Codec:"))
+#    _cfg(selected_codec_label, text=t("Codec:"))
+#    _cfg(crf_value_label, text=t("CRF"))
+#    _cfg(nvenc_cq_value_label, text=t("NVENC CQ"))
+#    _cfg(encoding_frame, text=t("Encoding Settings"))
     _cfg(options_frame, text=t("Processing Options"))
     _cfg(top_widgets_frame, text=t("Video Info"))
-    _cfg(StereoOutput_label, text=t("Left/Right Output"))
-    _cfg(DeleteSBS_label, text=t("Delete SBS after"))
-    _cfg(hdr_checkbox, text=t("Preserve HDR10"))
-    _cfg(keep_audio_checkbox , text=t("Keep Original Audio"))
+#    _cfg(StereoOutput_label, text=t("Left/Right Output"))
+#    _cfg(DeleteSBS_label, text=t("Delete SBS after"))
+#    _cfg(hdr_checkbox, text=t("Preserve HDR10"))
+#    _cfg(keep_audio_checkbox , text=t("Keep Original Audio"))
     _cfg(clip_frame, text=t("Clip Range (optional)"))
     _cfg(start_clip_range_label, text=t("Start (HH:MM:SS[.ms] or seconds):"))
     _cfg(end_clip_range_label, text=t("End (HH:MM:SS[.ms] or seconds):"))
@@ -4857,10 +5033,10 @@ def refresh_ui_labels():
     _cfg(brightness_label, text=t("Brightness"))
        
         # 🔀 Stereo Separation (IPD)
-    _cfg(ipd_toggle, text=t("Enable Stereo Scaling (IPD)"))
+#    _cfg(ipd_toggle, text=t("Enable Stereo Scaling (IPD)"))
     _cfg(ipd_label, text=t("Stereo Scaling (IPD)"))
  
-    _cfg(pop_frame, text=t("Pop & Subject Controls"))    
+    _cfg(options_frame, text=t("Depth & Parallax Controls"))    
     _cfg(ipd_label, text=t("Stereo Scaling (IPD)"))
     
     _cfg(live_button, text=t("VD3D External Input 3D (WIP)"))
@@ -5040,4 +5216,3 @@ root.protocol("WM_DELETE_WINDOW", on_exit)
 load_settings() 
 
 root.mainloop()
-
