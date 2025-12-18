@@ -107,9 +107,9 @@ def open_3d_preview_window(
     top_area = tk.Frame(paned)
     top_area.columnconfigure(0, weight=1)
     paned.add(top_area, minsize=280)
-
-    initial_w = int(settings.get('width', '960')) if str(settings.get('width', '960')).isdigit() else 960
-    initial_h = int(settings.get('height', '540')) if str(settings.get('height', '540')).isdigit() else 540
+    
+    initial_w = int(settings.get('width', '800')) if str(settings.get('width', '960')).isdigit() else 960
+    initial_h = int(settings.get('height', '450')) if str(settings.get('height', '540')).isdigit() else 540
 
     img_holder = tk.Frame(top_area, height=initial_h + 8)
     img_holder.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
@@ -239,14 +239,14 @@ def open_3d_preview_window(
     shift_frame = tk.LabelFrame(control_container, text="Depth Shift Settings", padx=10, pady=5)
     shift_frame.pack(pady=(0, 10), anchor="center")
 
-    fg_slider = tk.Scale(shift_frame, from_=0, to=30, resolution=0.5, orient="horizontal", label="FG Shift", variable=fg_shift, length=200)
-    fg_slider.grid(row=0, column=0, padx=10)
+    fg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="BG Shift", variable=fg_shift, length=200)
+    fg_slider.grid(row=0, column=2, padx=10)
 
     mg_slider = tk.Scale(shift_frame, from_=-10, to=10, resolution=0.5, orient="horizontal", label="MG Shift", variable=mg_shift, length=200)
     mg_slider.grid(row=0, column=1, padx=10)
 
-    bg_slider = tk.Scale(shift_frame, from_=-20, to=0, resolution=0.5, orient="horizontal", label="BG Shift", variable=bg_shift, length=200)
-    bg_slider.grid(row=0, column=2, padx=10)
+    bg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="FG Shift", variable=bg_shift, length=200)
+    bg_slider.grid(row=0, column=0, padx=10)
 
     feather_frame = tk.LabelFrame(control_container, text="Parallax Control", padx=10, pady=5)
     feather_frame.pack(pady=(0, 10), anchor="center")
