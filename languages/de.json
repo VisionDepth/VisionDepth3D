@@ -105,7 +105,7 @@
   "Use Subject Tracking": "Subjektverfolgung verwenden",
   "Floating Window": "Schwebendes Fenster",
   "Enable Edge Masking": "Kantenmaskierung aktivieren",
-  "Pop & Subject Controls": "Pop- & Motivsteuerung",
+  "Depth & Parallax Controls": "Tiefen- und Parallaxensteuerung",
   "Depth Pop Gamma": "Tiefen-Pop-Gamma",
   "Pop Mid (0..1)": "Pop-Mitte (0..1)",
   "Stretch Lo": "Streckung Niedrig",
@@ -183,12 +183,19 @@
   "🎥 Scene Detection (PySceneDetect)": "🎥 Szenenerkennung (PySceneDetect)",
   "Sensitivity Threshold (lower = more cuts):": "Empfindlichkeitsschwelle (niedriger = mehr Schnitte):",
   "Detect Scenes & Extract": "Szenen erkennen & extrahieren",
+  "Settings": "Einstellungen",
+  "Open Encoder Settings…": "Encodierungseinstellungen öffnen…",
+  "Open Processing Options…": "Verarbeitungsoptionen öffnen…",
+
+
+
+  
   "_Tooltips": "",
   "Tooltip.SceneDetect": "Verwendet PySceneDetect, um automatisch Szenenwechsel im Video zu finden, für Splitting oder Stapelverarbeitung.",
   "Tooltip.SceneDetectThreshold": "Passt die Empfindlichkeit der Szenenerkennung an. Niedriger = mehr Schnitte; höher = weniger Schnitte.",
   "Tooltip.DetectScenesExtract": "Führt die Szenenerkennung aus und extrahiert automatisch die erkannten Szenen zur weiteren Verarbeitung.",
   "Tooltip.ModeSelect": "Wählen Sie zwischen Einzelmodus (eine 3D-Videoerstellung) und Stapelmodus (mehrere Video- und Tiefenkarten-Paare verarbeiten).",
-  "Tooltip.ApplyEntries": "Wendet die aktuellen Werte der Pop- & Motivsteuerung an, um Vorschau und Rendereinstellungen zu aktualisieren.",
+  "Tooltip.ApplyEntries": "Wendet die aktuellen Tiefen- und Parallaxenwerte an, um die Vorschau und Renderparameter zu aktualisieren.",
   "Tooltip.InferenceSteps": "Legt fest, wie viele Schritte das Diffusionsmodell zur Tiefenschätzung verwendet. Höhere Werte können die Qualität verbessern, erhöhen aber die Verarbeitungszeit.",
   "Tooltip.CPUMode": "Bestimmt, welche Teile des Modells auf die CPU ausgelagert werden. 'Sequential' eignet sich für Systeme mit wenig VRAM, um GPU-Speicher zu sparen – auf Kosten der Geschwindigkeit.",
   "Tooltip.Model": "Wähle ein Tiefenschätzungsmodell von Hugging Face. Größere Modelle bieten höhere Genauigkeit, benötigen aber mehr VRAM und Zeit.",
@@ -288,6 +295,7 @@
   "Tooltip.ClipRangeLabel": "Optional den Renderbereich durch Start- und Endzeit begrenzen.",
   "Tooltip.StartClipRangeLabel": "Leer lassen, um am Anfang zu starten. Akzeptiert HH:MM:SS[.ms] oder Sekunden.",
   "Tooltip.EndClipRangeLabel": "Leer lassen, um bis zum Ende zu rendern. Akzeptiert HH:MM:SS[.ms] oder Sekunden.",
+  "Tooltip.InferenceRes": "Steuert die Auflösungsgröße für das ausgewählte Tiefenmodell. Belassen Sie 'Original', um die volle Auflösung in das Tiefenmodell zu speisen.",
   "Tooltip.Output": "Wählen Sie, ob der v2-Frames-Ordner überschrieben werden soll, oder geben Sie einen eigenen Pfad an"
 
 }
