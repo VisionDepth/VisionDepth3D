@@ -2762,7 +2762,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         cancel_requested.clear()
         suspend_flag.clear()
         status_label.config(text="🔄 Processing video...")
-        progess_bar.config(mode="determinate", maximum=100, value=0)
+        progress_bar.config(mode="determinate", maximum=100, value=0)
 
         cap = cv2.VideoCapture(file_path)
         total_frames_all = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -2811,4 +2811,5 @@ if hasattr(threading, "excepthook"):
     def _thread_hook(args):
         _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
     threading.excepthook = _thread_hook
+
 
