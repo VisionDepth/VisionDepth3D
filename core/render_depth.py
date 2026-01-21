@@ -968,8 +968,9 @@ def load_supported_models():
         # Depth Anything v2
         # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
+        "Distill-Any-Depth Large(ONNX)": "onnx:DistillAnyDepthLarge",
         "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
-
+        "Distill-Any-Depth Small(ONNX)": "onnx:DistillAnyDepthSmall",
 #        "DA3-GIANT":              "depth-anything/DA3-GIANT",
 #        "DA3-LARGE":              "depth-anything/DA3-LARGE",
 #        "DA3-BASE":               "depth-anything/DA3-BASE",
@@ -2811,5 +2812,6 @@ if hasattr(threading, "excepthook"):
     def _thread_hook(args):
         _log_ex(args.exc_type, args.exc_value, args.exc_traceback)
     threading.excepthook = _thread_hook
+
 
 
