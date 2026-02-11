@@ -135,6 +135,71 @@ def merge_audio_from_source(final_video, original_video, output_with_audio):
 
 
 
+def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
+    """
+    Decode video frames to RGB 16-bit (rgb48le) while explicitly preserving HDR signaling.
+    This avoids FFmpeg doing implicit/guessed colorspace conversions on HDR10 sources.
+
+    Returns frames as float32 RGB in [0,1] (still PQ-encoded values, not tonemapped).
+    """
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+
+    # Seek before input for speed (keyframe seek). If you need exact frame-accurate
+    # seeking, do a second -ss after -i, but this is usually fine for rendering.
+    if start_s is not None:
+        cmd += ["-ss", str(float(start_s))]
+
+    cmd += ["-i", path]
+
+    # Clip window
+    if end_s is not None and start_s is not None:
+        dur = max(0.0, float(end_s) - float(start_s))
+        cmd += ["-t", str(dur)]
+    elif end_s is not None:
+        cmd += ["-to", str(float(end_s))]
+
+    # Force HDR colorspace handling so FFmpeg doesn't guess:
+    # - zscale sets primaries/transfer/matrix and preserves PQ/BT.2020
+    # - npl=1000 sets nominal peak luminance (helps prevent weird scaling)
+    # - format=rgb48le ensures 16-bit RGB output
+    vf = (
+        "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc:"
+        "range=tv:npl=1000,format=rgb48le"
+    )
+
+    cmd += [
+        "-an", "-sn", "-dn",
+        "-vf", vf,
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb48le",
+        "-vsync", "0",
+        "-"
+    ]
+
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**7)
+    frame_bytes = int(width) * int(height) * 3 * 2  # 3 channels * 16-bit
+
+    try:
+        while True:
+            buf = p.stdout.read(frame_bytes)
+            if not buf or len(buf) < frame_bytes:
+                break
+            arr = np.frombuffer(buf, dtype=np.uint16).reshape((height, width, 3))
+            # Still PQ-encoded, just higher precision; do not tonemap here.
+            yield (arr.astype(np.float32) / 65535.0).clip(0.0, 1.0)
+    finally:
+        try:
+            if p.stdout:
+                p.stdout.close()
+        except Exception:
+            pass
+        p.wait()
+        # Optional: surface decode errors
+        if p.returncode not in (0, None):
+            raise RuntimeError(f"ffmpeg_rgb48_reader: ffmpeg exited with code {p.returncode}")
+
+
+
 def ffmpeg_yuv10_reader(path, width, height):
     """
     Yields P010LE frames as float32 RGB in [0,1] with simple 10-bit scaling.
@@ -169,6 +234,26 @@ def ffmpeg_yuv10_reader(path, width, height):
         rgb = np.stack([r,g,b], axis=2).clip(0,1).astype(np.float32)
         yield rgb
     p.stdout.close(); p.wait()
+
+
+def reset_render_state():
+    # reset shift EMA
+    if hasattr(pixel_shift_cuda, "_shift_ema"):
+        pixel_shift_cuda._shift_ema = None
+
+    # reset floating window tracker
+    if "floating_window_tracker" in globals():
+        floating_window_tracker.prev_offset = 0.0
+        floating_window_tracker.frame_counter = 0
+
+    # reset DFW easing
+    for k in ("dfw_last_side", "dfw_last_width"):
+        if k in globals():
+            del globals()[k]
+
+    # reset depth percentile EMA so it learns per render
+    global depth_ema_norm
+    depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
 
 
 def sculpt_depth_u8(base_depth_u8, mask_u8, *,
@@ -480,6 +565,120 @@ depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
 conv_ema = ConvergenceEMA(alpha=0.97)
 MID_GAMMA = 0.90  # 0.80–0.95 works well
 
+def frame16_to_tensor(rgb_float_01):
+    """
+    rgb_float_01: [H,W,3] float32 0..1 in RGB (PQ-encoded values, but high precision)
+    Returns torch [3,H,W] float32 0..1 on device.
+    """
+    t = torch.from_numpy(rgb_float_01).float().permute(2, 0, 1).contiguous()
+    return t.to(torch_device)
+
+def tensor_to_rgb48_bytes(rgb_tensor):
+    """
+    rgb_tensor: torch [3,H,W] float in [0,1]
+    Returns bytes for rgb48le (uint16 little-endian).
+    """
+    x = rgb_tensor.clamp(0.0, 1.0).permute(1, 2, 0).detach().cpu().numpy()
+    u16 = (x * 65535.0 + 0.5).astype(np.uint16)
+    return u16.tobytes()
+
+import torch.nn.functional as F
+
+def tensor_pad_to_aspect_ratio(rgb_t, target_width, target_height):
+    """
+    Torch equivalent of pad_to_aspect_ratio()
+    rgb_t: [3,H,W] RGB float in 0..1
+    Returns [3,target_height,target_width]
+    """
+
+    C, h, w = rgb_t.shape
+    target_aspect = target_width / target_height
+    current_aspect = w / h
+
+    # Step 1: resize to fit while preserving aspect
+    if current_aspect > target_aspect:
+        # wider → match width
+        new_w = target_width
+        new_h = int(target_width / current_aspect)
+    else:
+        # taller → match height
+        new_h = target_height
+        new_w = int(current_aspect * target_height)
+
+    resized = F.interpolate(
+        rgb_t.unsqueeze(0),
+        size=(new_h, new_w),
+        mode="bilinear",
+        align_corners=False
+    ).squeeze(0)
+
+    # Step 2: padded canvas (black)
+    padded = torch.zeros(
+        (3, target_height, target_width),
+        device=rgb_t.device,
+        dtype=rgb_t.dtype
+    )
+
+    # Step 3: center it
+    x_offset = (target_width - new_w) // 2
+    y_offset = (target_height - new_h) // 2
+
+    padded[:, y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
+
+    return padded.clamp(0.0, 1.0)
+
+def tensor_sharpen(rgb_t, factor=0.0):
+    # factor 0 = no sharpen
+    if factor <= 1e-6:
+        return rgb_t
+    # unsharp-ish kernel (simple and stable)
+    # conv2d expects [N,C,H,W]
+    k = torch.tensor([[0, -1, 0],
+                      [-1, 5.0 + float(factor), -1],
+                      [0, -1, 0]], device=rgb_t.device, dtype=rgb_t.dtype).view(1,1,3,3)
+    x = rgb_t.unsqueeze(0)  # [1,3,H,W]
+    # apply per-channel by groups=3
+    k3 = k.repeat(3, 1, 1, 1)  # [3,1,3,3]
+    y = F.conv2d(x, k3, padding=1, groups=3)
+    return y.squeeze(0).clamp(0.0, 1.0)
+
+def tensor_apply_side_mask(rgb_t, side="left", width=40, solid_black=True, fade=False):
+    if width <= 0:
+        return rgb_t
+    C, H, W = rgb_t.shape
+    w = min(int(width), W)
+    mask = torch.ones((1, H, W), device=rgb_t.device, dtype=rgb_t.dtype)
+
+    if solid_black:
+        if side == "left":
+            mask[:, :, :w] = 0
+        else:
+            mask[:, :, W-w:] = 0
+    else:
+        if fade:
+            ramp = torch.linspace(0, 1, w, device=rgb_t.device, dtype=rgb_t.dtype)
+            if side == "left":
+                mask[:, :, :w] = ramp.view(1, 1, w)
+            else:
+                mask[:, :, W-w:] = ramp.flip(0).view(1, 1, w)
+        else:
+            if side == "left":
+                mask[:, :, :w] = 0
+            else:
+                mask[:, :, W-w:] = 0
+
+    return (rgb_t * mask).clamp(0.0, 1.0)
+
+def format_3d_output_torch(left_t, right_t, fmt):
+    # left_t/right_t: [3,H,W]
+    if fmt in ("Half-SBS", "Full-SBS", "VR"):
+        return torch.cat([left_t, right_t], dim=2)  # SBS
+    elif fmt == "Passive Interlaced":
+        out = left_t.clone()
+        out[:, 1::2, :] = right_t[:, 1::2, :]
+        return out
+    else:
+        return torch.cat([left_t, right_t], dim=2)
 
 def tensor_to_frame(tensor):
     frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
@@ -816,6 +1015,7 @@ def pixel_shift_cuda(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=1.00,
+    return_tensors=False,
 ):
     width = int(width)
     height = int(height)
@@ -850,7 +1050,7 @@ def pixel_shift_cuda(
     
     # weights from shaped depth (steeper foreground falloff)
     fg_weight = (1.0 - d_shaped).pow(1.5).clamp(0, 1)
-    mg_weight = (1.0 - (d_shaped - depth_pop_mid).abs() * 3.0).clamp(0, 1)  # slightly tighter mid band
+    mg_weight = (1.0 - (d_shaped - depth_pop_mid).abs() * 5.0).clamp(0, 1)  # slightly tighter mid band
     bg_weight = d_shaped.clamp(0, 1)
 
     half_width = width / 2.0
@@ -959,10 +1159,58 @@ def pixel_shift_cuda(
         left_blended, right_blended = warped_left, warped_right
 
     if return_shift_map:
+        if return_tensors:
+            return left_blended, right_blended, final_shift.detach().cpu()
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
     else:
+        if return_tensors:
+            return left_blended, right_blended
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
 
+def tensor_pad_to_aspect(t: torch.Tensor, target_w: int, target_h: int) -> torch.Tensor:
+    """
+    t: [3,H,W] RGB float 0..1
+    Pads with black to exactly target_w/target_h, centered.
+    """
+    C, H, W = t.shape
+    out = t
+    # resize to fit inside target while preserving aspect
+    src_ar = W / max(H, 1)
+    dst_ar = target_w / max(target_h, 1)
+
+    if abs(src_ar - dst_ar) > 1e-6:
+        if src_ar > dst_ar:
+            # too wide, fit width
+            new_w = target_w
+            new_h = int(round(target_w / src_ar))
+        else:
+            # too tall, fit height
+            new_h = target_h
+            new_w = int(round(target_h * src_ar))
+    else:
+        new_w, new_h = target_w, target_h
+
+    out = F.interpolate(out.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False).squeeze(0)
+
+    # pad to target
+    pad_l = max(0, (target_w - new_w) // 2)
+    pad_r = max(0, target_w - new_w - pad_l)
+    pad_t = max(0, (target_h - new_h) // 2)
+    pad_b = max(0, target_h - new_h - pad_t)
+
+    return F.pad(out, (pad_l, pad_r, pad_t, pad_b), mode="constant", value=0.0).clamp(0.0, 1.0)
+
+
+def tensor_apply_sharpen(t: torch.Tensor, factor: float = 1.0) -> torch.Tensor:
+    """
+    Simple unsharp-style sharpen for tensors [3,H,W] in 0..1.
+    """
+    if factor <= 0:
+        return t
+    # light blur
+    blur = tv_gaussian_blur(t, kernel_size=3, sigma=1.0)
+    out = t + (t - blur) * float(factor)
+    return out.clamp(0.0, 1.0)
 
 # Sharpening
 
@@ -1101,7 +1349,7 @@ def format_3d_output(left, right, fmt):
         return np.hstack((lw, rw))
     
     elif fmt == "Red-Cyan Anaglyph":
-        return generate_anaglyph_3d(left, right, mode="halfcolor")  # start with halfcolor
+        return generate_anaglyph_3d(left, right, mode="dubois")  # start with halfcolor
 
     elif fmt == "Passive Interlaced":
         interlaced = np.zeros_like(left)
@@ -1153,7 +1401,7 @@ def apply_side_mask(image, side="left", width=40, fade=False, solid_black=True):
     output = image.copy()
 
     if solid_black:
-        # 🧱 Solid opaque black bar — cinema floating window
+        # Solid opaque black bar — cinema floating window
         if side == "left":
             output[:, :width] = 0
         else:
@@ -1271,10 +1519,31 @@ def render_sbs_3d(
     end_s=None,
     eye_mode="sbs",
 ):
-
+    reset_render_state()
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
     if not cap.isOpened() or not dcap.isOpened():
         return
+
+    hdr_gen = None
+    if preserve_hdr10:
+        # Use original input dimensions for decode
+        src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        hdr_gen = ffmpeg_rgb48_reader(input_path, src_w, src_h, start_s=start_s, end_s=end_s)
+
+    def read_next_frame():
+        """Returns (ret, frame_tensor, frame_bgr_or_None)."""
+        if preserve_hdr10:
+            try:
+                rgb = next(hdr_gen)  # float RGB 0..1
+            except StopIteration:
+                return False, None, None
+            return True, frame16_to_tensor(rgb), None
+        else:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                return False, None, None
+            return True, frame_to_tensor(frame_bgr), frame_bgr
 
     # base facts
     total_frames_full = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -1305,12 +1574,12 @@ def render_sbs_3d(
     dcap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
 
     # FIRST READ occurs *after* seeking
-    ret1, frame = cap.read()
+    ret1, frame_tensor, frame = read_next_frame()
     ret2, depth = dcap.read()
+
     if not ret1 or not ret2:
         cap.release(); dcap.release()
         return
-
 
     global global_session_start_time
     if global_session_start_time is None:
@@ -1344,7 +1613,7 @@ def render_sbs_3d(
     # 🆕 blank frame indices are absolute — offset them for the clip window
     blank_offset = start_frame_idx
 
-    first_frame_tensor = frame_to_tensor(frame)
+    first_frame_tensor = frame_tensor.clone()
 
     if auto_crop_black_bars:
         # Detect once on first frame
@@ -1379,6 +1648,7 @@ def render_sbs_3d(
             # fallback to current frame tensor size
             _, h0, w0 = first_frame_tensor.shape
             original_video_width, original_video_height = w0, h0
+
         resized_width = original_video_width
         resized_height = original_video_height
 
@@ -1387,21 +1657,38 @@ def render_sbs_3d(
             per_eye_h = resized_height
             out_width = per_eye_w * 2
             out_height = per_eye_h
+
         elif output_format == "Half-SBS":
             per_eye_w = resized_width // 2
             per_eye_h = resized_height
             out_width = resized_width
-            out_height = resized_height           
+            out_height = resized_height
+
         elif output_format == "VR":
             per_eye_w = 1440
             per_eye_h = 1600
             out_width = per_eye_w * 2
             out_height = per_eye_h
+
+        elif output_format == "Red-Cyan Anaglyph":
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
+
+        elif output_format == "Passive Interlaced":
+            # IMPORTANT: interlaced is single-frame size (not SBS)
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
+
         else:
             per_eye_w = resized_width
             per_eye_h = resized_height
             out_width = resized_width * 2
             out_height = resized_height
+
     else:
         resized_height = output_height
         resized_width = int(resized_height * target_ratio)
@@ -1412,32 +1699,43 @@ def render_sbs_3d(
             per_eye_w, per_eye_h = 1920, 1080
             out_width = per_eye_w * 2
             out_height = per_eye_h
+
         elif output_format == "Half-SBS":
             per_eye_w = resized_width // 2
             per_eye_h = resized_height
             out_width = resized_width
             out_height = resized_height
+
         elif output_format == "VR":
             per_eye_w = 1440
             per_eye_h = 1600
             out_width = per_eye_w * 2
             out_height = per_eye_h
+
         elif output_format == "Red-Cyan Anaglyph":
             # One frame only, not SBS
             per_eye_w = resized_width
             per_eye_h = resized_height
             out_width = resized_width
             out_height = resized_height
+
+        elif output_format == "Passive Interlaced":
+            # IMPORTANT: interlaced is single-frame size (not SBS)
+            per_eye_w = resized_width
+            per_eye_h = resized_height
+            out_width = resized_width
+            out_height = resized_height
+
         else:
             per_eye_w = resized_width
             per_eye_h = resized_height
             out_width = resized_width * 2
             out_height = resized_height
-    
+
     if eye_mode in ("left", "right"):
-        out_width  = per_eye_w
+        out_width = per_eye_w
         out_height = per_eye_h
-        
+
     # --- invariants (fixed for the whole render) ---
     cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
     single_eye = eye_mode in ("left", "right")
@@ -1452,12 +1750,8 @@ def render_sbs_3d(
         eye_w = per_eye_w
         eye_h = per_eye_h
 
-    # safer: compute width for floating window based on the actual frame you’ll mask
-    if single_eye:
-        width_for_bars = per_eye_w
-    else:
-        width_for_bars = resized_width // 2  # half for each eye in SBS
-
+    # Floating window should always operate on per-eye width
+    width_for_bars = per_eye_w
 
     # DOF / Color grading flags don’t change during render
     need_dof   = (dof_strength > 0.0)
@@ -1474,7 +1768,7 @@ def render_sbs_3d(
         ffmpeg_cmd = [
             "ffmpeg","-y",
             "-f","rawvideo","-vcodec","rawvideo",
-            "-pix_fmt","bgr24",
+            "-pix_fmt", "rgb48le" if preserve_hdr10 else "bgr24",
             "-s", f"{out_width}x{out_height}",
             "-r", str(fps),
             "-i","-",
@@ -1482,10 +1776,10 @@ def render_sbs_3d(
             "-c:v", selected_ffmpeg_codec,
         ]
 
+
         is_nvenc = "nvenc" in selected_ffmpeg_codec         # h264_nvenc/hevc_nvenc/av1_nvenc
 
         if preserve_hdr10:
-            # 10-bit + HDR signaling (no tone-map)
             ffmpeg_cmd += [
                 "-pix_fmt","p010le",
                 "-color_range","tv",
@@ -1493,6 +1787,7 @@ def render_sbs_3d(
                 "-color_primaries","bt2020",
                 "-color_trc","smpte2084",
             ]
+
             if is_nvenc:
                 ffmpeg_cmd += [
                     "-preset","p5",               # NVENC preset (p1 fastest…p7 slowest)
@@ -1548,18 +1843,10 @@ def render_sbs_3d(
     global temporal_depth_filter
     temporal_depth_filter = TemporalDepthFilter(alpha=0.5)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
-    dcap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_idx)
     avg_fps = 0
     prev_depth_tensor = None
     focal_tracker = FocalDepthTracker(alpha=0.15, deadband=0.03, max_step=0.02)
     matte_ema = MatteEMA(alpha=ROTO_EMA_ALPHA)
-
-    ret1, frame = cap.read()
-    ret2, depth = dcap.read()
-    if not ret1 or not ret2:
-        cap.release(); dcap.release()
-        return
         
     # Decide how many frames to process (for loop + progress)
     total_frames = clip_total_frames if clip_total_frames > 0 else total_frames_full
@@ -1594,12 +1881,11 @@ def render_sbs_3d(
             if cancel_flag.is_set():
                 break
 
-            ret1, frame = cap.read()
+            ret1, frame_tensor, frame = read_next_frame()
             ret2, depth = dcap.read()
             if not ret1 or not ret2:
                 break
-            
-            frame_tensor = frame_to_tensor(frame)
+
             depth_tensor = depth_to_tensor(depth)
 
             if auto_crop_black_bars:
@@ -1665,8 +1951,7 @@ def render_sbs_3d(
             # Continue with your existing temporal/percentile normalization
             depth_tensor = temporal_depth_filter.smooth(depth_tensor)
             depth_tensor = depth_ema_norm.normalize(depth_tensor)
-
-
+            
             fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
             # dynamic IPD scale
@@ -1678,12 +1963,17 @@ def render_sbs_3d(
 
             if (blank_offset + idx) in blank_frames:
                 print(f"⏩ Skipping blank frame {idx}")
-                left_frame = frame
-                right_frame = frame
+                if preserve_hdr10:
+                    # frame is None in HDR mode, so use the current tensor as both eyes
+                    left_frame = frame_tensor
+                    right_frame = frame_tensor
+                else:
+                    left_frame = frame
+                    right_frame = frame
             else:
                 if ipd_factor == 0.0:
                     left_frame, right_frame = pixel_shift_cuda(
-                        frame_tensor, depth_tensor, resized_width, resized_height,
+                        frame_tensor, depth_tensor, eye_w, eye_h,
                         fg, mg, bg,
                         blur_ksize=blur_ksize,
                         feather_strength=feather_strength,
@@ -1704,11 +1994,12 @@ def render_sbs_3d(
                         fg_pop_multiplier=1.20,
                         bg_push_multiplier=1.10,
                         subject_lock_strength=1.00,
+                        return_tensors=True,
                     )
                 else:
                     fg *= ipd_factor; mg *= ipd_factor; bg *= ipd_factor
                     left_frame, right_frame = pixel_shift_cuda(
-                        frame_tensor, depth_tensor, resized_width, resized_height,
+                        frame_tensor, depth_tensor, eye_w, eye_h,
                         fg, mg, bg,
                         blur_ksize=blur_ksize,
                         feather_strength=feather_strength,
@@ -1729,6 +2020,7 @@ def render_sbs_3d(
                         fg_pop_multiplier=1.20,
                         bg_push_multiplier=1.10,
                         subject_lock_strength=1.00,
+                        return_tensors=True,
                     )
 
                 
@@ -1739,8 +2031,8 @@ def render_sbs_3d(
 
                 if need_dof or need_color:
                     # 1) to tensors once
-                    left_t  = frame_to_tensor(left_frame)    # [3,H,W]
-                    right_t = frame_to_tensor(right_frame)
+                    left_t  = left_frame
+                    right_t = right_frame
 
                     # 2) match depth to the eye frame once
                     H, W = left_t.shape[1], left_t.shape[2]
@@ -1767,9 +2059,15 @@ def render_sbs_3d(
                                                     contrast=color_contrast,
                                                     brightness=color_brightness)
 
-                    # 5) back to numpy once
-                    left_frame  = tensor_to_frame(left_t)
-                    right_frame = tensor_to_frame(right_t)
+                    # 5) back to numpy for SDR only
+                    if preserve_hdr10:
+                        # keep tensors for HDR pipe
+                        left_frame  = left_t
+                        right_frame = right_t
+                    else:
+                        left_frame  = tensor_to_frame(left_t)
+                        right_frame = tensor_to_frame(right_t)
+
 
             # floating window mask
             subject_depth = estimate_subject_depth(depth_tensor)
@@ -1782,34 +2080,24 @@ def render_sbs_3d(
             ) / (width_for_bars / 2 + 1e-6)
             
             zero_parallax_offset = float(
-                floating_window_tracker.smooth_offset(raw_zero, threshold=0.001))
-
-            # sharpen & pack
-            left_sharp = apply_sharpening(left_frame, sharpness_factor)
-            right_sharp = apply_sharpening(right_frame, sharpness_factor)
-
-            if output_format == "Full-SBS":
-                left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-                right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-            elif output_format == "Half-SBS":
-                left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-                right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-            else:
-                left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-                right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+                floating_window_tracker.smooth_offset(raw_zero, threshold=0.001)
+            )
             
-            # --- Dynamic Floating Window (softer and side aware) ---
+            # --- Dynamic Floating Window (shared compute, HDR + SDR) ---
+            dfw_apply = False
+            dfw_side = "left"
+            dfw_width = 0
+
             if use_floating_window and use_subject_tracking:
                 global dfw_last_side, dfw_last_width
 
-                if 'dfw_last_side' not in globals():
+                if "dfw_last_side" not in globals():
                     dfw_last_side = "left"
                     dfw_last_width = 0
 
-                # zero_parallax_offset just above is in "grid" space, usually [-1, 1]
+                # zero_parallax_offset is in "grid" space, usually [-1, 1]
                 parallax_mag = abs(float(zero_parallax_offset))
 
-                # Do not draw any bar if parallax is tiny
                 if parallax_mag < DFW_MIN_PARALLAX:
                     target_width = 0
                 else:
@@ -1821,76 +2109,126 @@ def render_sbs_3d(
 
                     depth_delta = abs(subject_depth_val - 0.5)
 
-                    # Blend parallax and subject depth together
                     parallax_delta = (
                         DFW_PARALLAX_WEIGHT * parallax_mag +
                         DFW_DEPTH_WEIGHT   * depth_delta
                     )
 
-                    # Clamp the influence so big parallax does not explode the bar
                     parallax_delta = min(parallax_delta, 0.12)
 
-                    # Convert to pixels and clamp to a small fraction of the eye width
                     target_width = int(per_eye_w * parallax_delta)
                     max_bar_px   = int(per_eye_w * DFW_MAX_BAR_FRAC)
                     target_width = max(0, min(target_width, max_bar_px))
 
-                    # Decide which side to place the window on
-                    # If this feels flipped for your content, just swap "left"/"right" here
                     dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
 
-                # Ease width over time so it does not pop
                 dfw_last_width = int(
                     DFW_WIDTH_EASE * dfw_last_width +
                     (1.0 - DFW_WIDTH_EASE) * target_width
                 )
 
-                # Small widths are basically invisible, so skip
-                if dfw_last_width > 1:
-                    if DFW_USE_FADE:
-                        left_out  = apply_side_mask(
-                            left_out,
-                            side=dfw_last_side,
-                            width=dfw_last_width,
-                            fade=True,
-                            solid_black=False,
-                        )
-                        right_out = apply_side_mask(
-                            right_out,
-                            side=dfw_last_side,
-                            width=dfw_last_width,
-                            fade=True,
-                            solid_black=False,
-                        )
-                    else:
-                        # Hard cinema style black bar
-                        left_out  = apply_side_mask(
-                            left_out,
-                            side=dfw_last_side,
-                            width=dfw_last_width,
-                            fade=False,
-                            solid_black=True,
-                        )
-                        right_out = apply_side_mask(
-                            right_out,
-                            side=dfw_last_side,
-                            width=dfw_last_width,
-                            fade=False,
-                            solid_black=True,
-                        )
+                dfw_side = dfw_last_side
+                dfw_width = dfw_last_width
+                dfw_apply = (dfw_width > 1)            
 
-            if eye_mode == "left":
-                final = left_out
-            elif eye_mode == "right":
-                final = right_out
-            else:  # "sbs"
-                final = format_3d_output(left_out, right_out, output_format)
-            
+            if preserve_hdr10 and not use_ffmpeg:
+                raise RuntimeError("HDR10 output requires FFmpeg. OpenCV VideoWriter is SDR-only in this pipeline.")
+
+            # sharpen & pack
+            if preserve_hdr10:
+                # left_frame/right_frame are torch tensors [3,H,W] RGB float 0..1
+
+                # 1) Sharpen in tensor space
+                left_t  = tensor_apply_sharpen(left_frame,  sharpness_factor)
+                right_t = tensor_apply_sharpen(right_frame, sharpness_factor)
+
+                # 2) Pack/resize in tensor space to match the exact per-eye target
+                # For HDR you should not use cv2. Keep tensors.
+                if output_format == "Half-SBS":
+                    # Half-SBS means each eye is half width, same height
+                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                    right_t = F.interpolate(right_t.unsqueeze(0), size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                else:
+                    # Full-SBS, VR, Anaglyph, Passive: keep per-eye sizing consistent
+                    left_t  = tensor_pad_to_aspect(left_t,  per_eye_w, per_eye_h)
+                    right_t = tensor_pad_to_aspect(right_t, per_eye_w, per_eye_h)
+
+                # 3) Dynamic Floating Window, apply in tensor space
+                if dfw_apply:
+                    left_t  = tensor_apply_side_mask(
+                        left_t, side=dfw_side, width=dfw_width,
+                        fade=DFW_USE_FADE, solid_black=(not DFW_USE_FADE)
+                    )
+                    right_t = tensor_apply_side_mask(
+                        right_t, side=dfw_side, width=dfw_width,
+                        fade=DFW_USE_FADE, solid_black=(not DFW_USE_FADE)
+                    )
+
+                # 4) Final pack as tensor
+                if eye_mode == "left":
+                    final_tensor = left_t
+                elif eye_mode == "right":
+                    final_tensor = right_t
+                else:
+                    # SBS tensor pack (RGB)
+                    final_tensor = torch.cat([left_t, right_t], dim=2)  # concat width
+
+                # Optional: if you really need Passive Interlaced in HDR, do it in tensor space
+                if (eye_mode == "sbs") and (output_format == "Passive Interlaced"):
+                    # interlace rows: even rows left, odd rows right, output is single-eye size
+                    H, W2 = final_tensor.shape[1], final_tensor.shape[2]
+                    W = W2 // 2
+                    left_eye  = final_tensor[:, :, :W]
+                    right_eye = final_tensor[:, :, W:]
+                    inter = left_eye.clone()
+                    inter[:, 1::2, :] = right_eye[:, 1::2, :]
+                    final_tensor = inter
+
+            else:
+                # SDR numpy path, keep your existing code
+                left_sharp  = apply_sharpening(left_frame, sharpness_factor)
+                right_sharp = apply_sharpening(right_frame, sharpness_factor)
+
+                if output_format == "Full-SBS":
+                    left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
+                    right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+                elif output_format == "Half-SBS":
+                    left_out  = cv2.resize(left_sharp,  (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                    right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                else:
+                    left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
+                    right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+
+                # Dynamic Floating Window stays the same for SDR (your existing apply_side_mask calls)
+                if dfw_apply:
+                    if DFW_USE_FADE:
+                        left_out  = apply_side_mask(left_out,  side=dfw_side, width=dfw_width, fade=True,  solid_black=False)
+                        right_out = apply_side_mask(right_out, side=dfw_side, width=dfw_width, fade=True,  solid_black=False)
+                    else:
+                        left_out  = apply_side_mask(left_out,  side=dfw_side, width=dfw_width, fade=False, solid_black=True)
+                        right_out = apply_side_mask(right_out, side=dfw_side, width=dfw_width, fade=False, solid_black=True)
+
+
+                if eye_mode == "left":
+                    final = left_out
+                elif eye_mode == "right":
+                    final = right_out
+                else:
+                    final = format_3d_output(left_out, right_out, output_format)          
 
             # write frame
             if use_ffmpeg:
                 try:
-                    ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
+                    if preserve_hdr10:
+                        # ✅ HDR10 path: write 16-bit RGB (rgb48le) to ffmpeg stdin
+                        # Expectation: you must be generating a float RGB tensor [3,H,W] in 0..1
+                        # (example name: final_tensor). If you only have `final` as uint8 BGR,
+                        # you are NOT preserving HDR10.
+                        ffmpeg_proc.stdin.write(tensor_to_rgb48_bytes(final_tensor))
+                    else:
+                        # SDR path: write 8-bit BGR
+                        ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
+
                 except Exception as e:
                     print(f"❌ FFmpeg write error: {e}")
                     break
@@ -2009,6 +2347,8 @@ def render_sbs_3d_image(
     color_brightness: float = 0.0,
     eye_mode: str = "sbs",
 ):
+    reset_render_state()
+
     """
     Single image version of render_sbs_3d.
     Runs pixel_shift_cuda with the same depth shaping, parallax logic, and
@@ -2073,8 +2413,8 @@ def render_sbs_3d_image(
     # Optional black bar crop (same logic as video path)
     cached_crop = (0, 0)
     if auto_crop_black_bars:
-        # Reuse the first-frame crop for the entire clip so frame and depth
-        # stay perfectly aligned and do not jitter.
+        top_crop, bottom_crop = detect_black_bars(frame_tensor)
+        cached_crop = (top_crop, bottom_crop)
         frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
         depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
 
@@ -2135,10 +2475,9 @@ def render_sbs_3d_image(
     eye_h = per_eye_h
 
     single_eye = eye_mode in ("left", "right")
-    if single_eye:
-        width_for_bars = per_eye_w
-    else:
-        width_for_bars = resized_width // 2
+
+    # Floating window math should always use per-eye width (VR, SBS, single-eye all consistent)
+    width_for_bars = per_eye_w
 
     need_dof = (dof_strength > 0.0)
     need_color = (
@@ -2181,8 +2520,9 @@ def render_sbs_3d_image(
                 mask_u8,
                 near=ROTO_NEAR,
                 far=ROTO_FAR,
-                feather_px=ROTO_ROUND_GAMMA,
+                feather_px=ROTO_FEATHER_PX,
                 round_gamma=ROTO_ROUND_GAMMA,
+
             )
             depth_tensor = torch.from_numpy(depth_u8).to(frame_tensor.device).float().unsqueeze(0) / 255.0
 
@@ -2214,8 +2554,8 @@ def render_sbs_3d_image(
     left_frame, right_frame = pixel_shift_cuda(
         frame_tensor,
         depth_tensor,
-        resized_width,
-        resized_height,
+        eye_w,
+        eye_h,
         fg,
         mg,
         bg,
@@ -2577,12 +2917,20 @@ def process_video(
         if format_selected == "Full-SBS":
             output_width = width * 2
             output_height = height
+
         elif format_selected == "Half-SBS":
             output_width = width
             output_height = height
+
+        elif format_selected == "Passive Interlaced":
+            # IMPORTANT: same size as original frame (not SBS!)
+            output_width = width
+            output_height = height
+
         elif format_selected == "VR":
             output_width = 4096
             output_height = int(output_width / aspect_ratio)
+
         else:
             output_width = width
             output_height = int(output_width / aspect_ratio)
@@ -2596,7 +2944,7 @@ def process_video(
     final_render_path = None
 
     # 🔥 Start render process
-    if format_selected in ["Full-SBS", "Half-SBS", "Red-Cyan Anaglyph", "Passive Interlaced"]:
+    if format_selected in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
         final_render_path = render_sbs_3d(
             input_path,
             depth_path,
