@@ -8,6 +8,9 @@ import json
 import os, platform, warnings
 import datetime
 from tkinter import filedialog
+import numpy as np
+
+
 
 from core.render_3d import (
     frame_to_tensor,
@@ -74,6 +77,10 @@ def open_3d_preview_window(
     # --- IPD preview state ---
     ipd_enabled = tk.BooleanVar(value=bool(settings.get("ipd_enabled", True)))
     ipd_scale   = tk.DoubleVar(value=float(settings.get("ipd_scale", 1.00)))
+    
+    # --- Convergence overlay state ---
+    show_convergence_guides = tk.BooleanVar(value=bool(settings.get("show_convergence_guides", False)))
+
 
 
     preview_win = tk.Toplevel()
@@ -235,18 +242,27 @@ def open_3d_preview_window(
 
     feathering_checkbox = tk.Checkbutton(top_controls_frame, text="Feathering", variable=enable_feathering)
     feathering_checkbox.grid(row=0, column=7)
+    
+    guides_checkbox = tk.Checkbutton(
+        top_controls_frame,
+        text="Convergence Guides",
+        variable=show_convergence_guides,
+        command=lambda: update_preview_debounced()
+    )
+    guides_checkbox.grid(row=0, column=9, padx=(0, 10))
+
 
     shift_frame = tk.LabelFrame(control_container, text="Depth Shift Settings", padx=10, pady=5)
     shift_frame.pack(pady=(0, 10), anchor="center")
 
-    fg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="BG Shift", variable=fg_shift, length=200)
-    fg_slider.grid(row=0, column=2, padx=10)
+    fg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="FG Shift", variable=fg_shift, length=200)
+    fg_slider.grid(row=0, column=0, padx=10)
 
     mg_slider = tk.Scale(shift_frame, from_=-10, to=10, resolution=0.5, orient="horizontal", label="MG Shift", variable=mg_shift, length=200)
     mg_slider.grid(row=0, column=1, padx=10)
 
-    bg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="FG Shift", variable=bg_shift, length=200)
-    bg_slider.grid(row=0, column=0, padx=10)
+    bg_slider = tk.Scale(shift_frame, from_=-20, to=20, resolution=0.5, orient="horizontal", label="BG Shift", variable=bg_shift, length=200)
+    bg_slider.grid(row=0, column=2, padx=10)
 
     feather_frame = tk.LabelFrame(control_container, text="Parallax Control", padx=10, pady=5)
     feather_frame.pack(pady=(0, 10), anchor="center")
@@ -457,6 +473,76 @@ def open_3d_preview_window(
             messagebox.showwarning("Invalid Input", "Enter a valid float for convergence strength.")
 
     convergence_slider.bind("<KeyRelease>", update_convergence_strength)
+    
+    def draw_convergence_guides(img_bgr, w, h):
+        """
+        Draws convergence crosshair + grid markers.
+        Automatically respects letterbox borders.
+        """
+        if img_bgr is None:
+            return img_bgr
+
+        out = img_bgr.copy()
+
+        gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+        row_mean = gray.mean(axis=1)
+
+        # Detect non-black rows (active picture area)
+        thresh = 8.0
+        active_rows = np.where(row_mean > thresh)[0]
+
+        if active_rows.size > 0:
+            y0 = int(active_rows[0])
+            y1 = int(active_rows[-1])
+        else:
+            y0, y1 = 0, h - 1
+
+        pad = max(2, int(min(w, h) * 0.01))
+        y0 = max(0, y0 + pad)
+        y1 = min(h - 1, y1 - pad)
+
+        ax0, ax1 = 0, w - 1
+        ay0, ay1 = y0, y1
+        aw = ax1 - ax0 + 1
+        ah = ay1 - ay0 + 1
+
+        cx = (ax0 + ax1) // 2
+        cy = (ay0 + ay1) // 2
+
+        base = min(aw, ah)
+
+        # ⬇️ Bigger, more readable sizes
+        arm = max(10, base // 55)
+        gap = max(6, base // 110)
+        thickness = 2
+        col = (235, 235, 235)
+
+        # Crosshair
+        cv2.line(out, (cx - arm, cy), (cx - gap, cy), col, thickness, cv2.LINE_AA)
+        cv2.line(out, (cx + gap, cy), (cx + arm, cy), col, thickness, cv2.LINE_AA)
+        cv2.line(out, (cx, cy - arm), (cx, cy - gap), col, thickness, cv2.LINE_AA)
+        cv2.line(out, (cx, cy + gap), (cx, cy + arm), col, thickness, cv2.LINE_AA)
+
+        # Center dot
+        cv2.circle(out, (cx, cy), 3, col, -1, cv2.LINE_AA)
+
+        # ⬇️ Larger grid markers (easy to see, not noisy)
+        marker_size = max(12, base // 35)
+
+        for gx in (ax0 + aw // 4, cx, ax0 + (3 * aw) // 4):
+            for gy in (ay0 + ah // 4, cy, ay0 + (3 * ah) // 4):
+                cv2.drawMarker(
+                    out,
+                    (gx, gy),
+                    (200, 200, 200),
+                    markerType=cv2.MARKER_CROSS,
+                    markerSize=marker_size,
+                    thickness=2,
+                    line_type=cv2.LINE_AA
+                )
+
+        return out
+
 
     def update_preview_now():
         nonlocal preview_job
@@ -591,8 +677,14 @@ def open_3d_preview_window(
             preview_img = generate_preview_image(preview_mode, left_tensor, right_tensor, shift_map, w, h)
 
         # Resize and render
+        # Resize and render
         if preview_img is not None:
+            # Optional convergence overlay (draw in preview image space)
+            if show_convergence_guides.get():
+                preview_img = draw_convergence_guides(preview_img, w, h)
+
             img_rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB)
+
             try:
                 preview_width = int(width_entry.get())
                 preview_height = int(height_entry.get())
@@ -636,6 +728,8 @@ def open_3d_preview_window(
             'brightness': brightness.get(),
             'ipd_enabled': ipd_enabled.get(),
             'ipd_scale':   ipd_scale.get(),
+            'show_convergence_guides': show_convergence_guides.get(),
+            
 
         }
         save_settings(settings)
