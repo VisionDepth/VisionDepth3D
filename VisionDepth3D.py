@@ -9,6 +9,7 @@ import threading
 from threading import Event
 from core.audio import launch_audio_gui
 import queue
+import subprocess
 
 
 # ── External Libraries ───────────────────────────
@@ -81,6 +82,10 @@ from core.vd3d_live import launch_live_gui
 from core.preview_gui import open_3d_preview_window
 from core.models.depth_anything_v2.dpt import DepthAnythingV2
 
+from transformers import logging
+logging.set_verbosity_error()
+
+
 # At the top of GUI.py
 cancel_requested = threading.Event()
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -133,6 +138,45 @@ except Exception as e:
     TORCH_AVAILABLE = False
     TORCH_DEVICE_NAME = "cpu"
 
+def _app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def launch_setup_downloader():
+    if not messagebox.askyesno(
+        "Update VisionDepth3D",
+        "This will close VisionDepth3D and open the updater.\n\nContinue?"
+    ):
+        return
+
+    base = _app_dir()
+    exe_name = "VisionDepth3D_Updater.exe"
+
+    path = os.path.join(base, exe_name)
+    if not os.path.exists(path):
+        path2 = os.path.join(base, "tools", exe_name)
+        if os.path.exists(path2):
+            path = path2
+
+    if not os.path.exists(path):
+        messagebox.showerror(
+            "Updater not found",
+            f"Could not find:\n{exe_name}\n\nLooked in:\n{base}\n{os.path.join(base,'tools')}"
+        )
+        return
+
+    try:
+        subprocess.Popen([path], cwd=os.path.dirname(path))
+    except Exception as e:
+        messagebox.showerror("Failed to launch updater", str(e))
+        return
+
+    # close VD3D after updater starts
+    try:
+        root.after(150, root.quit)  # root.destroy also works, quit is safer for Tk loops
+    except Exception:
+        pass
 
 def gpu_available():
     try:
@@ -201,6 +245,39 @@ def ui_select_output_path():
         if path: save_settings()
     except Exception:
         pass
+
+def _apply_preset_config(config: dict):
+    """
+    Applies preset JSON values to existing Tk variables safely.
+    Ignores unknown keys so older/newer presets never crash.
+    """
+    if not isinstance(config, dict):
+        raise ValueError("Preset must be a JSON object")
+
+    missing = []
+
+    for key, value in config.items():
+        var = globals().get(key)
+
+        if var is None:
+            missing.append(key)
+            continue
+
+        try:
+            if hasattr(var, "set"):
+                var.set(value)
+        except Exception:
+            pass
+
+    # Optional: refresh UI after applying
+    try:
+        refresh_ui_labels()
+    except Exception:
+        pass
+
+    if missing:
+        print(f"Preset keys not bound to UI vars (ignored): {missing}")
+
 
     
 def load_preset_dialog():
@@ -1070,7 +1147,7 @@ class ScrollableFrame(ttk.Frame):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.8")
+root.title("VisionDepth3D v3.8.2")
 screen_w = root.winfo_screenwidth()
 screen_h = root.winfo_screenheight()
 
@@ -1266,14 +1343,8 @@ def build_dark_header(root, on_language_change):
     file_btn = ttk.Menubutton(hdr, text="File", style="VD.Menu.TMenubutton")
     file_menu = mk_menu()
 
-    _menu_add(file_menu, "Save Settings",            save_settings,           "Ctrl+S")
-    MENUS["FILE_IDX"]["save_settings"] = file_menu.index("end")
-
-    _menu_add(file_menu, "Save Preset As…",          prompt_and_save_preset,  "Ctrl+Shift+S")
+    _menu_add(file_menu, "Save Preset As…",          prompt_and_save_preset,  "Ctrl+S")
     MENUS["FILE_IDX"]["save_preset_as"] = file_menu.index("end")
-
-    _menu_add(file_menu, "Load Settings",            load_settings,           "Ctrl+L")
-    MENUS["FILE_IDX"]["load_settings"] = file_menu.index("end")
 
     _menu_add(file_menu, "Load Preset…",             load_preset_dialog,      "Ctrl+P")
     MENUS["FILE_IDX"]["load_preset"] = file_menu.index("end")
@@ -1286,7 +1357,12 @@ def build_dark_header(root, on_language_change):
     _menu_add(file_menu, "Depth Map",                ui_select_depth_map,     "Ctrl+D")
     MENUS["FILE_IDX"]["depth_map"] = file_menu.index("end")
 
-    _menu_add(file_menu, "Output Path",              select_output_video,     "Ctrl+O")
+    _menu_add(
+        file_menu,
+        "Output Path",
+        lambda: select_output_video(output_sbs_video_path),
+        "Ctrl+O"
+    )
     MENUS["FILE_IDX"]["output_path"] = file_menu.index("end")
 
     _menu_add(file_menu, "Generate 3D",              handle_generate_3d,      "Shift+Enter")
@@ -1323,7 +1399,7 @@ def build_dark_header(root, on_language_change):
         command=lambda: messagebox.showinfo(
             "About VisionDepth3D",
             (
-                "VisionDepth3D v3.8\n"
+                "VisionDepth3D v3.8.2\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1334,7 +1410,7 @@ def build_dark_header(root, on_language_change):
                 " • Real-time preview & batch processing\n\n"
                 "Website: " + VD_WEBSITE + "\n"
                 "GitHub:  " + VD_GITHUB  + "\n"
-                "© 2025 VisionDepth3D"
+                "© 2026 VisionDepth3D"
             )
         )
     )
@@ -1347,7 +1423,9 @@ def build_dark_header(root, on_language_change):
 
     help_menu.add_separator()
 
-    _menu_add(help_menu, t("Help.CheckUpdates"),    open_releases,              "F6"); MENUS["HELP_IDX"]["updates"] = help_menu.index("end")
+    _menu_add(help_menu, t("Help.CheckUpdates"), launch_setup_downloader, "F6")
+    MENUS["HELP_IDX"]["updates"] = help_menu.index("end")
+
     _menu_add(help_menu, t("Help.ReportBug"),       open_issues,                "F7"); MENUS["HELP_IDX"]["report"]  = help_menu.index("end")
     _menu_add(help_menu, t("Help.AspectCheat"),     open_aspect_ratio_CheatSheet,"F8");MENUS["HELP_IDX"]["aspect"]  = help_menu.index("end")
     _menu_add(help_menu, t("Help.PreviewGUI"),      handle_open_preview,        "F9"); MENUS["HELP_IDX"]["preview"] = help_menu.index("end")
@@ -1391,9 +1469,7 @@ def refresh_menu_labels():
     if MENUS["help_btn"]: MENUS["help_btn"].config(text=t("Menu.Help"))
 
     # File
-    _menu_set(fm, f["save_settings"],  t("Menu.SaveSettings"),   "Ctrl+S")
-    _menu_set(fm, f["save_preset_as"], t("Menu.SavePresetAs"),   "Ctrl+Shift+S")
-    _menu_set(fm, f["load_settings"],  t("Menu.LoadSettings"),   "Ctrl+L")
+    _menu_set(fm, f["save_preset_as"], t("Menu.SavePresetAs"),   "Ctrl+S")
     _menu_set(fm, f["load_preset"],    t("Menu.LoadPreset"),     "Ctrl+P")
     _menu_set(fm, f["video"],          t("Menu.Video"),          "Ctrl+I")
     _menu_set(fm, f["depth_map"],      t("Menu.DepthMap"),       "Ctrl+D")
@@ -1442,7 +1518,7 @@ header.grid(row=0, column=0, sticky="ew")
 # Shortcuts
 
 root.bind_all("<Control-q>", lambda e: root.quit())
-root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.8\n"
+root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.8.2\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1453,7 +1529,7 @@ root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.8
                 " • Real-time preview & batch processing\n\n"
                 "Created by: Johnathan Carpenter\n"
                 "Website: https://github.com/VisionDepth/VisionDepth3D\n"
-                "© 2025 VisionDepth3D. All rights reserved.",))
+                "© 2026 VisionDepth3D. All rights reserved.",))
 root.bind_all("<F2>", lambda e: open_website())
 root.bind_all("<F3>", lambda e: open_reddit())
 root.bind_all("<F4>", lambda e: open_github())
@@ -1470,9 +1546,7 @@ root.bind_all("<Control-d>", lambda e: ui_select_depth_map())           # Depth 
 root.bind_all("<Control-o>", lambda e: select_output_video(output_sbs_video_path))  # Output file
 
 # Presets
-root.bind_all("<Control-s>", lambda e: save_settings())                 # Save current settings
-root.bind_all("<Control-l>", lambda e: load_settings())                 # Load saved settings
-root.bind_all("<Control-Shift-S>", lambda e: prompt_and_save_preset())  # Save as preset
+root.bind_all("<Control-s>", lambda e: prompt_and_save_preset())  # Save as preset
 root.bind_all("<Control-p>", lambda e: load_preset_dialog())            # Load preset
 
 # Render
@@ -1508,7 +1582,7 @@ frametools_inner = ft_scroll.inner   # <-- use this for your widgets, not for se
 
 # --- Depth Estimation GUI ---
 depth_estimation_frame = ttk.Frame(tab_control, style="VD3D.TFrame")
-tab_control.add(depth_estimation_frame, text="Depth Estimation")
+tab_control.add(depth_estimation_frame, text="Depth Engine")
 depth_tab_index = tab_control.index("end") - 1
 
 depth_content_frame = tk.Frame(depth_estimation_frame, bg=BG_MAIN, highlightthickness=0, bd=0)
@@ -2259,6 +2333,8 @@ def load_supported_models():
 #        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
 #        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
+        "Video Depth Anything Large": "vda:depth-anything/Video-Depth-Anything-Large",
+        "Video Depth Anything Small": "vda:depth-anything/Video-Depth-Anything-Small",
 
         # in load_supported_models()
         "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
@@ -2266,10 +2342,17 @@ def load_supported_models():
         "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
         "Distill-Any-Depth Small(ONNX)": "onnx:DistillAnyDepthSmall",
 
-#        "DA3-GIANT":              "depth-anything/DA3-GIANT",
-#        "DA3-LARGE":              "depth-anything/DA3-LARGE",
-#        "DA3-BASE":               "depth-anything/DA3-BASE",
-#        "DA3-SMALL":               "depth-anything/DA3-SMALL",
+        "DA3METRIC-LARGE": "da3:depth-anything/DA3METRIC-LARGE",
+        "DA3MONO-LARGE": "da3:depth-anything/DA3MONO-LARGE",
+        "DA3-LARGE": "da3:depth-anything/DA3-LARGE",
+        "DA3-LARGE-1.1": "da3:depth-anything/DA3-LARGE-1.1",                
+        "DA3-BASE":               "da3:depth-anything/DA3-BASE",
+        "DA3-SMALL":               "da3:depth-anything/DA3-SMALL",
+        "DA3-GIANT":              "da3:depth-anything/DA3-GIANT",
+        "DA3-GIANT-1.1":              "da3:depth-anything/DA3-GIANT-1.1",
+        "DA3NESTED-GIANT-LARGE":              "da3:depth-anything/DA3NESTED-GIANT-LARGE",
+        "DA3NESTED-GIANT-LARGE-1.1":              "da3:depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+        
 
         # Depth Anything v2
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
@@ -2291,7 +2374,7 @@ def load_supported_models():
 
         # Other popular models
 #        "DA-2 (Haodongli)":            "haodongli/DA-2",
-#        "Bridge (Dingning)":           "Dingning/BRIDGE",
+#        "Pixel-Perfect-Depth":         "gangweix/Pixel-Perfect-Depth",
         "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -3586,6 +3669,7 @@ bg_push_label = tk.Label(
     bg="#1c1c1c", fg="white"
 )
 bg_push_label.grid(row=2, column=2, sticky="w")
+
 bg_push_scale = tk.Scale(
     options_frame,
     from_=1.00, to=1.40,
@@ -3643,20 +3727,19 @@ pop_mid_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 stretch_lo_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 stretch_hi_entry.bind("<Return>", lambda _e: _commit_pop_entries())
 
-
-
-bg_shift_label = tk.Label(
+fg_shift_label = tk.Label(
     options_frame,
     text=t("Foreground Shift"),
-    bg="#1c1c1c", fg="white"
+    bg="#1c1c1c",
+    fg="white"
 )
-bg_shift_label.grid(row=4, column=0, sticky="w")
+fg_shift_label.grid(row=4, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
     from_=-20, to=20, 
     resolution=0.1, orient=tk.HORIZONTAL,
-    variable=bg_shift, bg="#1c1c1c", fg="white",
+    variable=fg_shift, bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
 ).grid(row=4, column=1, sticky="ew")
 
@@ -3714,13 +3797,12 @@ tk.Scale(
 ).grid(row=5, column=3, sticky="ew")
 
 # Row 6
-fg_shift_label = tk.Label(
+bg_shift_label = tk.Label(
     options_frame,
     text=t("Background Shift"),
-    bg="#1c1c1c",
-    fg="white"
+    bg="#1c1c1c", fg="white"
 )
-fg_shift_label.grid(row=6, column=0, sticky="w")
+bg_shift_label.grid(row=6, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
@@ -3728,7 +3810,7 @@ tk.Scale(
     to=20,
     resolution=0.1,
     orient=tk.HORIZONTAL,
-    variable=fg_shift,
+    variable=bg_shift,
     bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
 ).grid(row=6, column=1, sticky="ew")
@@ -3888,6 +3970,20 @@ def open_processing_dialog():
     )
     pop_frame.pack(fill="x", expand=False, padx=10, pady=10)
 
+    # --- Clip Range UI ---
+    clip_frame = tk.LabelFrame(
+        dlg,
+        text=t("Clip Range (optional)"),
+        bg="#1c1c1c",
+        fg="white",
+        font=("Segoe UI", 10, "bold"),
+        labelanchor="nw",
+        padx=10,
+        pady=10
+    )
+    clip_frame.pack(fill="x", expand=False, padx=10, pady=10)  # adjust placement
+
+
     # Make columns evenly resize & give a minimum so controls don't squash
     for i in range(3):
         pop_frame.columnconfigure(i, weight=1, minsize=110)
@@ -3986,18 +4082,54 @@ def open_processing_dialog():
         justify="left"
     )
     use_dfw_checkbox.grid(row=3, column=2, sticky="w", padx=5)
+
+    def _time_validate(s: str) -> bool:
+        """
+        Allow digits, colon, dot, spaces so users can type 'HH:MM:SS(.ms)', 'MM:SS(.ms)', or 'SS(.ms)'.
+        Actual parsing is done by parse_timecode(); this just keeps the entry clean-ish.
+        """
+        return bool(re.match(r'^[0-9:\.\s]*$', s))
+
+    vcmd = (clip_frame.register(_time_validate), "%P")
+
+    start_clip_range_label = tk.Label(
+        clip_frame, text=t("Start (HH:MM:SS[.ms] or seconds):")
+    )
+    start_clip_range_label.grid(row=5, column=0, sticky="w", padx=6, pady=4)
+
+    start_entry = tk.Entry(clip_frame, textvariable=clip_start_var, width=18, validate="key", validatecommand=vcmd)
+    start_entry.grid(row=5, column=1, sticky="w", padx=6, pady=4)
+
+    end_clip_range_label = tk.Label(
+        clip_frame, text=t("End (HH:MM:SS[.ms] or seconds):")
+    )
+    end_clip_range_label.grid(row=6, column=0, sticky="w", padx=6, pady=4)
+
+    end_entry = tk.Entry(clip_frame, textvariable=clip_end_var, width=18, validate="key", validatecommand=vcmd)
+    end_entry.grid(row=6, column=1, sticky="w", padx=6, pady=4)
+
+    btns = tk.Frame(clip_frame)
+    btns.grid(row=6, column=2, rowspan=1, padx=6, pady=4, sticky="e")
+    
+    clear_button_label = tk.Button(
+        btns, text=t("Clear"), command=clear_clip
+    )
+    clear_button_label.grid(row=0, column=0, padx=4)
     
     # 🔹 Tooltips inside the dialog, using your existing language keys
-    CreateToolTip(preserve_aspect_checkbox,     lambda: t("Tooltip.PreserveAspect"))
-    CreateToolTip(auto_crop_checkbox,    lambda: t("Tooltip.AutoCrop"))
-    CreateToolTip(use_subject_tracking_checkbox,    lambda: t("Tooltip.SubjectTracking"))
-    CreateToolTip(use_dfw_checkbox,        lambda: t("Tooltip.FloatingWindow"))
-    CreateToolTip(enable_edge_checkbox,           lambda: t("Tooltip.EdgeMasking"))
-    CreateToolTip(enable_feathering_checkbox,  lambda: t("Tooltip.Feathering"))
-    CreateToolTip(skip_blank_frames_checkbox,  lambda: t("Tooltip.SkipBlankFrames"))
-#   CreateToolTip(use_ffmpeg_checkbox,         lambda: t("Tooltip.SelectedCodec"))
-    CreateToolTip(enable_dynamic_convergence_checkbox,              lambda: t("Tooltip.EnableDynConvergence"))
-    CreateToolTip(ipd_toggle,         lambda: t("Tooltip.EnableIPD"))
+    CreateToolTip(preserve_aspect_checkbox,            lambda: t("Tooltip.PreserveAspect"))
+    CreateToolTip(auto_crop_checkbox,                  lambda: t("Tooltip.AutoCrop"))
+    CreateToolTip(use_subject_tracking_checkbox,       lambda: t("Tooltip.SubjectTracking"))
+    CreateToolTip(use_dfw_checkbox,                    lambda: t("Tooltip.FloatingWindow"))
+    CreateToolTip(enable_edge_checkbox,                lambda: t("Tooltip.EdgeMasking"))
+    CreateToolTip(enable_feathering_checkbox,          lambda: t("Tooltip.Feathering"))
+    CreateToolTip(skip_blank_frames_checkbox,          lambda: t("Tooltip.SkipBlankFrames"))
+    CreateToolTip(enable_dynamic_convergence_checkbox, lambda: t("Tooltip.EnableDynConvergence"))
+    CreateToolTip(ipd_toggle,                          lambda: t("Tooltip.EnableIPD"))
+    CreateToolTip(clip_frame,                          lambda: t("Tooltip.ClipRangeLabel"))
+    CreateToolTip(start_clip_range_label,              lambda: t("Tooltip.StartClipRangeLabel"))
+    CreateToolTip(end_clip_range_label,                lambda: t("Tooltip.EndClipRangeLabel"))
+
 
     # Close button
     tk.Button(
@@ -4101,27 +4233,22 @@ def open_encoding_dialog():
     )
     frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # Make columns evenly resize & give a minimum so controls don't squash
-    for i in range(7):
-        frame.columnconfigure(i, weight=1, minsize=110)
+    # Main frame grid: 3 rows (checkbox row, dropdown row, slider row)
+    frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(0, weight=0)
+    frame.rowconfigure(1, weight=0)
+    frame.rowconfigure(2, weight=0)
 
-    # ───────── Row 0: Stereo output + Renderer + Keep Audio + Delete SBS + HDR ─────────
-    StereoOutput_label = tk.Label(
-        frame,
-        text=t("Left/Right Output"),
-        bg="#1c1c1c",
-        fg="white"
-    )
-    StereoOutput_label.grid(row=0, column=0, sticky="w", padx=6, pady=4)
-
-    tk.OptionMenu(
-        frame,
-        stereo_out_var,
-        "sbs", "left", "right", "both"
-    ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+    # =========================
+    # Row 0: Checkboxes band
+    # =========================
+    checks = tk.Frame(frame, bg="#1c1c1c")
+    checks.grid(row=0, column=0, sticky="ew", padx=2, pady=(2, 8))
+    for i in range(4):
+        checks.columnconfigure(i, weight=1, minsize=160)
 
     use_ffmpeg_checkbox = tk.Checkbutton(
-        frame,
+        checks,
         text=t("Use FFmpeg Renderer"),
         bg="#1c1c1c",
         fg="white",
@@ -4129,10 +4256,10 @@ def open_encoding_dialog():
         variable=use_ffmpeg,
         anchor="w"
     )
-    use_ffmpeg_checkbox.grid(row=0, column=2, sticky="w", padx=5)
+    use_ffmpeg_checkbox.grid(row=0, column=0, sticky="w", padx=5)
 
     keep_audio_checkbox = tk.Checkbutton(
-        frame,
+        checks,
         text=t("Keep Original Audio"),
         variable=keep_original_audio,
         bg="#1c1c1c",
@@ -4142,10 +4269,10 @@ def open_encoding_dialog():
         anchor="w",
         justify="left"
     )
-    keep_audio_checkbox.grid(row=0, column=3, sticky="w", padx=5)
+    keep_audio_checkbox.grid(row=0, column=1, sticky="w", padx=5)
 
     DeleteSBS_label = tk.Checkbutton(
-        frame,
+        checks,
         text=t("Delete SBS after"),
         variable=delete_fsbs_var,
         bg="#1c1c1c",
@@ -4155,10 +4282,10 @@ def open_encoding_dialog():
         anchor="w",
         justify="left"
     )
-    DeleteSBS_label.grid(row=0, column=4, sticky="w", padx=5)
+    DeleteSBS_label.grid(row=0, column=2, sticky="w", padx=5)
 
     hdr_checkbox = tk.Checkbutton(
-        frame,
+        checks,
         text=t("Preserve HDR10"),
         variable=preserve_hdr10_var,
         onvalue=True,
@@ -4170,39 +4297,85 @@ def open_encoding_dialog():
         anchor="w",
         justify="left"
     )
-    hdr_checkbox.grid(row=0, column=5, sticky="w", padx=5)
+    hdr_checkbox.grid(row=0, column=3, sticky="w", padx=5)
 
-    # ───────── Row 1: Aspect • FFmpeg Codec • Codec ─────────
+    # =========================
+    # Row 1: Dropdowns band
+    # =========================
+    opts = tk.Frame(frame, bg="#1c1c1c")
+    opts.grid(row=1, column=0, sticky="ew", padx=2, pady=(0, 10))
+
+    # 10 columns = 5 label+control pairs
+    for i in range(10):
+        opts.columnconfigure(i, weight=1, minsize=110)
+
+    # Pair 1: 3D Format
+    format_button = tk.Label(
+        opts, text=t("3D Format"),
+        bg="#1c1c1c", fg="white"
+    )
+    format_button.grid(row=0, column=0, sticky="w", padx=6, pady=4)
+
+    option_menu = tk.OptionMenu(
+        opts,
+        output_format,
+        "Full-SBS",
+        "Half-SBS",
+        "VR",
+        "Red-Cyan Anaglyph",
+        "Passive Interlaced",
+    )
+    option_menu.config(width=14, cursor="hand2")
+    option_menu.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+
+    # Pair 2: Left/Right Output
+    StereoOutput_label = tk.Label(
+        opts,
+        text=t("Left/Right Output"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    StereoOutput_label.grid(row=0, column=2, sticky="w", padx=6, pady=4)
+
+    tk.OptionMenu(
+        opts,
+        stereo_out_var,
+        "sbs", "left", "right", "both"
+    ).grid(row=0, column=3, sticky="ew", padx=6, pady=4)
+
+    # Pair 3: Aspect Ratio
     selected_aspect_ratio_label = tk.Label(
-        frame,
+        opts,
         text=t("Aspect Ratio:"),
         bg="#1c1c1c",
         fg="white"
     )
-    selected_aspect_ratio_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
+    selected_aspect_ratio_label.grid(row=0, column=4, sticky="w", padx=6, pady=4)
 
     tk.OptionMenu(
-        frame,
+        opts,
         selected_aspect_ratio,
         *aspect_ratios.keys()
-    ).grid(row=1, column=1, sticky="ew", padx=6, pady=4)
+    ).grid(row=0, column=5, sticky="ew", padx=6, pady=4)
 
+    # Pair 4: FFmpeg Codec
     selected_ffmpeg_codec_label = tk.Label(
-        frame,
+        opts,
         text=t("FFmpeg Codec:"),
         bg="#1c1c1c",
         fg="white"
     )
-    selected_ffmpeg_codec_label.grid(row=1, column=2, sticky="w", padx=6, pady=4)
+    selected_ffmpeg_codec_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
 
     tk.OptionMenu(
-        frame,
+        opts,
         selected_ffmpeg_codec,
         *FFMPEG_CODEC_MAP.keys()
-    ).grid(row=1, column=3, sticky="ew", padx=6, pady=4)
+    ).grid(row=1, column=1, columnspan=3, sticky="ew", padx=6, pady=4)
 
+    # Pair 5: Codec
     selected_codec_label = tk.Label(
-        frame,
+        opts,
         text=t("Codec:"),
         bg="#1c1c1c",
         fg="white"
@@ -4210,57 +4383,65 @@ def open_encoding_dialog():
     selected_codec_label.grid(row=1, column=4, sticky="w", padx=6, pady=4)
 
     tk.OptionMenu(
-        frame,
+        opts,
         selected_codec,
         *codec_options
-    ).grid(row=1, column=5, sticky="ew", padx=6, pady=4)
+    ).grid(row=1, column=5, columnspan=3, sticky="ew", padx=6, pady=4)
 
-    # ───────── Row 2: CRF • NVENC CQ ─────────
+    # =========================
+    # Row 2: Sliders band
+    # =========================
+    sliders = tk.Frame(frame, bg="#1c1c1c")
+    sliders.grid(row=2, column=0, sticky="ew", padx=2, pady=(0, 6))
+    for i in range(6):
+        sliders.columnconfigure(i, weight=1, minsize=110)
+
     crf_value_label = tk.Label(
-        frame,
+        sliders,
         text=t("CRF"),
         bg="#1c1c1c",
         fg="white"
     )
-    crf_value_label.grid(row=2, column=0, sticky="w", padx=6, pady=6)
+    crf_value_label.grid(row=0, column=3, sticky="w", padx=6, pady=6)
 
     tk.Scale(
-        frame,
+        sliders,
         from_=0,
         to=51,
         resolution=1,
         orient=tk.HORIZONTAL,
         variable=crf_value,
-        length=150,
+        length=220,
         bg="#2b2b2b",
         fg="white",
         troughcolor="#444",
         highlightthickness=0,
         bd=0
-    ).grid(row=2, column=1, columnspan=2, sticky="ew", padx=6, pady=6)
+    ).grid(row=0, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
 
     nvenc_cq_value_label = tk.Label(
-        frame,
+        sliders,
         text=t("NVENC CQ"),
         bg="#1c1c1c",
         fg="white"
     )
-    nvenc_cq_value_label.grid(row=2, column=3, sticky="w", padx=6, pady=6)
+    nvenc_cq_value_label.grid(row=0, column=0, sticky="w", padx=6, pady=6)
 
     tk.Scale(
-        frame,
+        sliders,
         from_=0,
         to=51,
         resolution=1,
         orient=tk.HORIZONTAL,
         variable=nvenc_cq_value,
-        length=150,
+        length=220,
         bg="#2b2b2b",
         fg="white",
         troughcolor="#444",
         highlightthickness=0,
         bd=0
-    ).grid(row=2, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
+    ).grid(row=0, column=1, columnspan=2, sticky="ew", padx=6, pady=6)
+
 
     # 🔹 Tooltips inside the dialog, using your existing language keys
     CreateToolTip(StereoOutput_label,     lambda: t("Tooltip.LROutput"))
@@ -4273,6 +4454,7 @@ def open_encoding_dialog():
     CreateToolTip(selected_codec_label,         lambda: t("Tooltip.SelectedCodec"))
     CreateToolTip(crf_value_label,              lambda: t("Tooltip.CRF"))
     CreateToolTip(nvenc_cq_value_label,         lambda: t("Tooltip.NVENCCQ"))
+    CreateToolTip(format_button,         lambda: t("Tooltip.OptionMenu"))
     
     # Close button
     tk.Button(
@@ -4313,52 +4495,6 @@ processing_button = ttk.Button(
     style="VD3D.TButton",
 )
 processing_button.grid(row=1, column=1,pady=5, padx=5, sticky="ew")
-
-# --- Clip Range UI ---
-clip_frame = tk.LabelFrame(
-    right_col,
-    text="Clip Range (optional)",
-    bg="#1c1c1c",
-    fg="white",
-    font=("Segoe UI", 10, "bold"),
-    labelanchor="nw",
-    padx=10,
-    pady=10
-)
-clip_frame.grid(row=4, column=0, padx=8, pady=8, sticky="we")  # adjust placement
-
-
-def _time_validate(s: str) -> bool:
-    """
-    Allow digits, colon, dot, spaces so users can type 'HH:MM:SS(.ms)', 'MM:SS(.ms)', or 'SS(.ms)'.
-    Actual parsing is done by parse_timecode(); this just keeps the entry clean-ish.
-    """
-    return bool(re.match(r'^[0-9:\.\s]*$', s))
-
-vcmd = (clip_frame.register(_time_validate), "%P")
-
-start_clip_range_label = tk.Label(
-    clip_frame, text="Start (HH:MM:SS[.ms] or seconds):"
-)
-start_clip_range_label.grid(row=0, column=0, sticky="w", padx=6, pady=4)
-
-start_entry = tk.Entry(clip_frame, textvariable=clip_start_var, width=18, validate="key", validatecommand=vcmd)
-start_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
-
-end_clip_range_label = tk.Label(
-    clip_frame, text="End (HH:MM:SS[.ms] or seconds):"
-)
-end_clip_range_label.grid(row=1, column=0, sticky="w", padx=6, pady=4)
-
-end_entry = tk.Entry(clip_frame, textvariable=clip_end_var, width=18, validate="key", validatecommand=vcmd)
-end_entry.grid(row=1, column=1, sticky="w", padx=6, pady=4)
-
-btns = tk.Frame(clip_frame)
-btns.grid(row=0, column=2, rowspan=2, padx=6, pady=4, sticky="e")
-clear_button_label = tk.Button(
-    btns, text="Clear", command=clear_clip
-)
-clear_button_label.grid(row=0, column=0, padx=4)
 
 # ── INPUT SOURCES (own frame) ──────────────────────────────────────────────
 inputs_frame = tk.LabelFrame(
@@ -4598,25 +4734,6 @@ def process_next_in_batch():
 button_frame = tk.Frame(right_col, bg="#1c1c1c")
 button_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="nsew")
 
-# 3D Format Label and Dropdown (Inside button_frame)
-format_button = tk.Label(
-    button_frame, text=t("3D Format"),
-    bg="#1c1c1c", fg="white"
-)
-format_button.grid(row=0, column=0, pady=5, padx=5, sticky="ew")
-
-option_menu = tk.OptionMenu(
-    button_frame,
-    output_format,
-    "Full-SBS",
-    "Half-SBS",
-    "VR",
-    "Red-Cyan Anaglyph",
-    "Passive Interlaced",
-)
-option_menu.config(width=10, cursor="hand2")  # Adjust width to keep consistent look
-option_menu.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
-
 # Buttons Inside button_frame to Keep Everything on One Line
 start_button = tk.Button(
     button_frame,
@@ -4791,17 +4908,17 @@ tooltip_refs["ResumeButton"] = CreateToolTip(resume_button, lambda: t("Tooltip.R
 tooltip_refs["CancelButton"] = CreateToolTip(cancel_button, lambda: t("Tooltip.CancelButton"))
 tooltip_refs["ResetButton"] = CreateToolTip(reset_button, lambda: t("Tooltip.ResetButton"))
 tooltip_refs["ColorResetButton"] = CreateToolTip(color_reset_button, lambda: t("Tooltip.ColorResetButton"))
-tooltip_refs["ClipRangeLabel"] = CreateToolTip(clip_frame, lambda: t("Tooltip.ClipRangeLabel"))
-tooltip_refs["StartClipRangeLabel"] = CreateToolTip(start_clip_range_label, lambda: t("Tooltip.StartClipRangeLabel"))
-tooltip_refs["EndClipRangeLabel"] = CreateToolTip(end_clip_range_label, lambda: t("Tooltip.EndClipRangeLabel"))
+#tooltip_refs["ClipRangeLabel"] = CreateToolTip(clip_frame, lambda: t("Tooltip.ClipRangeLabel"))
+#tooltip_refs["StartClipRangeLabel"] = CreateToolTip(start_clip_range_label, lambda: t("Tooltip.StartClipRangeLabel"))
+#tooltip_refs["EndClipRangeLabel"] = CreateToolTip(end_clip_range_label, lambda: t("Tooltip.EndClipRangeLabel"))
 
-tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, lambda: t("Tooltip.OptionMenu"))
+#tooltip_refs["OptionMenu"] = CreateToolTip(option_menu, lambda: t("Tooltip.OptionMenu"))
 tooltip_refs["AspectPreview"] = CreateToolTip(aspect_preview_label, lambda: t("Tooltip.AspectPreview"))
 
 # Sliders
-tooltip_refs["FGShift"] = CreateToolTip(bg_shift_label, lambda: t("Tooltip.FGShift"))
+tooltip_refs["FGShift"] = CreateToolTip(fg_shift_label, lambda: t("Tooltip.FGShift"))
 tooltip_refs["MGShift"] = CreateToolTip(mg_shift_label, lambda: t("Tooltip.MGShift"))
-tooltip_refs["BGShift"] = CreateToolTip(fg_shift_label, lambda: t("Tooltip.BGShift"))
+tooltip_refs["BGShift"] = CreateToolTip(bg_shift_label, lambda: t("Tooltip.BGShift"))
 tooltip_refs["Sharpness"] = CreateToolTip(sharpness_factor_label, lambda: t("Tooltip.Sharpness"))
 tooltip_refs["ZeroParallaxStrength"] = CreateToolTip(zero_parallax_strength_label, lambda: t("Tooltip.ZeroParallaxStrength"))
 tooltip_refs["ParallaxBalance"] = CreateToolTip(parallax_balance_label, lambda: t("Tooltip.ParallaxBalance"))
@@ -4885,7 +5002,7 @@ def refresh_ui_labels():
             pass
 
     # Tabs
-    tab_control.tab(depth_tab_index, text=t("Depth Estimation"))
+    tab_control.tab(depth_tab_index, text=t("Depth Engine"))
     tab_control.tab(visiondepth_tab_index, text=t("3D Video Generator"))
     tab_control.tab(frametools_tab_index, text=t("FrameTools"))
     tab_control.tab(depth_blend_index, text=t("Depth Blender"))
@@ -4926,7 +5043,7 @@ def refresh_ui_labels():
     _cfg(image_select_input_button, text=t("Select Input Image"))
     _cfg(image_select_depth_button, text=t("Select Depth Map Image"))
     _cfg(image_select_output_button, text=t("Select Output Image"))
-    _cfg(format_button, text=t("3D Format"))
+#    _cfg(format_button, text=t("3D Format"))
     _cfg(start_button, text=t("Generate 3D"))
     _cfg(batch_start_button, text=t("Start Batch Render"))
     _cfg(preview_button, text=t("Open Preview"))
@@ -4944,9 +5061,9 @@ def refresh_ui_labels():
     
 
     # Parallax/quality sliders (existing)
-    _cfg(bg_shift_label, text=t("Foreground Shift"))
+    _cfg(fg_shift_label, text=t("Foreground Shift"))
     _cfg(mg_shift_label, text=t("Midground Shift"))
-    _cfg(fg_shift_label, text=t("Background Shift"))
+    _cfg(bg_shift_label, text=t("Background Shift"))
     _cfg(sharpness_factor_label, text=t("Sharpness Factor"))
     _cfg(zero_parallax_strength_label, text=t("Zero Parallax Strength"))
     _cfg(parallax_balance_label, text=t("Parallax Balance"))
@@ -4992,10 +5109,10 @@ def refresh_ui_labels():
 #    _cfg(DeleteSBS_label, text=t("Delete SBS after"))
 #    _cfg(hdr_checkbox, text=t("Preserve HDR10"))
 #    _cfg(keep_audio_checkbox , text=t("Keep Original Audio"))
-    _cfg(clip_frame, text=t("Clip Range (optional)"))
-    _cfg(start_clip_range_label, text=t("Start (HH:MM:SS[.ms] or seconds):"))
-    _cfg(end_clip_range_label, text=t("End (HH:MM:SS[.ms] or seconds):"))
-    _cfg(clear_button_label, text=t("Clear"))
+#    _cfg(clip_frame, text=t("Clip Range (optional)"))
+#    _cfg(start_clip_range_label, text=t("Start (HH:MM:SS[.ms] or seconds):"))
+#    _cfg(end_clip_range_label, text=t("End (HH:MM:SS[.ms] or seconds):"))
+#    _cfg(clear_button_label, text=t("Clear"))
 
     # FrameTools tab
     _cfg(extract_frames_button, text=t("Extract Frames from Video"))

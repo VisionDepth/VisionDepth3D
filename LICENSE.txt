@@ -1,4 +1,4 @@
-Copyright (c) 2025 Johnathan Carpenter. All rights reserved 
+Copyright (c) 2026 Johnathan Carpenter. All rights reserved 
 
 This License Agreement ("Agreement") is a legal agreement between you ("User") and VisionDepth ("Licensor") regarding the use of VisionDepth3D ("Software"). By downloading, installing, or using the Software, you acknowledge and agree to be bound by the terms of this Agreement.
 
@@ -45,3 +45,4 @@ This Agreement shall be governed by and interpreted in accordance with the laws 
 
 9. Contact
 For inquiries regarding this Agreement, contact: redsky90@gmail.com
+

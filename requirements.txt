@@ -12,4 +12,15 @@ diffusers
 safetensors
 mediapy
 scenedetect
-Flask
+easydict
+trimesh
+evo
+pycolmap
+gsplat
+plyfile
+einops
+addict
+moviepy
+omegaconf
+flask
+mss
