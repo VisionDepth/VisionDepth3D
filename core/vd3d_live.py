@@ -323,35 +323,39 @@ def depth_from_frame_fast(model, norm, device: str,
         t_inp = torch.empty((1, 3, ih, iw), device=device, dtype=torch.float32)
         _STAGING["inp"] = t_inp
 
-    t_inp.copy_(
-        torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0).to(
-            device=device, dtype=torch.float32
-        ),
-        non_blocking=True,
-    )
+    src = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0).contiguous()  # CPU uint8
+    t_inp.copy_(src, non_blocking=False)  # copy CPU->GPU into persistent tensor
+    
     mean, std = norm
     t_inp = (t_inp / 255.0 - mean) / std
 
-    with torch.inference_mode(), torch.autocast(
-        device_type=device, dtype=getattr(next(model.parameters()), "dtype", torch.float16)
-    ):
-        out = model(pixel_values=t_inp).predicted_depth
+    with torch.inference_mode():
+        if device == "cuda":
+            model_dtype = next(model.parameters()).dtype
+            with torch.autocast(device_type="cuda", dtype=model_dtype):
+                out = model(pixel_values=t_inp).predicted_depth
+        else:
+            out = model(pixel_values=t_inp).predicted_depth
+
         if out.ndim == 4:
             out = out[:, 0]
+
         pred = torch.nn.functional.interpolate(
             out.unsqueeze(1).float(),
             size=(h, w),
             mode="bicubic",
             align_corners=False,
         ).squeeze(1)
+
         depth = pred[0]
 
-    d = depth.flatten()
-    lo = torch.quantile(d, 0.01)
-    hi = torch.quantile(d, 0.99)
+
+    lo = torch.amin(depth)
+    hi = torch.amax(depth)
     depth01 = torch.clamp((depth - lo) / (hi - lo + 1e-6), 0, 1)
 
-    return depth01.detach().cpu().numpy().astype(np.float32)
+    return depth01
+
 
 # -------------------- Utilities -------------------- #
 def sbs_pack_gpu_rgb(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
@@ -421,6 +425,10 @@ def run_live(args, external_stop: threading.Event | None = None):
         raise
 
     frame_q, stop_cap = start_latest_capture(cap)
+    # --- persistent GPU buffers to reduce per-frame allocations ---
+    frm_gpu_u8 = None        # uint8 CUDA buffer (3,H,W)
+    frm_gpu_f32 = None       # float32 CUDA buffer (3,H,W)
+
 
     if diag:
         print("[diag] args:", vars(args))
@@ -475,7 +483,6 @@ def run_live(args, external_stop: threading.Event | None = None):
     fps_ema = None
     t_last = time.time()
 
-    depth01 = None
     depth_last_t = 0.0
     depth_period = 1.0 / max(1e-3, args.depth_fps)
 
@@ -516,6 +523,8 @@ def run_live(args, external_stop: threading.Event | None = None):
 
     print("▶️  Streaming… (f=fullscreen, m=mode, q=quit)")
     out_bgr = first
+    depth01_t = None
+
 
     while True:
         if external_stop is not None and external_stop.is_set():
@@ -560,54 +569,61 @@ def run_live(args, external_stop: threading.Event | None = None):
             if x1 > x0 and y1 > y0:
                 frame[y0:y1, x0:x1] = 0
 
-        now = time.time()
+        now = time.perf_counter()
 
         # Depth update
-        if (depth01 is None) or (now - depth_last_t >= depth_period):
+        if (depth01_t is None) or (now - depth_last_t >= depth_period):
             depth_new = depth_from_frame_fast(
                 model, proc, device, frame, (args.infer_w, args.infer_h)
             )
             depth_last_t = now
+
             if args.smooth:
                 if depth_ema is None:
                     depth_ema = depth_new
                 else:
                     depth_ema = (1.0 - ema_alpha) * depth_ema + ema_alpha * depth_new
-                depth01 = cv2.medianBlur(
-                    (depth_ema * 255).astype(np.uint8), 3
-                ).astype(np.float32) / 255.0
+                depth01_t = depth_ema
             else:
-                depth01 = depth_new
+                depth01_t = depth_new
+
 
         # View modes
         if view_mode == 0:
             out_bgr = frame
         elif view_mode == 1:
-            d8 = (depth01 * 255.0).astype(np.uint8)
-            out_bgr = cv2.applyColorMap(d8, cv2.COLORMAP_VIRIDIS)
+            d_cpu = (depth01_t * 255.0).clamp(0,255).byte().detach().cpu().numpy()
+            out_bgr = cv2.applyColorMap(d_cpu, cv2.COLORMAP_VIRIDIS)
+
         else:
-            if HAVE_PIXEL_SHIFT and pixel_shift_cuda is not None and CUDA_AVAILABLE:
-                if getattr(args, "pixelshift_rgb", False):
-                    base = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                else:
-                    base = frame
-
-                frm_t = torch.from_numpy(base).permute(2, 0, 1).to(
-                    "cuda", dtype=torch.float32
-                ).div_(255.0)
-                d_t = torch.from_numpy(depth01).to(
-                    "cuda", dtype=torch.float32
-                ).unsqueeze(0)
-
+            # 3D-SBS mode
+            if HAVE_PIXEL_SHIFT and (pixel_shift_cuda is not None) and CUDA_AVAILABLE and (depth01_t is not None):
                 h, w = frame.shape[:2]
+
+                # Choose base in CPU memory
+                base_cpu = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if args.pixelshift_rgb else frame
+
+                # Ensure contiguous CPU tensor view
+                tmp_cpu = torch.from_numpy(base_cpu).permute(2, 0, 1).contiguous()  # uint8 CPU
+
+                # Allocate persistent CUDA buffers once per resolution
+                if (frm_gpu_u8 is None) or (frm_gpu_u8.shape[1] != h) or (frm_gpu_u8.shape[2] != w):
+                    frm_gpu_u8 = torch.empty((3, h, w), device="cuda", dtype=torch.uint8)
+                    frm_gpu_f32 = torch.empty((3, h, w), device="cuda", dtype=torch.float32)
+
+                # Copy CPU -> GPU (no new allocation)
+                frm_gpu_u8.copy_(tmp_cpu, non_blocking=False)
+
+                # Convert to float + normalize using persistent buffer
+                frm_gpu_f32.copy_(frm_gpu_u8)                 # uint8 -> float32 conversion
+                frm_t = frm_gpu_f32.mul_(1.0 / 255.0)         # in-place normalize 0..1
+
+                # Depth tensor for pixel shift (already CUDA, already 0..1)
+                d_t = depth01_t.unsqueeze(0)                  # shape [1,H,W]
+
                 left, right = pixel_shift_cuda(
-                    frm_t,
-                    d_t,
-                    w,
-                    h,
-                    args.fg_shift,
-                    args.mg_shift,
-                    args.bg_shift,
+                    frm_t, d_t, w, h,
+                    args.fg_shift, args.mg_shift, args.bg_shift,
                     blur_ksize=9,
                     feather_strength=12.0,
                     return_shift_map=False,
@@ -615,40 +631,45 @@ def run_live(args, external_stop: threading.Event | None = None):
                     enable_edge_masking=True,
                 )
 
+                # ---- handle both torch and numpy returns ----
                 if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+                    # make sure on cuda and CHW
                     if left.device.type != "cuda":
-                        left = left.to("cuda")
+                        left = left.to("cuda", non_blocking=True)
                     if right.device.type != "cuda":
-                        right = right.to("cuda")
+                        right = right.to("cuda", non_blocking=True)
 
-                    if left.dim() == 3 and left.shape[0] != 3:
-                        left = left.permute(2, 0, 1)
-                        right = right.permute(2, 0, 1)
+                    if left.ndim == 3 and left.shape[0] != 3:  # likely HWC
+                        left = left.permute(2, 0, 1).contiguous()
+                        right = right.permute(2, 0, 1).contiguous()
 
-                    if getattr(args, "pixelshift_rgb", False):
+                    if args.pixelshift_rgb:
                         out_bgr = sbs_pack_gpu_rgb(left, right)
                     else:
                         out_bgr = sbs_pack_gpu_bgr(left, right)
+
                 else:
-                    if left.dtype != np.uint8:
-                        left_u8 = np.clip(left * 255.0, 0, 255).astype(np.uint8)
-                        right_u8 = np.clip(right * 255.0, 0, 255).astype(np.uint8)
-                    else:
-                        left_u8, right_u8 = left, right
+                    # numpy path
+                    left_np = left
+                    right_np = right
 
-                    if left_u8.ndim == 3 and left_u8.shape[0] == 3:
-                        left_u8 = np.transpose(left_u8, (1, 2, 0))
-                        right_u8 = np.transpose(right_u8, (1, 2, 0))
+                    # if float 0..1, convert to uint8
+                    if left_np.dtype != np.uint8:
+                        left_np = np.clip(left_np * 255.0, 0, 255).astype(np.uint8)
+                        right_np = np.clip(right_np * 255.0, 0, 255).astype(np.uint8)
 
-                    if getattr(args, "pixelshift_rgb", False):
-                        left_bgr = cv2.cvtColor(left_u8, cv2.COLOR_RGB2BGR)
-                        right_bgr = cv2.cvtColor(right_u8, cv2.COLOR_RGB2BGR)
-                    else:
-                        left_bgr, right_bgr = left_u8, right_u8
+                    # if CHW, convert to HWC
+                    if left_np.ndim == 3 and left_np.shape[0] == 3:
+                        left_np = np.transpose(left_np, (1, 2, 0))
+                        right_np = np.transpose(right_np, (1, 2, 0))
 
-                    out_bgr = np.hstack([left_bgr, right_bgr])
-            else:
-                out_bgr = np.hstack([frame, frame])
+                    # if RGB input, convert to BGR for OpenCV output
+                    if args.pixelshift_rgb:
+                        left_np = cv2.cvtColor(left_np, cv2.COLOR_RGB2BGR)
+                        right_np = cv2.cvtColor(right_np, cv2.COLOR_RGB2BGR)
+
+                    out_bgr = np.hstack([left_np, right_np])
+
 
         # Virtual cam
         if vcam is None and args.virtualcam and HAVE_VCAM:
@@ -744,35 +765,35 @@ class LiveGUI:
         self.source_var = tk.StringVar(value="device")           # "device" or "screen:1"
         self.device_index_var = tk.IntVar(value=0)
         self.backend_var = tk.StringVar(value=default_backend)
-        self.capture_fps_var = tk.IntVar(value=60)
+        self.capture_fps_var = tk.IntVar(value=30)
         self.width_var = tk.IntVar(value=0)                      # 0 = auto
         self.height_var = tk.IntVar(value=0)                     # 0 = auto
         self.cam_fps_var = tk.IntVar(value=0)                    # 0 = no explicit FPS
         self.fourcc_var = tk.StringVar(value="")
         self.no_capture_swap_var = tk.BooleanVar(value=False)
-        self.force_bgr_swap_var = tk.BooleanVar(value=False)
+        self.force_bgr_swap_var = tk.BooleanVar(value=True)
 
         # Depth / model
         self.model_var = tk.StringVar(
-            value="depth-anything/Depth-Anything-V2-Small-hf"
+            value="depth-anything/Depth-Anything-V2-Large-hf"
         )
         self.fp16_var = tk.BooleanVar(value=CUDA_AVAILABLE)
-        self.infer_w_var = tk.IntVar(value=448)
-        self.infer_h_var = tk.IntVar(value=256)
-        self.depth_fps_var = tk.DoubleVar(value=8.0)
-        self.smooth_var = tk.BooleanVar(value=True)
-        self.ema_var = tk.DoubleVar(value=0.4)
+        self.infer_w_var = tk.IntVar(value=320)
+        self.infer_h_var = tk.IntVar(value=180)
+        self.depth_fps_var = tk.DoubleVar(value=5.0)
+        self.smooth_var = tk.BooleanVar(value=False)
+        self.ema_var = tk.DoubleVar(value=0.35)
 
         # 3D / Pixel-shift
         self.sbs_var = tk.BooleanVar(value=True)
-        self.fg_shift_var = tk.DoubleVar(value=7.0)
-        self.mg_shift_var = tk.DoubleVar(value=3.0)
-        self.bg_shift_var = tk.DoubleVar(value=-5.0)
+        self.fg_shift_var = tk.DoubleVar(value=8)
+        self.mg_shift_var = tk.DoubleVar(value=2.0)
+        self.bg_shift_var = tk.DoubleVar(value=-4.0)
         self.pixelshift_rgb_var = tk.BooleanVar(value=False)
 
         # Preview / window
         self.preview_var = tk.BooleanVar(value=True)
-        self.force_preview_var = tk.BooleanVar(value=False)
+        self.force_preview_var = tk.BooleanVar(value=True)
         self.mask_preview_var = tk.BooleanVar(value=False)
         self.preview_x_var = tk.IntVar(value=60)
         self.preview_y_var = tk.IntVar(value=60)
