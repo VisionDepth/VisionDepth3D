@@ -1,4 +1,4 @@
-# VD3D User Manual  
+# VisionDepth3D User Guide 
 
 ## Overview  
 
