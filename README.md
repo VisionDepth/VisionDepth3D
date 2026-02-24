@@ -81,7 +81,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
   - **Occlusion healing**: fills stereo gaps and reduces edge artifacts
 - **Live preview + diagnostics**: anaglyph, SBS, heatmaps, edge/mask inspection, stereo difference views
 - **Clip-range rendering** for fast testing on difficult scenes before full renders
-- **Export formats**: Half-SBS, Full-SBS, VR (equirectangular), Anaglyph, Passive Interlaced
+- **Export formats**: Half-SBS, Full-SBS, VR (SBS 1440×1600 per eye), Anaglyph, Passive Interlaced
 - **Encoding pipeline**: FFmpeg with CPU and hardware encoders (NVENC/AMF/QSV) plus quality controls (CRF/CQ)
 
 **Result:** A production-ready 2D-to-3D engine with real-time tuning tools, stability features, and flexible export formats for VR and cinema workflows.
