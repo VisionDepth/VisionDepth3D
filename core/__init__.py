@@ -28,6 +28,7 @@ from .render_depth import (
     process_image_folder,
     process_images_in_folder,
     process_videos_in_folder,
+    process_video_folder,
     update_progress,
     cancel_requested,
     request_depth_pause,

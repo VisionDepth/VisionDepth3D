@@ -175,7 +175,8 @@ def open_3d_preview_window(
                 self.canvas.yview_scroll(int(-delta / 120), "units")
 
             for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-                self.canvas.bind_all(seq, _on_wheel, add="+")
+                self.canvas.bind(seq, _on_wheel, add="+")
+                self.inner.bind(seq, _on_wheel, add="+")
 
     scroll = ScrollableFrame(bottom_area)
     scroll.pack(fill="both", expand=True)
@@ -197,13 +198,23 @@ def open_3d_preview_window(
     height_entry.insert(0, str(initial_h))
     height_entry.grid(row=0, column=3, padx=(0, 10))
     preview_job = None  
+    is_closing = False
 
     def update_preview_debounced(*args):
-        nonlocal preview_job
+        nonlocal preview_job, is_closing
+        if is_closing:
+            return
         if preview_job is not None:
-            preview_win.after_cancel(preview_job)
-        preview_job = preview_win.after(150, update_preview_now)  # debounce
-
+            try:
+                preview_win.after_cancel(preview_job)
+            except Exception:
+                pass
+            preview_job = None
+        try:
+            preview_job = preview_win.after(150, update_preview_now)
+        except Exception:
+            preview_job = None
+            
     def apply_size():
         try:
             preview_width = int(width_entry.get())
@@ -545,8 +556,16 @@ def open_3d_preview_window(
 
 
     def update_preview_now():
-        nonlocal preview_job
-        nonlocal preview_img, frame, depth
+        nonlocal preview_job, preview_img, frame, depth, is_closing
+        if is_closing:
+            return
+
+        try:
+            if not preview_win.winfo_exists():
+                return
+        except Exception:
+            return
+        
         preview_job = None 
         from core import render_3d
 
@@ -697,6 +716,11 @@ def open_3d_preview_window(
             preview_canvas.image = img_tk
 
     def on_close():
+        nonlocal preview_job, is_closing
+        if is_closing:
+            return
+        is_closing = True
+
         settings = {
             'width': width_entry.get(),
             'height': height_entry.get(),
@@ -722,24 +746,48 @@ def open_3d_preview_window(
             'fg_pop_multiplier': fg_pop_multiplier.get(),
             'bg_push_multiplier': bg_push_multiplier.get(),
             'subject_lock_strength': subject_lock_strength.get(),
-            # persist color grade
             'saturation': saturation.get(),
-            'contrast':   contrast.get(),
+            'contrast': contrast.get(),
             'brightness': brightness.get(),
             'ipd_enabled': ipd_enabled.get(),
-            'ipd_scale':   ipd_scale.get(),
+            'ipd_scale': ipd_scale.get(),
             'show_convergence_guides': show_convergence_guides.get(),
-            
-
         }
-        save_settings(settings)
+
         try:
-            if preview_cap: preview_cap.release()
-        except: pass
+            save_settings(settings)
+        except Exception:
+            pass
+
+        if preview_job is not None:
+            try:
+                preview_win.after_cancel(preview_job)
+            except Exception:
+                pass
+            preview_job = None
+
         try:
-            if depth_cap: depth_cap.release()
-        except: pass
-        preview_win.destroy()
+            if preview_cap:
+                preview_cap.release()
+        except Exception:
+            pass
+
+        try:
+            if depth_cap:
+                depth_cap.release()
+        except Exception:
+            pass
+
+        try:
+            preview_canvas.config(image="")
+            preview_canvas.image = None
+        except Exception:
+            pass
+
+        try:
+            preview_win.destroy()
+        except Exception:
+            pass
 
     preview_win.protocol("WM_DELETE_WINDOW", on_close)
 

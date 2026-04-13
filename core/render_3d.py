@@ -18,7 +18,6 @@ from core.ffmpeg_blackdetect import detect_black_white_frames
 import math
 from typing import Iterable, Optional
 
-
 # Device setup
 #onnx_device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
 def pick_torch_device():
@@ -101,6 +100,79 @@ FFMPEG_CODEC_MAP = {
     "VP9 (QSV - Intel GPU)": "vp9_qsv",
     "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
+
+VR180_EQUI_PRESETS = {
+    "2048x1024 (Per Eye)": (2048, 1024),
+    "3072x1536 (Per Eye)": (3072, 1536),
+    "3840x1920 (Per Eye)": (3840, 1920),
+    "4096x2048 (Per Eye)": (4096, 2048),
+    "5760x2880 (Per Eye)": (5760, 2880),
+}
+
+VR180_FLAT_PRESETS = {
+    "1280x720 (Working)": (1280, 720),
+    "1920x1080 (Working)": (1920, 1080),
+    "2560x1440 (Working)": (2560, 1440),
+}
+
+def get_video_info_safe(video_path):
+    """
+    Returns (width, height, fps) using OpenCV first, then ffprobe fallback.
+    """
+    width = 0
+    height = 0
+    fps = 0.0
+
+    cap = cv2.VideoCapture(video_path)
+    try:
+        if cap.isOpened():
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    finally:
+        cap.release()
+
+    # If OpenCV failed, fall back to ffprobe
+    if width <= 0 or height <= 0 or fps <= 0:
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=0",
+                video_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            info = {}
+
+            for line in result.stdout.splitlines():
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    info[k] = v
+
+            if width <= 0:
+                width = int(info.get("width", 0) or 0)
+            if height <= 0:
+                height = int(info.get("height", 0) or 0)
+
+            def parse_rate(rate_str):
+                if not rate_str or rate_str == "0/0":
+                    return 0.0
+                if "/" in rate_str:
+                    a, b = rate_str.split("/", 1)
+                    a = float(a)
+                    b = float(b)
+                    return a / b if b != 0 else 0.0
+                return float(rate_str)
+
+            if fps <= 0:
+                fps = parse_rate(info.get("avg_frame_rate", "")) or parse_rate(info.get("r_frame_rate", ""))
+
+        except Exception as e:
+            print(f"⚠️ ffprobe fallback failed for {video_path}: {e}")
+
+    return width, height, fps
 
 def merge_audio_from_source(final_video, original_video, output_with_audio):
     """
@@ -253,7 +325,7 @@ def reset_render_state():
 
     # reset depth percentile EMA so it learns per render
     global depth_ema_norm
-    depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
+    depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.85)
 
 
 def sculpt_depth_u8(base_depth_u8, mask_u8, *,
@@ -296,6 +368,118 @@ class MatteEMA:
         self.prev = self.alpha * self.prev + (1 - self.alpha) * cur
         return (np.clip(self.prev, 0, 1) * 255).astype(np.uint8)
 
+
+import math
+import torch
+import torch.nn.functional as F
+
+def build_vr180_equirect_grid(
+    src_w: int,
+    src_h: int,
+    out_w: int,
+    out_h: int,
+    src_hfov_deg: float = 110.0,
+):
+    """
+    Builds a grid for warping a rectilinear source (normal flat view) into
+    a 180-degree equirectangular image (half sphere).
+
+    Equirect domain:
+      lon in [-pi/2, +pi/2] across width
+      lat in [-pi/2, +pi/2] across height
+
+    Source model:
+      simple pinhole perspective with horizontal FOV = src_hfov_deg
+      vertical FOV derived from aspect
+
+    Returns:
+      grid: [1, out_h, out_w, 2] in grid_sample coords [-1..1]
+      valid: [1, 1, out_h, out_w] mask (1 where samples are in front and in bounds)
+    """
+    device = torch_device if "torch_device" in globals() else "cuda" if torch.cuda.is_available() else "cpu"
+
+    src_w = int(src_w); src_h = int(src_h)
+    out_w = int(out_w); out_h = int(out_h)
+
+    # Equirect UV
+    u = torch.linspace(0.0, 1.0, out_w, device=device)
+    v = torch.linspace(0.0, 1.0, out_h, device=device)
+    vv, uu = torch.meshgrid(v, u, indexing="ij")  # [H,W]
+
+    # 180 equirect angles
+    lon = (uu - 0.5) * math.pi            # [-pi/2..+pi/2]
+    lat = (0.5 - vv) * math.pi            # [+pi/2..-pi/2]
+
+    # Direction vector on unit sphere (camera forward = +Z)
+    cos_lat = torch.cos(lat)
+    x = cos_lat * torch.sin(lon)
+    y = torch.sin(lat)
+    z = cos_lat * torch.cos(lon)
+
+    # Perspective projection: x_img = x/z, y_img = y/z
+    # Reject anything behind the camera or too close to z=0
+    eps = 1e-6
+    z_safe = torch.clamp(z, min=eps)
+    x_img = x / z_safe
+    y_img = y / z_safe
+
+    # FOV mapping
+    hfov = math.radians(float(src_hfov_deg))
+    hfov = max(min(hfov, math.radians(170.0)), math.radians(10.0))
+
+    # derive vfov from aspect (basic pinhole)
+    aspect = src_w / max(src_h, 1)
+    vfov = 2.0 * math.atan(math.tan(hfov * 0.5) / max(aspect, 1e-6))
+
+    tan_h = math.tan(hfov * 0.5)
+    tan_v = math.tan(vfov * 0.5)
+
+    # Convert to normalized grid_sample coords [-1..1]
+    gx = (x_img / tan_h).clamp(-2.0, 2.0)
+    gy = (y_img / tan_v).clamp(-2.0, 2.0)
+
+    grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)  # [1,out_h,out_w,2]
+
+    # Valid mask: in front (z>0) and inside sampling bounds (abs<=1)
+    in_front = (z > 0.0).float()
+    in_bounds = ((gx.abs() <= 1.0) & (gy.abs() <= 1.0)).float()
+    valid = (in_front * in_bounds).unsqueeze(0).unsqueeze(0)  # [1,1,out_h,out_w]
+
+    return grid, valid
+
+
+def warp_eye_to_vr180_equirect(
+    eye_rgb_t: torch.Tensor,   # [3,H,W] float 0..1
+    grid: torch.Tensor,        # [1,out_h,out_w,2]
+    valid: torch.Tensor,       # [1,1,out_h,out_w]
+):
+    """
+    Warps one eye into VR180 equirect. Keeps everything in float on GPU.
+    """
+
+    # ✅ FIX: flip vertical axis (grid_sample uses inverted Y)
+    grid = grid.clone()
+    grid[..., 1] *= -1
+
+    x = F.grid_sample(
+        eye_rgb_t.unsqueeze(0),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True
+    )  # [1,3,out_h,out_w]
+
+    # Apply validity mask to hard-black outside the view cone
+    x = x * valid
+    return x.squeeze(0).clamp(0.0, 1.0)
+    
+def pack_stereo_tb(left_t: torch.Tensor, right_t: torch.Tensor) -> torch.Tensor:
+    # [3,H,W] + [3,H,W] -> [3,2H,W]
+    return torch.cat([left_t, right_t], dim=1)
+
+def pack_stereo_sbs(left_t: torch.Tensor, right_t: torch.Tensor) -> torch.Tensor:
+    # [3,H,W] + [3,H,W] -> [3,H,2W]
+    return torch.cat([left_t, right_t], dim=2)
 
 def parse_timecode(s: str | None) -> float | None:
     """
@@ -560,9 +744,9 @@ class SubjectDepthEMA:
             self.val = self.alpha * self.val + (1 - self.alpha) * x
         return self.val
 
-subject_depth_ema = SubjectDepthEMA(alpha=0.97)
+subject_depth_ema = SubjectDepthEMA(alpha=0.90)
 depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
-conv_ema = ConvergenceEMA(alpha=0.97)
+conv_ema = ConvergenceEMA(alpha=0.90)
 MID_GAMMA = 0.90  # 0.80–0.95 works well
 
 def frame16_to_tensor(rgb_float_01):
@@ -1014,7 +1198,7 @@ def pixel_shift_cuda(
     depth_stretch_hi=0.95,
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
-    subject_lock_strength=1.00,
+    subject_lock_strength=0.35,
     return_tensors=False,
 ):
     width = int(width)
@@ -1094,6 +1278,9 @@ def pixel_shift_cuda(
 
         # Apply final offset
         total_shift -= zero_parallax_offset
+
+    disparity_gain = 1.20
+    total_shift = total_shift * disparity_gain
 
     max_shift_px = width * max_pixel_shift_percent
     max_shift_norm = max_shift_px / half_width
@@ -1486,6 +1673,7 @@ def render_sbs_3d(
     preserve_hdr10= False,
     selected_ffmpeg_codec=None,
     crf_value=23,
+    nvenc_cq_value=23,
     use_subject_tracking=False,
     use_floating_window=False,
     max_pixel_shift_percent=0.02,
@@ -1511,13 +1699,18 @@ def render_sbs_3d(
     depth_stretch_hi=0.95,
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
-    subject_lock_strength=1.00,
+    subject_lock_strength=0.35,
     color_saturation=1.0,
     color_contrast=1.0,
     color_brightness=0.0,
     start_s=None,
     end_s=None,
     eye_mode="sbs",
+    vr180_equi_w=None,
+    vr180_equi_h=None,
+    vr180_flat_w=None,
+    vr180_flat_h=None,
+    vr180_hfov_deg=110.0,
 ):
     reset_render_state()
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
@@ -1622,9 +1815,9 @@ def render_sbs_3d(
 
         # Log just once
         if top_crop > 0 or bottom_crop > 0:
-            print(f"📏 Auto-crop detected black bars: top={top_crop}px, bottom={bottom_crop}px")
+            print(f"Auto-crop detected black bars: top={top_crop}px, bottom={bottom_crop}px")
         else:
-            print("📏 Auto-crop: No black bars detected")
+            print("Auto-crop: No black bars detected")
 
         # Apply it to first frame
         first_frame_tensor, _ = crop_black_bars_torch(first_frame_tensor, cached_crop)
@@ -1669,6 +1862,17 @@ def render_sbs_3d(
             per_eye_h = 1600
             out_width = per_eye_w * 2
             out_height = per_eye_h
+            
+        elif output_format == "VR180 Equirect (TB)":
+            # these are only placeholders; final out size comes from equi_eye_* below
+            per_eye_w = flat_eye_w if "flat_eye_w" in locals() else 1920
+            per_eye_h = flat_eye_h if "flat_eye_h" in locals() else 1080
+            out_width = int(vr180_equi_w) if vr180_equi_w else 3840
+            out_height = (int(vr180_equi_h) if vr180_equi_h else 1920) * 2
+
+        elif output_format == "VR180 Equirect (SBS)":
+            out_width = (int(vr180_equi_w) if vr180_equi_w else 3840) * 2
+            out_height = int(vr180_equi_h) if vr180_equi_h else 1920     
 
         elif output_format == "Red-Cyan Anaglyph":
             per_eye_w = resized_width
@@ -1712,6 +1916,17 @@ def render_sbs_3d(
             out_width = per_eye_w * 2
             out_height = per_eye_h
 
+        elif output_format == "VR180 Equirect (TB)":
+            # these are only placeholders; final out size comes from equi_eye_* below
+            per_eye_w = flat_eye_w if "flat_eye_w" in locals() else 1920
+            per_eye_h = flat_eye_h if "flat_eye_h" in locals() else 1080
+            out_width = int(vr180_equi_w) if vr180_equi_w else 3840
+            out_height = (int(vr180_equi_h) if vr180_equi_h else 1920) * 2
+
+        elif output_format == "VR180 Equirect (SBS)":
+            out_width = (int(vr180_equi_w) if vr180_equi_w else 3840) * 2
+            out_height = int(vr180_equi_h) if vr180_equi_h else 1920
+            
         elif output_format == "Red-Cyan Anaglyph":
             # One frame only, not SBS
             per_eye_w = resized_width
@@ -1732,26 +1947,58 @@ def render_sbs_3d(
             out_width = resized_width * 2
             out_height = resized_height
 
-    if eye_mode in ("left", "right"):
-        out_width = per_eye_w
-        out_height = per_eye_h
+    # Accept either raw values or Tk variables (e.g. DoubleVar) for VR180 params
+    vr180_equi_w = (vr180_equi_w.get() if hasattr(vr180_equi_w, "get") else vr180_equi_w)
+    vr180_equi_h = (vr180_equi_h.get() if hasattr(vr180_equi_h, "get") else vr180_equi_h)
+    vr180_flat_w = (vr180_flat_w.get() if hasattr(vr180_flat_w, "get") else vr180_flat_w)
+    vr180_flat_h = (vr180_flat_h.get() if hasattr(vr180_flat_h, "get") else vr180_flat_h)
+    vr180_hfov_deg = (vr180_hfov_deg.get() if hasattr(vr180_hfov_deg, "get") else vr180_hfov_deg)
+    
+    # VR180 uses two resolutions:
+    # - flat_eye_*: internal rectilinear render size (fast)
+    # - equi_eye_*: final per-eye equirect size (2:1)
+    vr180_enabled = output_format in ("VR180 Equirect (TB)", "VR180 Equirect (SBS)")
+
+    if vr180_enabled:
+        # per-eye equirect output size (2:1)
+        if vr180_equi_w is None or vr180_equi_h is None:
+            equi_eye_w, equi_eye_h = per_eye_w, per_eye_h
+        else:
+            equi_eye_w, equi_eye_h = int(vr180_equi_w), int(vr180_equi_h)
+
+        # internal flat working size (performance)
+        if vr180_flat_w is None or vr180_flat_h is None:
+            flat_eye_w, flat_eye_h = 1920, 1080
+        else:
+            flat_eye_w, flat_eye_h = int(vr180_flat_w), int(vr180_flat_h)
+    else:
+        equi_eye_w = per_eye_w
+        equi_eye_h = per_eye_h
+        flat_eye_w = per_eye_w
+        flat_eye_h = per_eye_h
+
+
 
     # --- invariants (fixed for the whole render) ---
     cinema_aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16/9)
     single_eye = eye_mode in ("left", "right")
 
     # Fixed per-eye resize target used for every frame:
-    if not preserve_original_aspect:
-        eye_w = per_eye_w
-        eye_h = int(per_eye_w / cinema_aspect_ratio)
-        if eye_h % 2 != 0:
-            eye_h += 1
+    if vr180_enabled:
+        eye_w = flat_eye_w
+        eye_h = flat_eye_h
     else:
-        eye_w = per_eye_w
-        eye_h = per_eye_h
+        if not preserve_original_aspect:
+            eye_w = per_eye_w
+            eye_h = int(per_eye_w / cinema_aspect_ratio)
+            if eye_h % 2 != 0:
+                eye_h += 1
+        else:
+            eye_w = per_eye_w
+            eye_h = per_eye_h
 
-    # Floating window should always operate on per-eye width
-    width_for_bars = per_eye_w
+    # Floating window should operate on the internal working width
+    width_for_bars = eye_w
 
     # DOF / Color grading flags don’t change during render
     need_dof   = (dof_strength > 0.0)
@@ -1763,6 +2010,25 @@ def render_sbs_3d(
 
     ffmpeg_proc = None
     out = None
+
+
+    # Force single-eye output size for non-VR180 left/right renders
+    if single_eye and not vr180_enabled:
+        out_width = int(per_eye_w)
+        out_height = int(per_eye_h if preserve_original_aspect else eye_h)
+
+    # --- FORCE final output size for VR180 so FFmpeg matches the frames we write ---
+    if vr180_enabled:
+        if eye_mode in ("left", "right"):
+            out_width  = int(equi_eye_w)
+            out_height = int(equi_eye_h)
+        else:
+            if output_format == "VR180 Equirect (TB)":
+                out_width  = int(equi_eye_w)
+                out_height = int(equi_eye_h) * 2
+            elif output_format == "VR180 Equirect (SBS)":
+                out_width  = int(equi_eye_w) * 2
+                out_height = int(equi_eye_h)
 
     if use_ffmpeg:
         ffmpeg_cmd = [
@@ -1804,6 +2070,8 @@ def render_sbs_3d(
                     "-x265-params",
                     "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
                 ]
+            elif selected_ffmpeg_codec in {"h264_amf", "hevc_amf", "av1_amf"}:
+                ffmpeg_cmd += ["-quality", "quality", "-rc", "cqp", "-qp_i", str(crf_value), "-qp_p", str(crf_value)]
             else:
                 ffmpeg_cmd += ["-preset","slow","-crf", str(crf_value)]
 
@@ -1818,6 +2086,14 @@ def render_sbs_3d(
                     "-b:v","0",
                     "-pix_fmt","yuv420p",
                 ]
+            elif selected_ffmpeg_codec in {"h264_amf", "hevc_amf", "av1_amf"}:
+                ffmpeg_cmd += [
+                    "-quality", "quality",
+                    "-rc", "cqp",
+                    "-qp_i", str(crf_value),
+                    "-qp_p", str(crf_value),
+                    "-pix_fmt","yuv420p",
+                ]
             else:
                 ffmpeg_cmd += [
                     "-preset","slow",
@@ -1826,6 +2102,10 @@ def render_sbs_3d(
                 ]
 
         ffmpeg_cmd.append(output_path)
+        print("[OUT]", "format=", output_format, "eye_mode=", eye_mode,
+              "out=", out_width, out_height,
+              "equi_eye=", equi_eye_w, equi_eye_h,
+              "flat_eye=", flat_eye_w, flat_eye_h)
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 
 
@@ -1852,10 +2132,26 @@ def render_sbs_3d(
     total_frames = clip_total_frames if clip_total_frames > 0 else total_frames_full
     zero_parallax_offset = 0.0
     
+    # --- VR180 grid cache (build once) ---
+    vr180_grid = None
+    vr180_valid = None
+    if vr180_enabled:
+        vr180_grid, vr180_valid = build_vr180_equirect_grid(
+            src_w=eye_w, src_h=eye_h,          # flat working size
+            out_w=equi_eye_w, out_h=equi_eye_h, # equirect per-eye size
+            src_hfov_deg=float(vr180_hfov_deg),
+        )
+    
     try:
         for idx in range(total_frames):
             if cancel_flag.is_set():
                 break
+
+            if idx > 0:
+                ret1, frame_tensor, frame = read_next_frame()
+                ret2, depth = dcap.read()
+                if not ret1 or not ret2:
+                    break
 
             # ⏸ pause handling (must be inside the loop so idx is defined)
             while suspend_flag.is_set():
@@ -1879,11 +2175,6 @@ def render_sbs_3d(
                     progress_label.update()
 
             if cancel_flag.is_set():
-                break
-
-            ret1, frame_tensor, frame = read_next_frame()
-            ret2, depth = dcap.read()
-            if not ret1 or not ret2:
                 break
 
             depth_tensor = depth_to_tensor(depth)
@@ -1955,10 +2246,7 @@ def render_sbs_3d(
             fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
             # dynamic IPD scale
-            try:
-                dyn_scale = compute_dynamic_parallax_scale(depth_tensor, min_scale=0.90, max_scale=1.15)
-            except Exception:
-                dyn_scale = 1.0
+            dyn_scale = 1.0
             fg *= dyn_scale; mg *= dyn_scale; bg *= dyn_scale
 
             if (blank_offset + idx) in blank_frames:
@@ -1971,58 +2259,41 @@ def render_sbs_3d(
                     left_frame = frame
                     right_frame = frame
             else:
-                if ipd_factor == 0.0:
-                    left_frame, right_frame = pixel_shift_cuda(
-                        frame_tensor, depth_tensor, eye_w, eye_h,
-                        fg, mg, bg,
-                        blur_ksize=blur_ksize,
-                        feather_strength=feather_strength,
-                        use_subject_tracking=use_subject_tracking,
-                        enable_floating_window=use_floating_window,
-                        return_shift_map=False,
-                        max_pixel_shift_percent=max_pixel_shift_percent,
-                        zero_parallax_strength=zero_parallax_strength,
-                        enable_edge_masking=enable_edge_masking,
-                        enable_feathering=enable_feathering,
-                        dof_strength=dof_strength,
-                        convergence_strength=convergence_strength,
-                        enable_dynamic_convergence=enable_dynamic_convergence,
-                        depth_pop_gamma=0.85,
-                        depth_pop_mid=0.50,
-                        depth_stretch_lo=0.05,
-                        depth_stretch_hi=0.95,
-                        fg_pop_multiplier=1.20,
-                        bg_push_multiplier=1.10,
-                        subject_lock_strength=1.00,
-                        return_tensors=True,
-                    )
-                else:
-                    fg *= ipd_factor; mg *= ipd_factor; bg *= ipd_factor
-                    left_frame, right_frame = pixel_shift_cuda(
-                        frame_tensor, depth_tensor, eye_w, eye_h,
-                        fg, mg, bg,
-                        blur_ksize=blur_ksize,
-                        feather_strength=feather_strength,
-                        use_subject_tracking=use_subject_tracking,
-                        enable_floating_window=use_floating_window,
-                        return_shift_map=False,
-                        max_pixel_shift_percent=max_pixel_shift_percent,
-                        zero_parallax_strength=zero_parallax_strength,
-                        enable_edge_masking=enable_edge_masking,
-                        enable_feathering=enable_feathering,
-                        dof_strength=dof_strength,
-                        convergence_strength=convergence_strength,
-                        enable_dynamic_convergence=enable_dynamic_convergence,
-                        depth_pop_gamma=0.85,
-                        depth_pop_mid=0.50,
-                        depth_stretch_lo=0.05,
-                        depth_stretch_hi=0.95,
-                        fg_pop_multiplier=1.20,
-                        bg_push_multiplier=1.10,
-                        subject_lock_strength=1.00,
-                        return_tensors=True,
-                    )
+                fg_run, mg_run, bg_run = fg, mg, bg
+                if ipd_factor != 0.0:
+                    fg_run *= ipd_factor
+                    mg_run *= ipd_factor
+                    bg_run *= ipd_factor
 
+                left_frame, right_frame = pixel_shift_cuda(
+                    frame_tensor,
+                    depth_tensor,
+                    eye_w,
+                    eye_h,
+                    fg_run,
+                    mg_run,
+                    bg_run,
+                    blur_ksize=blur_ksize,
+                    feather_strength=feather_strength,
+                    use_subject_tracking=use_subject_tracking,
+                    enable_floating_window=use_floating_window,
+                    return_shift_map=False,
+                    max_pixel_shift_percent=max_pixel_shift_percent,
+                    zero_parallax_strength=zero_parallax_strength,
+                    enable_edge_masking=enable_edge_masking,
+                    enable_feathering=enable_feathering,
+                    dof_strength=dof_strength,
+                    convergence_strength=convergence_strength,
+                    enable_dynamic_convergence=enable_dynamic_convergence,
+                    depth_pop_gamma=depth_pop_gamma,
+                    depth_pop_mid=depth_pop_mid,
+                    depth_stretch_lo=depth_stretch_lo,
+                    depth_stretch_hi=depth_stretch_hi,
+                    fg_pop_multiplier=fg_pop_multiplier,
+                    bg_push_multiplier=bg_push_multiplier,
+                    subject_lock_strength=subject_lock_strength,
+                    return_tensors=True,
+                )
                 
                 candidate_focal = estimate_subject_depth(depth_tensor)  # 0..1
                 motion_metric   = compute_motion_metric(prev_depth_tensor, depth_tensor)
@@ -2116,8 +2387,8 @@ def render_sbs_3d(
 
                     parallax_delta = min(parallax_delta, 0.12)
 
-                    target_width = int(per_eye_w * parallax_delta)
-                    max_bar_px   = int(per_eye_w * DFW_MAX_BAR_FRAC)
+                    target_width = int(width_for_bars * parallax_delta)
+                    max_bar_px   = int(width_for_bars * DFW_MAX_BAR_FRAC)
                     target_width = max(0, min(target_width, max_bar_px))
 
                     dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
@@ -2134,6 +2405,12 @@ def render_sbs_3d(
             if preserve_hdr10 and not use_ffmpeg:
                 raise RuntimeError("HDR10 output requires FFmpeg. OpenCV VideoWriter is SDR-only in this pipeline.")
 
+            if not preserve_hdr10:
+                if torch.is_tensor(left_frame):
+                    left_frame = tensor_to_frame(left_frame)
+                if torch.is_tensor(right_frame):
+                    right_frame = tensor_to_frame(right_frame)
+                    
             # sharpen & pack
             if preserve_hdr10:
                 # left_frame/right_frame are torch tensors [3,H,W] RGB float 0..1
@@ -2142,14 +2419,18 @@ def render_sbs_3d(
                 left_t  = tensor_apply_sharpen(left_frame,  sharpness_factor)
                 right_t = tensor_apply_sharpen(right_frame, sharpness_factor)
 
-                # 2) Pack/resize in tensor space to match the exact per-eye target
-                # For HDR you should not use cv2. Keep tensors.
-                if output_format == "Half-SBS":
-                    # Half-SBS means each eye is half width, same height
+                # 2) Size handling before final packing
+                if vr180_enabled:
+                    # Keep at FLAT working res (eye_w x eye_h) for projection step
+                    # If anything drifted, enforce it:
+                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                    right_t = F.interpolate(right_t.unsqueeze(0), size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
+
+                elif output_format == "Half-SBS":
                     left_t  = F.interpolate(left_t.unsqueeze(0),  size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
                     right_t = F.interpolate(right_t.unsqueeze(0), size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
+
                 else:
-                    # Full-SBS, VR, Anaglyph, Passive: keep per-eye sizing consistent
                     left_t  = tensor_pad_to_aspect(left_t,  per_eye_w, per_eye_h)
                     right_t = tensor_pad_to_aspect(right_t, per_eye_w, per_eye_h)
 
@@ -2164,14 +2445,24 @@ def render_sbs_3d(
                         fade=DFW_USE_FADE, solid_black=(not DFW_USE_FADE)
                     )
 
+                # 3.5) VR180 projection (flat -> equirect per eye)
+                if vr180_enabled:
+                    left_t  = warp_eye_to_vr180_equirect(left_t,  vr180_grid, vr180_valid)
+                    right_t = warp_eye_to_vr180_equirect(right_t, vr180_grid, vr180_valid)
+                    
                 # 4) Final pack as tensor
                 if eye_mode == "left":
                     final_tensor = left_t
                 elif eye_mode == "right":
                     final_tensor = right_t
                 else:
-                    # SBS tensor pack (RGB)
-                    final_tensor = torch.cat([left_t, right_t], dim=2)  # concat width
+                    if output_format == "VR180 Equirect (TB)":
+                        final_tensor = pack_stereo_tb(left_t, right_t)
+                    elif output_format == "VR180 Equirect (SBS)":
+                        final_tensor = pack_stereo_sbs(left_t, right_t)
+                    else:
+                        final_tensor = torch.cat([left_t, right_t], dim=2)  # your existing SBS
+
 
                 # Optional: if you really need Passive Interlaced in HDR, do it in tensor space
                 if (eye_mode == "sbs") and (output_format == "Passive Interlaced"):
@@ -2185,21 +2476,26 @@ def render_sbs_3d(
                     final_tensor = inter
 
             else:
-                # SDR numpy path, keep your existing code
+                # SDR numpy path
                 left_sharp  = apply_sharpening(left_frame, sharpness_factor)
                 right_sharp = apply_sharpening(right_frame, sharpness_factor)
 
-                if output_format == "Full-SBS":
-                    left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
-                    right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-                elif output_format == "Half-SBS":
-                    left_out  = cv2.resize(left_sharp,  (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-                    right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                if vr180_enabled:
+                    # always flat working size for projection
+                    left_out  = cv2.resize(left_sharp,  (eye_w, eye_h), interpolation=cv2.INTER_AREA)
+                    right_out = cv2.resize(right_sharp, (eye_w, eye_h), interpolation=cv2.INTER_AREA)
                 else:
-                    left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
-                    right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+                    if output_format == "Full-SBS":
+                        left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
+                        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+                    elif output_format == "Half-SBS":
+                        left_out  = cv2.resize(left_sharp,  (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                        right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
+                        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
 
-                # Dynamic Floating Window stays the same for SDR (your existing apply_side_mask calls)
+                # Dynamic Floating Window stays the same for SDR
                 if dfw_apply:
                     if DFW_USE_FADE:
                         left_out  = apply_side_mask(left_out,  side=dfw_side, width=dfw_width, fade=True,  solid_black=False)
@@ -2209,12 +2505,37 @@ def render_sbs_3d(
                         right_out = apply_side_mask(right_out, side=dfw_side, width=dfw_width, fade=False, solid_black=True)
 
 
-                if eye_mode == "left":
-                    final = left_out
-                elif eye_mode == "right":
-                    final = right_out
+                # Decide output in SDR path
+                if vr180_enabled:
+                    # project flat -> equirect and pack, and set final
+                    left_t  = frame_to_tensor(left_out)
+                    right_t = frame_to_tensor(right_out)
+
+                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                    right_t = F.interpolate(right_t.unsqueeze(0), size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
+
+                    left_t  = warp_eye_to_vr180_equirect(left_t,  vr180_grid, vr180_valid)
+                    right_t = warp_eye_to_vr180_equirect(right_t, vr180_grid, vr180_valid)
+
+                    if eye_mode == "left":
+                        final_t = left_t
+                    elif eye_mode == "right":
+                        final_t = right_t
+                    else:
+                        if output_format == "VR180 Equirect (TB)":
+                            final_t = pack_stereo_tb(left_t, right_t)
+                        else:
+                            final_t = pack_stereo_sbs(left_t, right_t)
+
+                    final = tensor_to_frame(final_t)
+
                 else:
-                    final = format_3d_output(left_out, right_out, output_format)          
+                    if eye_mode == "left":
+                        final = left_out
+                    elif eye_mode == "right":
+                        final = right_out
+                    else:
+                        final = format_3d_output(left_out, right_out, output_format)
 
             # write frame
             if use_ffmpeg:
@@ -2241,7 +2562,7 @@ def render_sbs_3d(
                     break
                
             # progress / fps
-            percent = (idx / max(total_frames, 1)) * 100.0
+            percent = ((idx + 1) / max(total_frames, 1)) * 100.0
             elapsed = time.time() - global_session_start_time
             elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
 
@@ -2256,7 +2577,7 @@ def render_sbs_3d(
             if progress:
                 progress["value"] = percent
                 progress.update()
-            remaining_frames = total_frames - idx
+            remaining_frames = total_frames - (idx + 1)
             eta = remaining_frames / avg_fps if avg_fps > 0 else 0
             eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
 
@@ -2474,8 +2795,6 @@ def render_sbs_3d_image(
     eye_w = per_eye_w
     eye_h = per_eye_h
 
-    single_eye = eye_mode in ("left", "right")
-
     # Floating window math should always use per-eye width (VR, SBS, single-eye all consistent)
     width_for_bars = per_eye_w
 
@@ -2682,8 +3001,8 @@ def render_sbs_3d_image(
             )
             parallax_delta = min(parallax_delta, 0.12)
 
-            target_width = int(per_eye_w * parallax_delta)
-            max_bar_px = int(per_eye_w * DFW_MAX_BAR_FRAC)
+            target_width = int(width_for_bars * parallax_delta)
+            max_bar_px = int(width_for_bars * DFW_MAX_BAR_FRAC)
             target_width = max(0, min(target_width, max_bar_px))
 
             dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
@@ -2846,6 +3165,7 @@ def process_video(
     preserve_hdr10,
     selected_ffmpeg_codec,
     crf_value,
+    nvenc_cq_value,
     use_subject_tracking,
     use_floating_window,
     max_pixel_shift,
@@ -2875,6 +3195,14 @@ def process_video(
     eye_mode="sbs",
     output_override=None,
     keep_original_audio=False,
+    vr180_equi_preset=None,
+    vr180_flat_preset=None,
+    vr180_hfov_deg=None,
+    vr180_equi_w_var=None,
+    vr180_equi_h_var=None,
+    vr180_flat_w_var=None,
+    vr180_flat_h_var=None,
+    vr180_hfov_deg_var=None,
 ):
 
 
@@ -2890,16 +3218,49 @@ def process_video(
         )
         return
    
+    codec_key = selected_ffmpeg_codec.get() if hasattr(selected_ffmpeg_codec, "get") else selected_ffmpeg_codec
+    codec_val = FFMPEG_CODEC_MAP.get(codec_key, "libx264")
+
+    hdr_on = preserve_hdr10.get() if hasattr(preserve_hdr10, "get") else bool(preserve_hdr10)
     
-    cap = cv2.VideoCapture(input_path)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
+    width, height, fps = get_video_info_safe(input_path)
+
+    if width <= 0 or height <= 0:
+        messagebox.showerror("Error", "Unable to retrieve video dimensions from the input video.")
+        return
 
     if fps <= 0:
         messagebox.showerror("Error", "Unable to retrieve FPS from the input video.")
-        return
+        return    
+
+    def _get(v, default=None):
+        try:
+            if v is None:
+                return default
+            if hasattr(v, "get"):
+                v = v.get()
+            if v is None:
+                return default
+            if isinstance(v, str) and not v.strip():
+                return default
+            return v
+        except Exception:
+            return default
+
+    def _get_int(v, default):
+        v = _get(v, None)
+        try:
+            return int(v)
+        except Exception:
+            return int(default)
+
+    def _get_float(v, default):
+        v = _get(v, None)
+        try:
+            return float(v)
+        except Exception:
+            return float(default)
+
 
     # 🧠 Save original dimensions globally
     original_video_width = width
@@ -2909,7 +3270,40 @@ def process_video(
     aspect_ratio = aspect_ratios.get(selected_aspect_ratio.get(), 16 / 9)
     format_selected = output_format.get()
 
-    # 🧩 Calculate output dimensions based on selected format
+    # eye mode comes from process_video() argument
+    if hasattr(eye_mode, "get"):
+        eye_mode = eye_mode.get()
+    eye_mode = (eye_mode or "sbs").strip().lower()
+    if eye_mode == "both":
+        eye_mode = "sbs"
+
+    # VR180 manual entries
+    equi_w = equi_h = None
+    flat_w = flat_h = None
+    hfov   = 110.0
+
+    if format_selected in ("VR180 Equirect (TB)", "VR180 Equirect (SBS)"):
+        equi_w = _get_int(vr180_equi_w_var, 3840)
+        equi_h = _get_int(vr180_equi_h_var, 1920)
+        flat_w = _get_int(vr180_flat_w_var, 1920)
+        flat_h = _get_int(vr180_flat_h_var, 1080)
+        hfov   = _get_float(vr180_hfov_deg_var, 110.0)
+
+        # clamp some sane limits
+        hfov = max(60.0, min(140.0, hfov))
+
+        # enforce 2:1 per-eye for equirect
+        if equi_w < 256 or equi_h < 128:
+            equi_w, equi_h = 3840, 1920
+        if abs((equi_w / max(equi_h, 1)) - 2.0) > 0.05:
+            # auto-correct height to keep 2:1
+            equi_h = max(1, equi_w // 2)
+
+        # keep flat working size reasonable
+        flat_w = max(320, flat_w)
+        flat_h = max(240, flat_h)
+
+    # Calculate output dimensions based on selected format
     if preserve_original_aspect.get():
         output_width = width
         output_height = height
@@ -2923,13 +3317,21 @@ def process_video(
             output_height = height
 
         elif format_selected == "Passive Interlaced":
-            # IMPORTANT: same size as original frame (not SBS!)
+            # same size as original frame (not SBS)
             output_width = width
             output_height = height
 
         elif format_selected == "VR":
             output_width = 4096
             output_height = int(output_width / aspect_ratio)
+
+        elif format_selected == "VR180 Equirect (TB)":
+            output_width = int(equi_w)
+            output_height = int(equi_h) * 2
+
+        elif format_selected == "VR180 Equirect (SBS)":
+            output_width = int(equi_w) * 2
+            output_height = int(equi_h)
 
         else:
             output_width = width
@@ -2944,7 +3346,15 @@ def process_video(
     final_render_path = None
 
     # 🔥 Start render process
-    if format_selected in ["Full-SBS", "Half-SBS", "VR", "Red-Cyan Anaglyph", "Passive Interlaced"]:
+    if format_selected in [
+        "Full-SBS",
+        "Half-SBS",
+        "VR",
+        "VR180 Equirect (TB)",
+        "VR180 Equirect (SBS)",
+        "Red-Cyan Anaglyph",
+        "Passive Interlaced",
+    ]:
         final_render_path = render_sbs_3d(
             input_path,
             depth_path,
@@ -2963,9 +3373,10 @@ def process_video(
             feather_strength=feather_strength.get(),
             blur_ksize=blur_ksize.get(),
             use_ffmpeg=use_ffmpeg.get(),
-            preserve_hdr10=bool(preserve_hdr10),
-            selected_ffmpeg_codec=FFMPEG_CODEC_MAP[selected_ffmpeg_codec.get()],
+            preserve_hdr10=bool(hdr_on),
+            selected_ffmpeg_codec=codec_val,
             crf_value=crf_value.get(),
+            nvenc_cq_value=(nvenc_cq_value.get() if hasattr(nvenc_cq_value, "get") else nvenc_cq_value),
             use_subject_tracking=use_subject_tracking.get(),
             use_floating_window=use_floating_window.get(),
             max_pixel_shift_percent=max_pixel_shift.get(),
@@ -2999,6 +3410,11 @@ def process_video(
             start_s=start_s,
             end_s=end_s,
             eye_mode=eye_mode,
+            vr180_equi_w=equi_w,
+            vr180_equi_h=equi_h,
+            vr180_flat_w=flat_w,
+            vr180_flat_h=flat_h,
+            vr180_hfov_deg=hfov,
         )
 
     if not final_render_path:
@@ -3063,20 +3479,22 @@ def render_with_ffmpeg(
         "-i", "-",
         "-an",
         "-c:v", codec_name,
-        "-preset", preset,
         "-pix_fmt", "yuv420p",   # SDR default; change upstream if you do HDR
         output_path
     ]
 
+
     # Codec-dependent quality flags
     if codec_name.startswith("libx"):
-        # Insert CRF just before -pix_fmt to keep ordering tidy
         ix = ffmpeg_cmd.index("-pix_fmt")
-        ffmpeg_cmd[ix:ix] = ["-crf", str(crf)]
+        ffmpeg_cmd[ix:ix] = ["-preset", preset, "-crf", str(crf)]
     elif "nvenc" in codec_name:
         ix = ffmpeg_cmd.index("-pix_fmt")
-        ffmpeg_cmd[ix:ix] = ["-cq", str(nvenc_cq)]
+        ffmpeg_cmd[ix:ix] = ["-preset", preset, "-cq", str(nvenc_cq)]
         ffmpeg_cmd += ["-b:v", "0"]  # constant-quality style for NVENC
+    elif codec_name in {"h264_amf", "hevc_amf", "av1_amf"}:
+        ix = ffmpeg_cmd.index("-pix_fmt")
+        ffmpeg_cmd[ix:ix] = ["-quality", "quality", "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
 
     print(f"🚀 Launching FFmpeg render: {codec_name} | CRF: {crf} | NVENC CQ: {nvenc_cq} ➜ {output_path}")
 
