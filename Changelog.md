@@ -1,164 +1,145 @@
-# VisionDepth3D v3.8.2 - Changelog 
+# VisionDepth3D v3.9 - Changelog
 
 ---
 
-> This release delivers major performance improvements to both live 3D preview and offline rendering, alongside new depth engines, stability fixes, and encoding reliability upgrades.
+> This release introduces major upgrades to VisionDepth3D’s model loading, depth workflow,
+  VR180 output, and pipeline stability, with improved Hugging Face integration, ONNX support, 
+  and overall reliability across the app.
+
+---
+## 3D Video Generator
+
+### VR180 Equirect Output (Initial Release)
+
+VisionDepth3D now supports native VR180 equirect stereo output.
+
+#### New Output Modes
+
+- Added **VR180 Equirect (Top-Bottom)**
+- Added **VR180 Equirect (Side-by-Side)**
+
+#### Dual-Resolution Workflow
+
+Introduced a two-stage VR180 resolution system:
+
+- **Flat Working Resolution (Per Eye)** – Internal render resolution used for stereo warping and depth-based effects.
+- **Equirect Per-Eye Resolution (2:1)** – Final projected resolution used for VR headset playback.
+
+This allows users to independently balance performance and final visual sharpness.
+
+#### VR180 Controls
+
+- Added adjustable **HFOV (60°–140°)**
+- Added manual **Equirect WxH** configuration
+- Added manual **Flat Working WxH** configuration
+- Preset-ready structure for common VR180 resolutions
+
+#### SDR & HDR Support
+
+- VR180 output works in both **SDR** and **HDR10** rendering pipelines
+- HDR10 VR180 maintains correct 10-bit encoding and color metadata through FFmpeg
+
+#### Projection & Stereo Packing
+
+- Proper hemispherical projection per eye
+- Correct stereo packing for both TB and SBS modes
+- Consistent output sizing across FFmpeg and OpenCV rendering paths
+
+#### VR Player Naming Compatibility
+
+- Updated auto-naming for VR180 outputs to align with VR players:
+  - `_SBS_180`
+  - `_TB_180`
+
+Ensures correct automatic detection in players such as DeoVR.
 
 ---
 
-## 1) Depth Estimation Tab
+## FPS/Upscale Enhancement (formerly FrameTools)
 
-### UI Depth Tab Labelling
+### Renamed & Reworked
 
-- Renamed the Depth Estimation tab to **Depth Engine** to better reflect multi-backend depth processing.
-- Reduced console warning spam related to sequential pipeline usage by suppressing the specific Hugging Face warning message.
+- Renamed **FrameTools** to **FPS/Upscale Enhancement** for clearer purpose and usability
 
-### Depth Anything 3 (DA3) Adapter Integration
+### UI Improvements
 
-- Added native Depth Anything 3 backend support via a dedicated DA3 adapter (separate from Hugging Face pipeline models).
-- Implemented DA3 model loading through Hugging Face `from_pretrained` with VD3D cache routing into the `weights/` directory.
-- Added DA3 model entries to the model selector (DA3-SMALL / BASE / LARGE / GIANT and DA3METRIC variants).
-- Wired DA3 inference into the unified depth pipeline so it works with both image and video depth workflows.
-- Mapped the UI “Inference Resolution” dropdown into DA3’s `process_res` logic (single max-side target resolution), with a video-friendly cap applied to prevent excessive internal upscaling.
-- Normalized DA3 depth outputs into a consistent 0–1 range to match existing VD3D depth handling and export logic.
-- Depth polarity handling for DA3 metric models remains user-controlled via the “Invert Depth” toggle.
-- Improved DA3 batching compatibility by supporting list-of-PIL inference and ensuring returned depth frame counts match input batch size (with a per-image fallback if needed).
-- Added a DA3 warm-up pass during model load to reduce first-frame hitching and confirm the backend is initialized correctly.
-
-### Video Depth Anything (VDA) Adapter Integration
-
-- Added native **Video Depth Anything** backend support via a dedicated VDA adapter for sequence-based video depth inference.
-- Implemented VDA model loading directly from Hugging Face repositories (e.g. `depth-anything/Video-Depth-Anything-*`) with automatic checkpoint download and caching.
-- Integrated VDA into the unified depth pipeline so it can be selected and used alongside DA3, ONNX, and Hugging Face depth models.
-- Enabled sequence-aware inference for video input, allowing VDA to process temporal frame batches instead of independent per-frame depth estimation.
-- Added configurable target FPS handling for VDA to reduce inference load on high-FPS sources by running depth inference at a lower temporal rate.
-- Ensured VDA output depth frames are normalized into VD3D’s standard 0–1 depth range for compatibility with existing export, blending, and 3D rendering logic.
-- Wired VDA output into the same post-processing, temporal normalization, and letterbox-handling pipeline used by other depth engines.
-- Added VDA model warm-up during load to verify backend initialization and reduce first-inference latency.
-- Depth polarity for VDA models remains user-controlled via the existing “Invert Depth” toggle for consistency across all depth engines.
-
-### ONNX Model Fixes & Stability Improvements
-
-- Fixed Distill-Any-Depth ONNX models (Small / Base / Large) failing to run due to internal tensor shape mismatch.
-- Distill-Any-Depth ONNX models now correctly use a fixed 518×518 inference size, matching their exported positional embedding grid.
-- Added automatic detection for Distill-Any-Depth ONNX models and enforced fixed input resolution internally.
-- Updated ONNX image preprocessing to preserve aspect ratio using padding instead of stretching, improving depth stability and quality on widescreen content.
-- ONNX warm-up now succeeds reliably for Distill-Any-Depth models without broadcast or Add-node errors.
-- Enabled safe ONNX Runtime graph optimizations to reduce unnecessary memory copies and warning spam.
-- Added clearer ONNX model identification output in the console so users can see exactly which ONNX model is being loaded.
-
-### Model List Consistency
-
-- Fixed missing Distill-Any-Depth ONNX models in the depth inference script while still being listed in the UI.
-- Ensured ONNX model availability in the UI now correctly matches backend support.
-
-### Video Encoding / Codec Handling
-
-- Fixed CPU and GPU FFmpeg codecs (libx264, libx265, NVENC, AMF, QSV) being incorrectly routed through OpenCV’s VideoWriter.
-- Non-OpenCV-safe codecs are now encoded via FFmpeg piping, preventing OpenH264 DLL errors and codec initialization failures.
-- OpenCV VideoWriter is now limited to compatible FourCC codecs (mp4v, XVID, DIVX) with automatic fallback handling.
-
-### Depth Inference Performance & Pipeline Optimizations
-
-- Reduced redundant image resizing during video depth inference to avoid double-scaling overhead.
-- Consolidated resize to a single pass per frame, reducing CPU overhead.
-- Enabled CUDA-optimized memory layout (`channels_last`) for Hugging Face depth models when running on GPU.
-- Improved FP16 inference handling for supported Hugging Face models to increase throughput on CUDA devices.
-- Optimized ONNX Runtime session configuration using safe graph optimizations and memory arena usage.
-- Improved batch handling logic to reduce per-frame overhead during video processing.
-- FFmpeg piping is now preferred by default for video output, significantly reducing encoding bottlenecks.
-
-### Letterbox & Black Bar Handling (Video)
-
-- Fixed letterbox (black bar) regions incorrectly contributing to depth inference.
-- Depth estimation now consistently ignores top and bottom letterbox bars instead of assigning artificial depth.
-- Improved letterbox detection with multi-frame fallback probing and stabilization to prevent flicker.
-- Letterbox regions are now filled with a neutral depth value, preventing pop-out artifacts and white banding in 3D renders.
+- Redesigned the FPS/Upscale Enhancement tab layout for a cleaner, more intuitive workflow
+- Improved spacing, grouping, and visual hierarchy for faster setup and easier readability
+- Introduced Pause, Resume, and Stop buttons
 
 ---
 
-## 2) 3D Video Generator Tab
+### Performance & Stability Improvements
 
-### 3D Rendering Pipeline Performance & Stability
+- Fixed the threaded RIFE + ESRGAN processing pipeline that previously failed to run correctly
+- Matched threaded pipeline behavior to the merged pipeline (native-resolution RIFE with final-stage upscaling)
+- Removed unnecessary resizing and duplicate processing that caused slowdowns and memory spikes
+- Improved frame queue handling for smoother throughput and better GPU utilization
+- Fixed progress reporting and ETA calculation to prevent incorrect values and UI update spam
+- Added safe, bounded frame loading with cancellation support to prevent deadlocks and excessive RAM usage
+- Stopped swallowing queue exceptions by handling `Full` and `Empty` normally and surfacing unexpected errors for easier debugging
+- Prevented the writer reordering buffer from growing indefinitely if a frame ID goes missing by adding a skip/limit safeguard
+- Improved FFmpeg writer robustness by validating frame format/size before writing, reducing crashy edge cases
 
-- Implemented full render-state reset at the start of each video and image render to prevent temporal drift and accumulated smoothing artifacts between sessions.
-- Reset internal pixel shift EMA buffers per render, ensuring clean disparity initialization and improved real-time stability.
-- Reset floating window convergence trackers and easing states to eliminate carry-over offsets and unintended masking behavior across renders.
-- Reinitialized depth percentile normalization per render, allowing depth range calibration to adapt cleanly to each clip for more consistent parallax response.
-- Improved convergence and floating window behavior during the first frames of each render, eliminating “settling” artifacts and jitter.
-- Resulted in significantly smoother live 3D playback and notable FPS improvements during real-time rendering.
+---
 
-### Output Geometry & Eye Mode Fixes
+### Additional Pipeline Improvements (Post-Fix Enhancements)
 
-- Fixed output sizing logic for VR, Passive Interlaced, and single-eye export modes.
-- Ensured per-eye resolution handling remains consistent across all 3D formats.
-- Corrected floating window width calculations to always operate on per-eye dimensions instead of SBS frame width.
-- Added safety resizing to guarantee encoded frames always match target output resolution.
+- Implemented dynamic model loading system using Hugging Face repositories
+- Removed requirement to ship large model weights with the application
+- Models are now downloaded on demand and cached to the local `weights/` folder
+- Ensured all runtime model loading resolves correctly regardless of install method
+- Refactored model initialization to prevent duplicate loading and improve startup reliability
+- Removed redundant frame normalization passes that caused unnecessary CPU overhead
+- Simplified threaded pipeline frame flow to reduce queue overhead and unnecessary data copying
 
-### Preview GUI
+---
 
-- Preview GUI now supports an optional Convergence Crosshairs overlay for faster convergence tuning.
+### Performance Insight
 
-### UI Label Consistency
+- Identified input resolution as a primary performance bottleneck during RIFE + ESRGAN processing
+- Lowering input resolution significantly improves processing speed due to reduced pixel workload
+- Input Resolution % setting now serves as a key control for balancing performance vs quality
 
-- Fixed mismatched labels for Foreground Shift and Background Shift.
-- Sliders now correctly match their tooltips.
+---
 
-### Encoding Settings Layout
+### Speed Improvements
 
-- Reworked the Encoding Settings dialog layout for improved spacing and readability.
-- Grouped checkboxes, dropdowns, and quality controls into clearer rows.
+- Additional optimizations reduce CPU overhead and improve GPU utilization during processing
 
-### Processing Options
+---
 
-- Moved Clip Range (start/end time) controls into the Processing Options dialog.
-- Clip range settings respect the selected UI language and include translated labels and tooltips.
+## Preview GUI
 
-### Menu Fixes, Presets, and Updater Integration
+### Stability Fix
 
-- Help → Check Updates now launches the bundled **VisionDepth3D Updater** window (`VisionDepth3D_Updater.exe`) to download and install the latest official Windows release.
-- Added a confirmation prompt before launching the updater, since VisionDepth3D closes itself to allow safe updating.
-- Fixed **File → Load Preset** failing from the dropdown due to the preset apply function not being available in scope.
-- Fixed **File → Output Path** dropdown not opening the save dialog while the hotkey worked, by routing the menu action through the same handler used by `Ctrl+O`.
-- Removed **Save Settings** and **Load Settings** from the File menu since preset save/load already covers the same workflow and simplifies the UI.
+- Fixed issue where the Preview GUI window would not properly close in `.exe` builds
+- Ensured proper window cleanup and destruction to prevent hanging UI processes
 
-## 3) VD3D Live 3D (Real-Time Depth + SBS Pipeline)
+---
 
-### Live Depth Inference Performance Overhaul
+## Depth Engine
 
-- Implemented persistent GPU tensor staging for live frame uploads, eliminating per-frame CUDA allocations and significantly reducing memory transfer overhead.
-- Optimized live depth input preprocessing to reuse GPU buffers instead of recreating tensors each inference cycle.
-- Reduced redundant CPU to GPU conversions during live depth updates.
-- Improved FP16 autocast handling for Depth Anything V2 live inference to ensure stable mixed-precision execution on CUDA.
+- Fixed packaging for DA3 in the `.exe` build
+- Fixed `Process Video Folder` in the depth estimation pipeline
+- Fixed UI freezing during depth folder processing and restored live progress bar updates
+- Refactored depth folder and single-video processing to safely separate UI-side controls from background worker execution
+- Fixed depth pipeline argument handling for single video and folder-based processing
+- Added support for loading ONNX depth models from either local model folders or Hugging Face repositories
+- Restored ONNX-specific warm-up and inference handling for Hugging Face-hosted ONNX models
+- Hid diffusion-only controls such as `Inference Steps` and `CPU Offload Mode` unless a compatible diffusion model is selected
+- Improved Hugging Face ONNX model detection for Distill-Any-Depth and Video Depth Anything exports
+- Cleans up Letterbox.json file after rendering so no random temp file is left behind
 
-### Real-Time Pixel Shift Pipeline Optimization
+## Special Thanks
 
-- Added persistent CUDA frame buffers for the live pixel-shift SBS renderer to avoid per-frame GPU reallocations.
-- Reduced per-frame normalization overhead by using in-place GPU operations.
-- Improved handling of mixed return types from `pixel_shift_cuda` (CUDA tensors or NumPy fallback), ensuring stable live output without crashes.
-- Prevented pipeline stalls caused by repeated tensor construction and shape revalidation.
+A big thank you to **AcolyteOfHedone** for contributing fixes and technical improvements that helped strengthen this release, including AMD AMF encoder fixes, ONNX adjustments, and AMD GPU provider compatibility work.
 
-### Live Depth Update Scheduling & Stability
-
-- Implemented controlled depth refresh rate (Depth FPS) to decouple depth inference from preview frame rate for smoother live playback.
-- Improved EMA depth smoothing behavior for live mode to reduce temporal jitter while preserving responsiveness.
-- Reduced live preview hitching caused by first-frame warm-up and inference spikes.
-
-### Live Capture & Preview Improvements
-
-- Reduced capture overhead by allowing lower capture FPS without affecting SBS rendering smoothness.
-- Improved screen capture pacing using high-precision timers to prevent uneven frame delivery.
-- Improved live preview stability when mixing screen capture and GPU depth inference.
-
-### Overall Live Mode Gains
-
-- Live 3D preview performance increased by approximately 40 to 70 percent depending on GPU and inference resolution.
-- Significantly reduced stutter caused by GPU memory churn.
-- More consistent frame pacing for real-time SBS output.
+GitHub: [EvolvingProficiency](https://github.com/EvolvingProficiency)
 
 ---
 
 > **Upgrade Note**  
-> Back up your `weights/` and `presets/` folders before uninstalling v3.8.1  
+> Back up your `weights/` and `presets/` folders before uninstalling v3.8.2 
 > Then run **VisionDepth3D_Setup_Downloader** to download the official  
-> VisionDepth3D v3.8.2 Windows installer and required `.bin` files.
+> VisionDepth3D v3.9 Windows installer and required `.bin` files.
