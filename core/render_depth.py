@@ -105,8 +105,7 @@ FFMPEG_CODEC_MAP = {
 
 def is_opencv_safe_fourcc(ffmpeg_codec: str) -> bool:
     return ffmpeg_codec in ("mp4v", "XVID", "DIVX")
-
-
+    
 def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
     cmd = [
         "ffmpeg", "-y",
@@ -141,6 +140,15 @@ def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
             "-pix_fmt", "yuv420p",
         ]
 
+    elif ffmpeg_codec in ("h264_amf", "hevc_amf", "av1_amf"):
+        # AMF tuning for AMD GPUs
+        cmd += [
+            "-quality", "speed",
+            "-rc", "vbr_peak",
+            "-qvbr_quality_level", "19",
+            "-pix_fmt", "yuv420p",
+        ]
+
     else:
         # Safe default
         cmd += ["-pix_fmt", "yuv420p"]
@@ -151,12 +159,9 @@ def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,   # changed from DEVNULL so we can read errors
         bufsize=10**8,  # big buffer helps a lot for raw video piping
     )
-
-
-
 
 def request_depth_cancel():
     """
@@ -189,7 +194,10 @@ def wait_if_paused(status_label=None):
     while suspend_flag.is_set() and not cancel_requested.is_set():
         if status_label is not None:
             try:
-                status_label.config(text="⏸ Paused. Press Resume to continue.")
+                status_label.after(
+                    0,
+                    lambda: status_label.config(text="⏸ Paused. Press Resume to continue.")
+                )
             except Exception:
                 pass
         time.sleep(0.2)
@@ -255,6 +263,21 @@ _EXPECTED_WEIGHT_FILENAMES = {
 
 # --- add near the top with other imports ---
 torch_device = pick_torch_device()
+
+def find_onnx_model_dir(base_dir: str) -> str | None:
+    """
+    Return the directory containing model.onnx.
+    Checks base_dir first, then searches recursively.
+    """
+    direct = os.path.join(base_dir, "model.onnx")
+    if os.path.exists(direct):
+        return base_dir
+
+    for root, _, files in os.walk(base_dir):
+        if "model.onnx" in files:
+            return root
+
+    return None
 
 def _ensure_expected_weight_name(local_dir: str | Path) -> str:
     """
@@ -1029,20 +1052,18 @@ def load_supported_models():
         # Distill-Any-Depth
         "Distill-Any-Depth Large (xingyang1)": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (xingyang1)": "xingyang1/Distill-Any-Depth-Small-hf",
-#        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
+        
+#        "Deterministic Video Depth":   "FayeHongfeiZhang/DVD",
 #        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
-
-        # Depth Anything v2
-        # in load_supported_models()
 
         "Video Depth Anything Large": "vda:depth-anything/Video-Depth-Anything-Large",
         "Video Depth Anything Small": "vda:depth-anything/Video-Depth-Anything-Small",
-        
-        
-        "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
-        "Distill-Any-Depth Large(ONNX)": "onnx:DistillAnyDepthLarge",
-        "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
-        "Distill-Any-Depth Small(ONNX)": "onnx:DistillAnyDepthSmall",
+
+        # in load_supported_models()
+        "Video Depth Anything (ONNX)": "onnx:FuryTMP/Video-Depth-Anything-L-ONNX-512x288",
+        "Distill-Any-Depth Large(ONNX)": "onnx:FuryTMP/Distill-Any-Depth-Large-onnx",
+        "Distill-Any-Depth Base(ONNX)": "onnx:FuryTMP/Distill-Any-Depth-Base-onnx",
+        "Distill-Any-Depth Small(ONNX)": "onnx:FuryTMP/Distill-Any-Depth-Small-onnx",
 
         "DA3METRIC-LARGE": "da3:depth-anything/DA3METRIC-LARGE",
         "DA3MONO-LARGE": "da3:depth-anything/DA3MONO-LARGE",
@@ -1055,9 +1076,8 @@ def load_supported_models():
         "DA3NESTED-GIANT-LARGE":              "da3:depth-anything/DA3NESTED-GIANT-LARGE",
         "DA3NESTED-GIANT-LARGE-1.1":              "da3:depth-anything/DA3NESTED-GIANT-LARGE-1.1",
         
-        
 
-
+        # Depth Anything v2
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
@@ -1077,8 +1097,7 @@ def load_supported_models():
 
         # Other popular models
 #        "DA-2 (Haodongli)":            "haodongli/DA-2",
-#        "Bridge (Dingning)":           "Dingning/BRIDGE",
-#        "Pixel-Perfect-Depth":           "gangweix/Pixel-Perfect-Depth",
+#        "Pixel-Perfect-Depth":         "gangweix/Pixel-Perfect-Depth",
         "LBM Depth":                   "jasperai/LBM_depth",
         "DepthPro (Apple)":            "apple/DepthPro-hf",
         "ZoeDepth (NYU+KITTI)":        "Intel/zoedepth-nyu-kitti",
@@ -1089,6 +1108,7 @@ def load_supported_models():
         "MiDaS v2 (Qualcomm)":         "qualcomm/Midas-V2",
 
     }
+
 
     # ✅ auto-add local folders as “[Local] {folder}”
     for folder in os.listdir(local_model_dir):
@@ -1203,11 +1223,33 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
 
     # --- Generic ONNX prefix ---
     if isinstance(checkpoint, str) and checkpoint.startswith("onnx:"):
-        rel = checkpoint.split(":", 1)[1].strip()
-        model_dir = rel if os.path.isabs(rel) else os.path.join(local_model_dir, rel)
-        provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
-        return load_onnx_model(model_dir, device=provider)
+        spec = checkpoint.split(":", 1)[1].strip()
 
+        # Case 1: local directory path
+        if os.path.isdir(spec):
+            model_base_dir = spec
+        else:
+            # Case 2: Hugging Face repo id
+            from huggingface_hub import snapshot_download
+
+            safe_folder_name = spec.replace("/", "_")
+            cache_path = os.path.join(local_model_dir, safe_folder_name)
+
+            model_base_dir = snapshot_download(
+                repo_id=spec,
+                cache_dir=cache_path,
+                local_files_only=False,
+            )
+
+        onnx_dir = find_onnx_model_dir(model_base_dir)
+        if not onnx_dir:
+            print(f"❌ Could not find model.onnx anywhere under: {model_base_dir}")
+            return None, None
+
+        provider = "CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"
+        print(f"🧠 Resolved ONNX model directory: {onnx_dir}")
+        return load_onnx_model(onnx_dir, device=provider)
+    
     # --- Local path provided ---
     if os.path.isdir(checkpoint):
         # Local ONNX model detection
@@ -1369,7 +1411,7 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
 
     so = ort.SessionOptions()
     # Safe performance
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL  # keep safe
     # Let ORT decide threads unless you KNOW better
     so.intra_op_num_threads = 0
@@ -1428,24 +1470,26 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
 
     fixed_T = None
     try:
-        # Only really meaningful for 5D [B, T, C, H, W], but we kept the code
         if input_rank >= 2 and isinstance(input_shape[1], int) and input_rank == 5:
             fixed_T = int(input_shape[1])
     except Exception:
         fixed_T = None
 
-    # 📝 Some ONNX exports are locked to a single input size (e.g. DistillAnyDepth*)
     fixed_HW = None
     model_tag = os.path.basename(os.path.normpath(model_dir)).lower()
+    tag_norm = re.sub(r"[\s_\-]+", "", model_tag)
 
-    # 🔍 Debug: confirm which model folder name we’re matching against
-    print(f"🏷️ ONNX model_tag: {model_tag}")
+    print(f"ONNX model_tag: {model_tag}")
 
-    if "distillanydepth" in model_tag:
+    if "distillanydepth" in tag_norm:
         fixed_HW = (518, 518)
-        print(f"📐 Detected DistillAnyDepth ONNX – forcing fixed input size {fixed_HW}")
+        print(f"Detected DistillAnyDepth ONNX – forcing fixed input size {fixed_HW}")
 
-    print(f"🔎 Input shape: {input_shape} | Rank: {input_rank} | fixed_T={fixed_T} | fixed_HW={fixed_HW}")
+    if "videodepthanything" in model_tag and input_rank == 5 and fixed_T is None:
+        fixed_T = 8
+        print(f"Detected VideoDepthAnything ONNX – forcing fixed temporal length T={fixed_T}")
+
+    print(f"Input shape: {input_shape} | Rank: {input_rank} | fixed_T={fixed_T} | fixed_HW={fixed_HW}")
 
     def _prep_images(images, inference_size):
         arrs = []
@@ -1534,6 +1578,8 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider"):
 
 
 spinner_states = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"]
+
+
 def start_spinner(widget, message="Warming up model..."):
     def spin(index=0):
         if not getattr(widget, "_spinner_running", False):
@@ -1695,7 +1741,8 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         status_label_widget,
                         f"ONNX model loaded: {selected_checkpoint} (on {dev_str})"
                     )
-                )
+                )     
+                return
 
             elif is_diffusion:
                 kind = caps.get("diffusion_kind", "depth")
@@ -1999,27 +2046,48 @@ def process_image_folder(batch_size_widget, output_dir_var, inference_res_var, s
         daemon=True,
     ).start()
 
-
 def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inference_res_var, status_label, progress_bar, root, invert_var):
     output_dir = output_dir_var.get().strip()
     global pipe, pipe_type
     global global_session_start_time
     global_session_start_time = time.time()
 
-    if not output_dir:
-        def warn():
-            messagebox.showwarning("Missing Output Folder", "⚠️ Please select an output directory before processing.")
-            status_label.config(text="❌ Output directory not selected.")
-        root.after(10, warn)
-        return
+    def ui_status(text):
+        try:
+            root.after(0, lambda t=text: status_label.config(text=t))
+        except Exception:
+            pass
 
+    def ui_progress(**kwargs):
+        try:
+            root.after(0, lambda kw=kwargs: progress_bar.config(**kw))
+        except Exception:
+            pass
+
+    def ui_warn(title, text):
+        try:
+            root.after(0, lambda: messagebox.showwarning(title, text))
+        except Exception:
+            pass
+
+    def ui_error(title, text):
+        try:
+            root.after(0, lambda: messagebox.showerror(title, text))
+        except Exception:
+            pass
+
+    output_dir = output_dir_var.get().strip()
+    if not output_dir:
+        ui_warn("Missing Output Folder", "⚠️ Please select an output directory before processing.")
+        ui_status("❌ Output directory not selected.")
+        return
 
     if not os.path.exists(output_dir):
         try:
             os.makedirs(output_dir)
         except Exception as e:
-            messagebox.showerror("Folder Creation Failed", f"❌ Could not create output directory:\n{e}")
-            root.after(10, lambda: status_label.config(text="❌ Failed to create output directory."))
+            ui_error("Folder Creation Failed", f"❌ Could not create output directory:\n{e}")
+            ui_status("❌ Failed to create output directory.")
             return
 
     inference_size = parse_inference_resolution(inference_res_var.get())
@@ -2031,7 +2099,7 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
             raise ValueError
     except Exception:
         batch_size = get_dynamic_batch_size()
-        status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
+        ui_status(f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
     image_files = [
         os.path.join(folder_path, f)
@@ -2040,23 +2108,21 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
     ]
 
     if not image_files:
-        root.after(10, lambda: status_label.config(text="⚠️ No image files found."))
+        ui_status("⚠️ No image files found.")
         return
 
     total_images = len(image_files)
-    root.after(10, lambda: status_label.config(text=f"📂 Processing {total_images} images..."))
-    root.after(10, lambda: progress_bar.config(maximum=total_images, value=0))
+    ui_status(f"📂 Processing {total_images} images...")
+    ui_progress(maximum=total_images, value=0)
 
     start_time = time.time()
 
     for i in range(0, total_images, batch_size):
-        # handle pause
         wait_if_paused(status_label)
 
         if cancel_requested.is_set():
-            root.after(10, lambda: status_label.config(text="❌ Cancelled by user."))
+            ui_status("❌ Cancelled by user.")
             return
-
 
         batch_files = image_files[i:i + batch_size]
         images = []
@@ -2065,7 +2131,7 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
         for file in batch_files:
             img = Image.open(file).convert("RGB")
             original_sizes.append(img.size)
-            images.append(img)  # let the tiler/pipe handle resizing
+            images.append(img)
 
         print(f"🚀 Running batch of {len(images)} images at {inference_size}")
         predictions = _run_pipe_or_tile(images, inference_size)
@@ -2074,7 +2140,7 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
             wait_if_paused(status_label)
 
             if cancel_requested.is_set():
-                root.after(10, lambda: status_label.config(text="❌ Cancelled during batch."))
+                ui_status("❌ Cancelled during batch.")
                 return
 
             file_path = batch_files[j]
@@ -2082,52 +2148,61 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
 
             try:
                 depth_pred = prediction["predicted_depth"]
-
-                # choose your default bit depth here: 16 or 8
                 TARGET_BITS = 16
 
                 if USE_TILED_DEPTH:
-                    # tiler returns float32 ndarray
-                    out_arr = normalize_depth(depth_pred, (orig_w, orig_h), invert=invert_var.get(), bit_depth=TARGET_BITS)
+                    out_arr = normalize_depth(
+                        depth_pred,
+                        (orig_w, orig_h),
+                        invert=invert_var.get(),
+                        bit_depth=TARGET_BITS
+                    )
                     if TARGET_BITS == 16:
                         depth_image = Image.fromarray(out_arr, mode="I;16")
                     else:
                         depth_image = Image.fromarray(out_arr, mode="L")
                 else:
                     if getattr(pipe, "_is_marigold", False):
-                        # keep your existing 16-bit marigold export
                         depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
                         depth_image = depth_image.resize((orig_w, orig_h), Image.BICUBIC)
                         if invert_var.get():
                             arr = np.array(depth_image, dtype=np.uint16)
                             depth_image = Image.fromarray(65535 - arr, mode="I;16")
                     else:
-                        # generic HF/ONNX float → chosen bit depth
                         depth_f = _pred_to_np(depth_pred).squeeze()
-                        out_arr = normalize_depth(depth_f, (orig_w, orig_h), invert=invert_var.get(), bit_depth=TARGET_BITS)
+                        out_arr = normalize_depth(
+                            depth_f,
+                            (orig_w, orig_h),
+                            invert=invert_var.get(),
+                            bit_depth=TARGET_BITS
+                        )
                         if TARGET_BITS == 16:
                             depth_image = Image.fromarray(out_arr, mode="I;16")
                         else:
                             depth_image = Image.fromarray(out_arr, mode="L")
 
-
                 image_name = os.path.splitext(os.path.basename(file_path))[0]
                 output_filename = f"{image_name}_depth.png"
                 file_save_path = os.path.join(output_dir, output_filename)
                 depth_image.save(file_save_path)
+
             except Exception as e:
                 print(f"❌ Error processing {file_path}: {e}")
                 continue
 
-
             elapsed_time = time.time() - start_time
-            fps = (i + j + 1) / elapsed_time if elapsed_time > 0 else 0
-            eta = (total_images - (i + j + 1)) / fps if fps > 0 else 0
+            done = i + j + 1
+            fps = done / elapsed_time if elapsed_time > 0 else 0
+            eta = (total_images - done) / fps if fps > 0 else 0
 
-            status_label.after(10, lambda i=i + j + 1, fps=fps, eta=eta: update_progress(i, total_images, fps, eta, progress_bar, status_label))
+            root.after(
+                0,
+                lambda done=done, fps=fps, eta=eta:
+                    update_progress(done, total_images, fps, eta, progress_bar, status_label)
+            )
 
-    root.after(10, lambda: status_label.config(text="✅ All images processed successfully!"))
-    root.after(10, lambda: progress_bar.config(value=progress_bar["maximum"]))
+    ui_status("✅ All images processed successfully!")
+    ui_progress(value=progress_bar["maximum"])
 
 
 def update_progress(processed, total, fps, eta, progress_bar, status_label):
@@ -2322,7 +2397,6 @@ def open_image(status_label_widget, progress_bar_widget, colormap_var, invert_va
 
 
 def process_video_folder(
-    folder_path,
     batch_size_widget,
     codec_var,
     inference_steps_entry,
@@ -2331,18 +2405,19 @@ def process_video_folder(
     status_label,
     progress_bar,
     cancel_requested,
-    invert_var
+    invert_var,
+    save_frames=False,
 ):
-    """Runs folder selection in main thread and launches processing in background."""
+    """UI-side launcher: reads Tk values, asks for folder, then starts worker thread."""
 
     selected_folder = filedialog.askdirectory(title="Select Folder Containing Videos")
-    cancel_requested.clear()
-    suspend_flag.clear()
     if not selected_folder:
         status_label.config(text="⚠️ No folder selected.")
         return
 
-    # Get batch size on the main thread
+    cancel_requested.clear()
+    suspend_flag.clear()
+
     try:
         user_value = batch_size_widget.get().strip()
         batch_size = int(user_value) if user_value else get_dynamic_batch_size()
@@ -2354,22 +2429,28 @@ def process_video_folder(
             text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}"
         )
 
-    # Launch the actual processing in background thread
+    output_dir = output_dir_var.get().strip() if output_dir_var else ""
+    inference_res_text = inference_res_var.get().strip() if inference_res_var else ""
+    invert_value = bool(invert_var.get()) if invert_var else False
+    ffmpeg_codec = codec_var.get().strip() if codec_var else ""
+    inference_steps_value = inference_steps_entry.get().strip() if inference_steps_entry else ""
+
     threading.Thread(
         target=process_videos_in_folder,
         args=(
             selected_folder,
             batch_size,
-            output_dir_var,
-            inference_res_var,
+            output_dir,
+            inference_res_text,
             status_label,
             progress_bar,
             cancel_requested,
-            invert_var,
-            codec_var,
-            inference_steps_entry,
+            invert_value,
+            ffmpeg_codec,
+            inference_steps_value,
+            save_frames,
         ),
-        daemon=True
+        daemon=True,
     ).start()
 
 def natural_sort_key(filename):
@@ -2382,88 +2463,110 @@ def natural_sort_key(filename):
 def process_videos_in_folder(
     folder_path,
     batch_size,
-    output_dir_var,
-    inference_res_var,
+    output_dir,
+    inference_res_text,
     status_label,
     progress_bar,
     cancel_requested,
-    invert_var,
-    codec_var,
-    inference_steps_entry,
+    invert_value,
+    ffmpeg_codec,
+    inference_steps_value,
     save_frames=False,
 ):
+    """Worker thread: processes all videos in the selected folder."""
 
-    """Processes all video files in the selected folder in the correct numerical order."""
+    def ui_status(text):
+        try:
+            status_label.after(0, lambda t=text: status_label.config(text=t))
+        except Exception:
+            pass
+
+    def ui_progress(value):
+        try:
+            progress_bar.after(0, lambda v=value: progress_bar.config(value=v))
+        except Exception:
+            pass
+
+    if not folder_path or not os.path.isdir(folder_path):
+        ui_status("⚠️ No valid folder selected.")
+        ui_progress(0)
+        return
+
     video_files = [
         f for f in os.listdir(folder_path)
         if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv"))
     ]
 
     if not video_files:
-        status_label.config(text="⚠️ No video files found in the selected folder.")
+        ui_status("⚠️ No video files found in the selected folder.")
         return
-    
+
     video_files.sort(key=natural_sort_key)
 
-    status_label.config(text=f"📂 Processing {len(video_files)} videos...")
+    ui_status(f"📂 Processing {len(video_files)} videos...")
     global global_session_start_time
     global_session_start_time = time.time()
 
+    total_frames_all = 0
+    for f in video_files:
+        p = os.path.join(folder_path, f)
+        cap_tmp = cv2.VideoCapture(p)
+        try:
+            total_frames_all += int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT))
+        finally:
+            cap_tmp.release()
 
-    total_frames_all = sum(
-        int(cv2.VideoCapture(os.path.join(folder_path, f)).get(cv2.CAP_PROP_FRAME_COUNT))
-        for f in video_files
-    )
     frames_processed_all = 0
 
     for video_file in video_files:
         wait_if_paused(status_label)
 
         if cancel_requested.is_set():
-            status_label.config(text="🛑 Processing cancelled by user.")
-            progress_bar.config(value=0)
+            ui_status("🛑 Processing cancelled by user.")
+            ui_progress(0)
             return
 
         video_path = os.path.join(folder_path, video_file)
+
         processed = process_video2(
-            video_path,
-            total_frames_all,
-            frames_processed_all,
-            batch_size,
-            output_dir_var,
-            inference_res_var,
-            status_label,
-            progress_bar,
-            cancel_requested,
-            invert_var,
-            codec_var,
-            inference_steps_entry,
-            save_frames
+            file_path=video_path,
+            total_frames_all=total_frames_all,
+            frames_processed_all=frames_processed_all,
+            batch_size=batch_size,
+            output_dir=output_dir,
+            inference_res_text=inference_res_text,
+            status_label=status_label,
+            progress_bar=progress_bar,
+            cancel_requested=cancel_requested,
+            invert_value=invert_value,
+            ffmpeg_codec=ffmpeg_codec,
+            inference_steps_value=inference_steps_value,
+            save_frames=save_frames,
         )
 
         if cancel_requested.is_set():
-            status_label.config(text="🛑 Processing cancelled by user.")
-            progress_bar.config(value=0)
+            ui_status("🛑 Processing cancelled by user.")
+            ui_progress(0)
             return
 
         frames_processed_all += processed
 
-    status_label.config(text="✅ All videos processed successfully!")
-    progress_bar.config(value=100)
+    ui_status("✅ All videos processed successfully!")
+    ui_progress(100)
 
 def process_video2(
     file_path,
     total_frames_all,
     frames_processed_all,
     batch_size,
-    output_dir_var,
-    inference_res_var,
+    output_dir,
+    inference_res_text,
     status_label,
     progress_bar,
     cancel_requested,
-    invert_var,
-    codec_var,
-    inference_steps_entry=None,
+    invert_value,
+    ffmpeg_codec,
+    inference_steps_value=None,
     window_size=24,
     overlap=25,
     generator=None,
@@ -2492,21 +2595,36 @@ def process_video2(
     global pipe, pipe_type
     global global_session_start_time
 
-    # Detect output directory from UI
-    output_dir = output_dir_var.get().strip()
+    # Plain-value normalization for worker thread use
+    output_dir = (output_dir or "").strip()
+    inference_res_text = (inference_res_text or "").strip()
+    ffmpeg_codec = (ffmpeg_codec or "").strip()
+    invert_flag = bool(invert_value)
+
+    try:
+        inference_steps = int(str(inference_steps_value).strip()) if str(inference_steps_value).strip() else 2
+    except Exception:
+        inference_steps = 2
+
+    try:
+        offload_mode = offload_mode_dropdown.get().strip() if offload_mode_dropdown else "sequential"
+    except Exception:
+        offload_mode = "sequential"
+
+    inference_size = parse_inference_resolution(inference_res_text)
     if not output_dir:
         def _warn():
-            messagebox.showwarning(
-                "Missing Output Folder",
-                "⚠️ Please select an output directory before processing."
-            )
-            status_label.config(text="❌ Output directory not selected.")
             try:
-                progress_bar.config(value=0)
+                messagebox.showwarning(
+                    "Missing Output Folder",
+                    "⚠️ Please select an output directory before processing."
+                )
             except Exception:
                 pass
 
         status_label.after(0, _warn)
+        ui_set_status("❌ Output directory not selected.")
+        ui_set_progress(0)
         return 0
 
 
@@ -2515,6 +2633,7 @@ def process_video2(
     name, _ = os.path.splitext(input_filename)
     output_filename = f"{name}_depth.mkv"
     output_path = os.path.join(output_dir, output_filename)
+    sidecar_path = os.path.splitext(output_path)[0] + ".letterbox.json"
 
     # ✅ Special case for Marigold (16-bit export path)
     if hasattr(pipe, "image_processor") and hasattr(pipe.image_processor, "export_depth_to_16bit_png"):
@@ -2533,19 +2652,21 @@ def process_video2(
         # === 2. Process images into depth maps (same folder)
         dummy_widget = tk.StringVar(value=str(batch_size))
         dummy_output_var = tk.StringVar(value=tmp_frame_dir)
-        dummy_root = tk.Tk(); dummy_root.withdraw()
+        dummy_inference_res = tk.StringVar(value=inference_res_text)
+        dummy_invert_var = tk.BooleanVar(value=invert_flag)
+
+        real_root = status_label.winfo_toplevel()
 
         process_images_in_folder(
             tmp_frame_dir,
             batch_size_widget=dummy_widget,
             output_dir_var=dummy_output_var,
-            inference_res_var=inference_res_var,
+            inference_res_var=dummy_inference_res,
             status_label=status_label,
             progress_bar=progress_bar,
-            root=dummy_root,
-            invert_var=invert_var
+            root=real_root,
+            invert_var=dummy_invert_var
         )
-
         # === 3. Encode depth frames to video using FFmpeg
         encode_cmd = [
             "ffmpeg", "-y", "-framerate", "24",  # fallback FPS
@@ -2561,7 +2682,8 @@ def process_video2(
     # === Fallback: non-Marigold default behavior ===
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
-        status_label.config(text=f"❌ Error: Cannot open {file_path}")
+        ui_set_status(f"❌ Error: Cannot open {file_path}")
+        ui_set_progress(0)
         return 0
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -2637,25 +2759,23 @@ def process_video2(
 
     # 4) Write sidecar using real current lock state
     try:
-        sidecar = os.path.splitext(output_path)[0] + ".letterbox.json"
-        with open(sidecar, "w", encoding="utf-8") as f:
+        with open(sidecar_path, "w", encoding="utf-8") as f:
             json.dump({
-                "top": int(bars_top), "bottom": int(bars_bottom),
-                "orig_w": int(original_width), "orig_h": int(original_height),
-                "locked_bars": bool(locked_bars), "locked_zero": bool(locked_zero)
+                "top": int(bars_top),
+                "bottom": int(bars_bottom),
+                "orig_w": int(original_width),
+                "orig_h": int(original_height),
+                "locked_bars": bool(locked_bars),
+                "locked_zero": bool(locked_zero)
             }, f, indent=2)
     except Exception as e:
         print(f"⚠️ Failed to write letterbox sidecar: {e}")
 
     print(f"📁 Saving video to: {output_path}")
 
-    # Codec handling
-    if codec_var:
-        codec_key = codec_var.get().strip()
-        ffmpeg_codec = FFMPEG_CODEC_MAP.get(codec_key, None)
-    else:
-        ffmpeg_codec = None
-
+    # Codec handling from already-read plain value
+    ffmpeg_codec = FFMPEG_CODEC_MAP.get(ffmpeg_codec, ffmpeg_codec) if ffmpeg_codec else None
+    
     # Prefer FFmpeg pipe by default (fastest).
     # Only use OpenCV if user explicitly requests it (troubleshooting).
     use_opencv = bool(prefer_opencv_writer) and (ffmpeg_codec is None or is_opencv_safe_fourcc(ffmpeg_codec))
@@ -2690,23 +2810,33 @@ def process_video2(
             ffmpeg_codec = "libx264"
         ff_proc = start_ffmpeg_writer(output_path, fps, original_width, original_height, ffmpeg_codec)
 
-    def cleanup_video_handles(cap_obj, out_obj):
+    def cleanup_video_handles(cap_obj, out_obj, sidecar_file=None):
         try:
             if cap_obj is not None:
                 cap_obj.release()
         except Exception:
             pass
+
         try:
             if out_obj is not None:
                 out_obj.release()
         except Exception:
             pass
+
+        try:
+            if sidecar_file and os.path.exists(sidecar_file):
+                os.remove(sidecar_file)
+                print(f"🧹 Deleted temporary sidecar: {sidecar_file}")
+        except Exception as e:
+            print(f"⚠️ Failed to delete temporary sidecar: {e}")
+
         if torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
             except Exception:
                 pass
+
         gc.collect()
 
     frame_output_dir = os.path.join(output_dir, f"{name}_frames")
@@ -2721,19 +2851,12 @@ def process_video2(
     repeat_counts = []      # same length as frames_batch
     bars_batch = []         # (top,bottom) per inferred frame
 
-    inference_size = parse_inference_resolution(inference_res_var.get())
     if inference_size is not None:
         target_w, target_h = map(int, inference_size)
         interp = cv2.INTER_AREA if (target_w < original_width or target_h < original_height) else cv2.INTER_LINEAR
     else:
         target_w = target_h = None
-        interp = None
-
-    
-    try:
-        inference_steps = int(inference_steps_entry.get().strip())
-    except:
-        inference_steps = 2       
+        interp = None      
     try:
         offload_mode = offload_mode_dropdown.get().strip()
     except Exception:
@@ -2915,7 +3038,7 @@ def process_video2(
 
                         # 3) Convert to 8-bit
                         depth_u8 = (depth_01 * 255.0 + 0.5).astype(np.uint8)
-                        if invert_var.get():
+                        if invert_flag:
                             depth_u8 = 255 - depth_u8
 
                         # 4) Resize to full video resolution
@@ -3039,24 +3162,37 @@ def process_video2(
             ui_set_progress(progress)
 
     finally:
-        # Always release handles and clean up GPU/CPU memory
-        cleanup_video_handles(cap, out)
+        cleanup_video_handles(cap, out, sidecar_path)
 
-        # ✅ Close FFmpeg pipe if we used it
+        ffmpeg_error_text = None
+
         if ff_proc is not None:
             try:
-                ff_proc.stdin.close()
+                if ff_proc.stdin:
+                    ff_proc.stdin.close()
             except Exception:
                 pass
+
             try:
-                ff_proc.wait(timeout=10)
+                _, stderr_data = ff_proc.communicate(timeout=15)
             except Exception:
                 try:
                     ff_proc.kill()
+                    _, stderr_data = ff_proc.communicate(timeout=5)
                 except Exception:
-                    pass
+                    stderr_data = b""
 
-        if cancel_requested.is_set():
+            if ff_proc.returncode not in (0, None):
+                try:
+                    ffmpeg_error_text = stderr_data.decode("utf-8", errors="replace").strip()
+                except Exception:
+                    ffmpeg_error_text = "Unknown FFmpeg error"
+
+        if ffmpeg_error_text:
+            ui_set_status(f"❌ FFmpeg encode failed for {os.path.basename(output_path)}")
+            print(f"[FFMPEG ERROR] {output_path}\n{ffmpeg_error_text}")
+            ui_set_progress(0)
+        elif cancel_requested.is_set():
             ui_set_status("🛑 Cancelled.")
             ui_set_progress(0)
         else:
@@ -3086,7 +3222,7 @@ def is_av1_encoded(file_path):
         print(f"⚠️ Failed to check codec with ffprobe: {e}")
         return False
 
-def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var, inference_steps_entry, offload_mode_dropdown, codec_var, ):
+def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, inference_res_var, invert_var, inference_steps_entry, offload_mode_dropdown, codec_var):
     file_path = filedialog.askopenfilename(
         filetypes=[
             ("All Supported Video Files", "*.mp4;*.avi;*.mov;*.mkv;*.flv;*.wmv;*.webm;*.mpeg;*.mpg"),
@@ -3116,8 +3252,6 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             )
             status_label.config(text="❌ AV1 input not supported. Re-encode to H.264.")
             return
-            
-        offload_mode = offload_mode_dropdown.get() if offload_mode_dropdown else "none"
 
         cancel_requested.clear()
         suspend_flag.clear()
@@ -3127,7 +3261,7 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         cap = cv2.VideoCapture(file_path)
         total_frames_all = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        
+
         try:
             user_value = batch_size_widget.get().strip()
             batch_size = int(user_value) if user_value else get_dynamic_batch_size()
@@ -3137,28 +3271,38 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
             batch_size = get_dynamic_batch_size()
             status_label.config(text=f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
-        threading.Thread(target=process_video2, args=(
-            file_path,
-            total_frames_all,
-            0,
-            batch_size,
-            output_dir_var,
-            inference_res_var,
-            status_label,
-            progress_bar,
-            cancel_requested,
-            invert_var,
-            codec_var,
-            inference_steps_entry,
-        ),
-        kwargs={
-            "offload_mode_dropdown": offload_mode_dropdown,
-            "target_fps": 8,
-            "ignore_letterbox_bars": True,
-            "prefer_opencv_writer": False,
-        }
-    ).start()
+        # Read UI values ON THE MAIN THREAD before launching worker
+        output_dir = output_dir_var.get().strip() if output_dir_var else ""
+        inference_res_text = inference_res_var.get().strip() if inference_res_var else ""
+        invert_value = bool(invert_var.get()) if invert_var else False
+        ffmpeg_codec = codec_var.get().strip() if codec_var else ""
+        inference_steps_value = inference_steps_entry.get().strip() if inference_steps_entry else ""
 
+        threading.Thread(
+            target=process_video2,
+            args=(
+                file_path,
+                total_frames_all,
+                0,
+                batch_size,
+                output_dir,
+                inference_res_text,
+                status_label,
+                progress_bar,
+                cancel_requested,
+                invert_value,
+                ffmpeg_codec,
+                inference_steps_value,
+            ),
+            kwargs={
+                "offload_mode_dropdown": offload_mode_dropdown,
+                "target_fps": 8,
+                "ignore_letterbox_bars": True,
+                "prefer_opencv_writer": False,
+            },
+            daemon=True,
+        ).start()
+        
 def _log_ex(exctype, value, tb):
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     with open("vd3d_crash.log", "a", encoding="utf-8") as f:
