@@ -4,11 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VisionDepth3D - AI 2D to 3D for Cinema and VR</title>
-  <meta name="description" content="VisionDepth3D - This is Hybrid 3D. Built from AI depth + custom stereo logic — Designed for cinema in VR." />
+  <meta name="description" content="VisionDepth3D is a hybrid 2D to 3D conversion suite for cinema and VR, combining AI depth estimation with proprietary stereo rendering tools." />
 
   <!-- Open Graph -->
   <meta property="og:title" content="VisionDepth3D - Hybrid 2D to 3D" />
-  <meta property="og:description" content="This is Hybrid 3D. Built from AI depth + custom stereo logic — Designed for cinema in VR." />
+  <meta property="og:description" content="Advanced 2D to 3D conversion for cinema and VR, built with AI depth estimation and custom stereo rendering tools." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="" />
   <meta property="og:image" content="" />
@@ -16,7 +16,7 @@
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="VisionDepth3D - Hybrid 2D to 3D" />
-  <meta name="twitter:description" content="This is Hybrid 3D. Built from AI depth + custom stereo logic — Designed for cinema in VR." />
+  <meta name="twitter:description" content="Advanced 2D to 3D conversion for cinema and VR, built with AI depth estimation and custom stereo rendering tools." />
   <meta name="twitter:image" content="" />
 
   <style>
@@ -50,7 +50,6 @@
 
     .container { width: min(1200px, 92%); margin: 0 auto; }
 
-    /* Nav */
     .nav {
       position: sticky; top: 0; z-index: 50;
       backdrop-filter: saturate(1.2) blur(8px);
@@ -71,10 +70,9 @@
     .btn.ghost { background: transparent; border-color: rgba(255,255,255,0.18); }
     .btn .icon { width: 18px; height: 18px; }
 
-    /* Hero */
     .hero { padding: 64px 0 36px; position: relative; overflow: hidden; }
     .title { font-size: clamp(36px, 3.6vw, 56px); line-height: 1.05; margin: 12px 0; }
-    .subtitle { color: var(--muted); font-size: clamp(16px, 1.5vw, 20px); max-width: 48ch; }
+    .subtitle { color: var(--muted); font-size: clamp(16px, 1.5vw, 20px); max-width: 56ch; }
     .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
     .stats { display: flex; gap: 22px; margin-top: 18px; color: var(--muted); font-size: 14px; }
     .stat-pill { padding: 8px 12px; border: 1px solid rgba(255,255,255,0.10); border-radius: 999px; background: rgba(255,255,255,0.03); }
@@ -84,16 +82,11 @@
       radial-gradient(400px 200px at 80% 20%, rgba(124,255,198,0.18), transparent),
       linear-gradient(180deg, rgba(16,22,31,0.95), rgba(16,22,31,0.85));
       padding: 22px; box-shadow: var(--shadow); }
-    .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 18px; }
-    .hero-grid img { width: 100%; height: 320px; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); background: linear-gradient(135deg, #0f1520, #0c1118); display: block; position: relative; }
-    
 
-    /* Sections */
     section { padding: 64px 0; border-top: 1px solid rgba(255,255,255,0.06); }
     .section-title { font-size: 28px; margin: 0 0 12px; }
-    .section-lead { color: var(--muted); max-width: 70ch; margin-bottom: 26px; }
+    .section-lead { color: var(--muted); max-width: 74ch; margin-bottom: 26px; }
 
-    /* Cards grid */
     .grid { display: grid; gap: 16px; }
     .grid.cards { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
     .card { background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
@@ -103,27 +96,21 @@
     .list { margin: 0; padding-left: 18px; }
     .list li { margin: 8px 0; }
 
-    /* Method bullets */
     .bullets { columns: 2; column-gap: 26px; }
-    @media (max-width: 800px) { .bullets { columns: 1; } .hero-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 800px) { .bullets { columns: 1; } }
 
-    /* Download */
     .download-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 18px; }
     @media (max-width: 900px) { .download-grid { grid-template-columns: 1fr; } }
 
-    /* FAQ */
     .faq { border-top: 1px solid rgba(255,255,255,0.1); }
     details { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 14px 16px; margin: 10px 0; }
     summary { cursor: pointer; font-weight: 600; }
     details p { color: var(--muted); margin: 10px 0 0; }
 
-    /* Footer */
     footer { padding: 40px 0; color: var(--muted); font-size: 14px; }
 
-    /* Toggles */
     .theme-toggle { cursor: pointer; padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.04); }
-  
-    /* Slider (hero carousel) */
+
     .slider { position: relative; border-radius: 22px; border: 1px solid rgba(255,255,255,0.09); background:
       radial-gradient(600px 160px at 30% 0%, rgba(57,198,255,0.25), transparent),
       radial-gradient(400px 200px at 80% 20%, rgba(124,255,198,0.18), transparent),
@@ -159,9 +146,9 @@
 
   <header class="hero">
     <div class="container">
-      <p class="stat-pill" style="display:inline-block">Source‑available • Windows first • CUDA ready</p>
-      <h1 class="title">AI powered 2D to 3D conversion for cinema and VR</h1>
-      <p class="subtitle">VisionDepth3D brings pixel accurate, real time parallax shifting to your 2D videos. Built for creators who want clean depth, natural convergence, and flexible export targets.</p>
+      <p class="stat-pill" style="display:inline-block">Source-available • Windows first • CUDA ready</p>
+      <h1 class="title">Advanced 2D to 3D conversion for cinema and VR</h1>
+      <p class="subtitle">VisionDepth3D transforms flat video into high-quality stereo 3D using AI depth estimation and proprietary stereo rendering tools. Designed for creators who need precise control, stable depth, and professional export options.</p>
 
       <div class="hero-cta">
         <a class="btn primary" href="#download">
@@ -179,27 +166,26 @@
       </div>
 
       <div class="stats">
-        <span class="stat-pill">12k+ downloads</span>
-        <span class="stat-pill">176 GitHub stars</span>
-        <span class="stat-pill">python = 3.13</span>
+        <span class="stat-pill">16k+ downloads</span>
+        <span class="stat-pill">204 GitHub stars</span>
+        <span class="stat-pill">Python 3.13</span>
       </div>
 
       <div class="hero-art">
         <div class="slider" aria-label="App preview carousel">
           <div class="slides" id="slides">
-            <div class="slide"><img src="assets/3Dpreview.png" alt="VisionDepth3D"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/3Dtab.png" alt="VisionDepth3D 3D Generator"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/frametools.png" alt="VisionDepth3D Frame Tools"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/DepthBlendTab.png" alt="VisionDepth3D Depth Blender"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/HelpHotkeys.png" alt="Hotkeys"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/Hotkeys.png" alt="Hotkeys"  loading="lazy"/></div>
-            <div class="slide"><img src="assets/logo.png" alt="VisionDepth3D Logo"  loading="lazy"/></div>
+            <div class="slide"><img src="assets/3Dpreview.png" alt="VisionDepth3D" loading="lazy"/></div>
+            <div class="slide"><img src="assets/3Dtab.png" alt="VisionDepth3D 3D Generator" loading="lazy"/></div>
+            <div class="slide"><img src="assets/frametools.png" alt="VisionDepth3D Frame Tools" loading="lazy"/></div>
+            <div class="slide"><img src="assets/DepthBlendTab.png" alt="VisionDepth3D Depth Blender" loading="lazy"/></div>
+            <div class="slide"><img src="assets/HelpHotkeys.png" alt="Hotkeys" loading="lazy"/></div>
+            <div class="slide"><img src="assets/Hotkeys.png" alt="Hotkeys" loading="lazy"/></div>
+            <div class="slide"><img src="assets/logo.png" alt="VisionDepth3D Logo" loading="lazy"/></div>
           </div>
           <button class="slide-btn prev" id="prevBtn" aria-label="Previous screenshot">&#8249;</button>
           <button class="slide-btn next" id="nextBtn" aria-label="Next screenshot">&#8250;</button>
           <div class="dots" id="dots"></div>
         </div>
-      </div>
       </div>
     </div>
   </header>
@@ -207,51 +193,50 @@
   <main>
     <section id="tools">
       <div class="container">
-        <h2 class="section-title">Built in tools</h2>
-        <p class="section-lead">Everything you need to go from flat footage to clean 3D. Pick your models, preview in real time, and export.</p>
+        <h2 class="section-title">Built-in tools</h2>
+        <p class="section-lead">A complete workflow for turning 2D footage into refined stereo 3D. Estimate depth, preview results, enhance quality, and export in formats suited for modern displays and headsets.</p>
         <div class="grid cards">
-          <div class="card"><h3>Depth estimation</h3><p>25+ models supported including DPT, ZoeDepth, Depth Anything v2, Marigold, and more.</p></div>
-          <div class="card"><h3>Upscaling</h3><p>Real ESRGAN based upscaling for crisp final output. Custom model support included.</p></div>
-          <div class="card"><h3>Live 3D</h3><p>View an external output or desktop screen in HSBS 3D.</p></div>
-          <div class="card"><h3>Interpolation</h3><p>RIFE based frame interpolation to push smoother motion when you need it.</p></div>
-          <div class="card"><h3>GPU pipeline</h3><p>CUDA and ONNX runtime support. TensorRT friendly setup for advanced users.</p></div>
-          <div class="card"><h3>Batch rendering</h3><p>Process entire folders and paired video plus depth map lists with progress indicators.</p></div>
-          <div class="card"><h3>Depth Blender</h3><p>Blend two depthmaps together to enhance precieved depth</p></div>
-          <div class="card"><h3>Audio tools</h3><p>Attach and offset audio, rip streams, and keep sync during export.</p></div>
+          <div class="card"><h3>Depth Estimation</h3><p>Support for 25+ depth models, including DPT, ZoeDepth, Depth Anything V2, Marigold, and more.</p></div>
+          <div class="card"><h3>Upscaling</h3><p>Integrated Real-ESRGAN upscaling for sharper final output, with support for custom models.</p></div>
+          <div class="card"><h3>Live 3D Preview</h3><p>Preview stereo output in real time on external displays or desktop sources.</p></div>
+          <div class="card"><h3>Frame Interpolation</h3><p>RIFE-based interpolation for smoother playback and higher frame rate delivery.</p></div>
+          <div class="card"><h3>GPU Acceleration</h3><p>CUDA and ONNX Runtime support, with TensorRT-friendly workflows for advanced users.</p></div>
+          <div class="card"><h3>Batch Rendering</h3><p>Process full folders or matched video and depth-map pairs with progress tracking.</p></div>
+          <div class="card"><h3>Depth Blender</h3><p>Combine multiple depth maps to improve scene separation and perceived depth quality.</p></div>
+          <div class="card"><h3>Audio Tools</h3><p>Attach, offset, and manage audio streams while maintaining sync during export.</p></div>
         </div>
       </div>
     </section>
 
-    
     <section id="features">
       <div class="container">
-        <h2 class="section-title">Highlights about VD3D</h2>
-        <p class="section-lead">Core capabilities designed for clean depth and comfortable viewing. Every feature is built to help creators ship better 3D faster.</p>
+        <h2 class="section-title">Why creators use VisionDepth3D</h2>
+        <p class="section-lead">Core rendering features focused on depth stability, visual comfort, and higher quality stereo output.</p>
 
         <div class="grid cards">
           <div class="card">
-            <h3>Per pixel parallax</h3>
-            <p>GPU accelerated depth weighted shifting for precise stereo alignment and minimal artifacts.</p>
+            <h3>Per-Pixel Parallax</h3>
+            <p>Depth-driven stereo shifting enables precise image separation with minimal distortion.</p>
           </div>
           <div class="card">
-            <h3>Zero parallax tracking</h3>
-            <p>Subject aware zero parallax to keep the focus natural during cuts and complex motion.</p>
+            <h3>Zero Parallax Control</h3>
+            <p>Keep key subjects grounded naturally within the stereo window for more comfortable viewing.</p>
           </div>
           <div class="card">
-            <h3>Edge aware masking</h3>
-            <p>Suppresses ghosting by protecting edges with smart shift masks and pixel healing.</p>
+            <h3>Edge-Aware Masking</h3>
+            <p>Reduces ghosting and edge artifacts through smarter shift protection and pixel recovery.</p>
           </div>
           <div class="card">
-            <h3>Scene aware dampening</h3>
-            <p>Smooths rapid parallax changes to maintain comfortable depth across scenes.</p>
+            <h3>Scene-Adaptive Depth Control</h3>
+            <p>Smooths abrupt stereo changes across cuts and motion-heavy sequences.</p>
           </div>
           <div class="card">
-            <h3>Floating window control</h3>
-            <p>Simple controls for windowing to reduce divergence and improve screen edge comfort.</p>
+            <h3>Floating Window Tools</h3>
+            <p>Adjust windowing to reduce edge violations and improve overall viewing comfort.</p>
           </div>
           <div class="card">
-            <h3>Flexible export</h3>
-            <p>Half SBS, Full SBS, anaglyph, and interlaced outputs for your target device.</p>
+            <h3>Flexible Output Formats</h3>
+            <p>Export in Half SBS, Full SBS, anaglyph, and interlaced formats for a wide range of displays.</p>
           </div>
         </div>
       </div>
@@ -260,16 +245,16 @@
     <section id="method">
       <div class="container">
         <h2 class="section-title">The VisionDepth3D Method</h2>
-        <p class="section-lead">A proprietary workflow for real time 2D to 3D conversion, tuned for cinema and VR.</p>
+        <p class="section-lead">A proprietary hybrid workflow for real-time and offline 2D to 3D conversion, developed for cinematic presentation and immersive VR viewing.</p>
         <ul class="list bullets">
-          <li>Depth weighted continuous parallax shifting</li>
-          <li>Subject aware zero parallax tracking</li>
-          <li>Edge aware shift masking to reduce ghosting</li>
-          <li>Scene aware parallax dampening</li>
-          <li>CUDA accelerated stereo warping</li>
-          <li>Depth of field simulation with pixel healing</li>
+          <li>Depth-weighted continuous parallax shifting</li>
+          <li>Subject-aware zero parallax tracking</li>
+          <li>Edge-aware shift masking to reduce ghosting</li>
+          <li>Scene-aware parallax dampening</li>
+          <li>CUDA-accelerated stereo warping</li>
+          <li>Depth-of-field simulation with pixel healing</li>
         </ul>
-        <p class="section-lead" style="margin-top:18px; font-size:14px">Documentation is provided for learning. Redistribution of the method text or derivative use is not allowed.</p>
+        <p class="section-lead" style="margin-top:18px; font-size:14px">The method is documented for reference and educational review. Reuse, redistribution, or derivative publication of the method text is not permitted.</p>
       </div>
     </section>
 
@@ -277,16 +262,16 @@
       <div class="container download-grid">
         <div>
           <h2 class="section-title">Download</h2>
-          <p class="section-lead">Grab the installer and start converting. Windows 10 or 11 is recommended. NVIDIA GPU is recommended for best performance.</p>
+          <p class="section-lead">Download the Windows build and start producing stereo 3D locally. VisionDepth3D is optimized for Windows systems, with NVIDIA GPUs recommended for the best performance.</p>
           <div class="hero-cta">
             <a class="btn primary" href="#" id="dlWin">Download Windows installer</a>
             <a class="btn" href="#" id="dlItch">Download on Itch.io</a>
             <a class="btn ghost" href="#" id="dlGithub">Releases on GitHub</a>
           </div>
           <ul class="list" style="margin-top:14px">
-            <li>Runs on CPU or GPU. CUDA support recommended for speed.</li>
-            <li>Source available on GitHub. License: personal and non commercial.</li>
-            <li>No telemetry. Your renders stay on your machine.</li>
+            <li>Can run on CPU or GPU, with CUDA acceleration recommended for faster processing</li>
+            <li>Source-available on GitHub under a personal, non-commercial license</li>
+            <li>No telemetry or cloud rendering. Your files stay on your system</li>
           </ul>
         </div>
         <div class="card">
@@ -311,34 +296,35 @@
       <div class="container">
         <h2 class="section-title">FAQ</h2>
         <details>
-          <summary>Does it run on AMD or Apple GPUs</summary>
-          <p>Yes on CPU. GPU acceleration is focused on NVIDIA with CUDA and ONNX. Apple Silicon support is planned through Metal backends in the future. AMD GPU users can run on CPU or try DirectML when available.</p>
+          <summary>Does it run on AMD or Apple GPUs?</summary>
+          <p>VisionDepth3D can run on CPU across supported systems. GPU acceleration is currently focused on NVIDIA through CUDA and ONNX workflows. AMD users may be able to use alternative backends where available, while Apple Silicon support is planned for future development.</p>
         </details>
         <details>
-          <summary>Can I use my own depth model</summary>
-          <p>Yes but only if you cloned the repo. Place your model weights in the weights folder and select it from the model dropdown. ONNX and PyTorch options are available.</p>
+          <summary>Can I use my own depth model?</summary>
+          <p>Yes. Repository users can add compatible model weights to the appropriate folder and select them from within the application. Both PyTorch and ONNX-based workflows are supported, depending on the model.</p>
         </details>
         <details>
-          <summary>What license does the app use</summary>
-          <p>VisionDepth3D is licensed for personal and non commercial use under the VisionDepth3D License Agreement. Commercial or revenue generating use requires written permission from the Licensor. The Method description on this site is informational and does not grant rights to create derivative works of the method text. Third party components remain under their own licenses. See the <a href="https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/LICENSE.txt" target="_blank" rel="noopener">LICENSE</a> for full terms or email <a href="mailto:redsky90@gmail.com">redsky90@gmail.com</a> for commercial licensing.</p>
+          <summary>What license does the app use?</summary>
+          <p>VisionDepth3D is available for personal, non-commercial use under the VisionDepth3D License Agreement. Commercial, business, or revenue-generating use requires written permission from the licensor. Third-party components remain subject to their own licenses. See the <a href="https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/LICENSE.txt" target="_blank" rel="noopener">LICENSE</a> for full terms or email <a href="mailto:redsky90@gmail.com">redsky90@gmail.com</a> for commercial licensing.</p>
         </details>
         <details>
-          <summary>Where can I get help</summary>
-          <p>Open an issue on GitHub or post in the community thread. You can also contact the maintainer through Itch.io.</p>
+          <summary>Where can I get help?</summary>
+          <p>Support is available through GitHub issues, the community thread, and the project’s Itch.io page.</p>
         </details>
       </div>
     </section>
+
     <section id="license">
       <div class="container">
         <h2 class="section-title">License</h2>
-        <p class="section-lead">Summary of terms. This is not a substitute for the full license.</p>
+        <p class="section-lead">A brief overview of the licensing terms. Refer to the full license for complete details.</p>
         <div class="grid cards">
-          <div class="card"><h3>Grant</h3><p>Free personal and non commercial use. No automatic rights for business or revenue generating use.</p></div>
-          <div class="card"><h3>Restrictions</h3><p>No redistribution, sublicensing, resale, reverse engineering, or derivative works of the software or method text.</p></div>
-          <div class="card"><h3>Ownership</h3><p>All rights remain with the Licensor. Third party components are governed by their own licenses.</p></div>
-          <div class="card"><h3>Third party notices</h3><p>Depth models such as DPT, MiDaS, ZoeDepth are Apache 2.0. FFmpeg is GPL or LGPL depending on build and is invoked as an external process.</p></div>
-          <div class="card"><h3>No warranty</h3><p>Provided as is without warranty. Use at your own risk.</p></div>
-          <div class="card"><h3>Governing law</h3><p>Ontario, Canada.</p></div>
+          <div class="card"><h3>Usage Grant</h3><p>Free for personal, non-commercial use.</p></div>
+          <div class="card"><h3>Commercial Use</h3><p>Commercial or revenue-generating use requires written permission.</p></div>
+          <div class="card"><h3>Restrictions</h3><p>Redistribution, resale, sublicensing, reverse engineering, and derivative works are prohibited under the license terms.</p></div>
+          <div class="card"><h3>Ownership</h3><p>All rights remain with the licensor, except where third-party components retain their own licensing terms.</p></div>
+          <div class="card"><h3>Third-Party Components</h3><p>Included frameworks, models, and external tools remain governed by their respective licenses.</p></div>
+          <div class="card"><h3>Warranty</h3><p>The software is provided as is, without warranty of any kind.</p></div>
         </div>
         <p style="margin-top: 16px">Read the full license: <a href="https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/LICENSE.txt" target="_blank" rel="noopener">LICENSE on GitHub</a>. Commercial licensing: <a href="mailto:redsky90@gmail.com">redsky90@gmail.com</a>.</p>
       </div>
@@ -347,7 +333,7 @@
 
   <footer>
     <div class="container" style="display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;">
-      <p>© <span id="year"></span> VisionDepth3D. Built by creators for creators.</p>
+      <p>© <span id="year"></span> VisionDepth3D. Independent stereo 3D tools for modern creators.</p>
       <p>
         <a href="#" id="footerGithub">GitHub</a> •
         <a href="#" id="footerItch">Itch.io</a> •
@@ -357,11 +343,10 @@
   </footer>
 
   <script>
-    // Replace these with your real links
     const LINKS = {
-      itch: "https://visiondepth3d.itch.io/visiondepth3d",            // ex: https://visiondepth.itch.io/visiondepth3d
-      github: "https://github.com/VisionDepth/VisionDepth3D",          // ex: https://github.com/VisionDepth/VisionDepth3D
-      winInstaller: "https://github.com/VisionDepth/VisionDepth3D/releases/download/Installer/installer.exe"      // ex: direct link to latest .exe
+      itch: "https://visiondepth3d.itch.io/visiondepth3d",
+      github: "https://github.com/VisionDepth/VisionDepth3D",
+      winInstaller: "https://github.com/VisionDepth/VisionDepth3D/releases/download/Installer/installer.exe"
     };
 
     function applyLinks() {
@@ -376,13 +361,11 @@
       set(byId('footerItch'), LINKS.itch);
     }
 
-    // Theme toggle
     const themeToggle = document.getElementById('themeToggle');
     themeToggle?.addEventListener('click', () => {
       const isLight = document.body.dataset.theme === 'light';
       document.body.dataset.theme = isLight ? 'dark' : 'light';
       if (!isLight) {
-        // Light scheme overrides
         document.documentElement.style.setProperty('--bg', '#f5f8fb');
         document.documentElement.style.setProperty('--bg-soft', '#eef3f8');
         document.documentElement.style.setProperty('--surface', '#ffffff');
@@ -391,7 +374,6 @@
         document.documentElement.style.setProperty('--muted', '#4a5565');
         document.documentElement.style.setProperty('--shadow', '0 10px 30px rgba(0,0,0,0.08)');
       } else {
-        // Reset to dark values
         document.documentElement.style.setProperty('--bg', '#0b0f14');
         document.documentElement.style.setProperty('--bg-soft', '#10161f');
         document.documentElement.style.setProperty('--surface', '#121a24');
@@ -405,7 +387,6 @@
     document.getElementById('year').textContent = new Date().getFullYear();
     applyLinks();
 
-    // Carousel logic
     (function(){
       const slides = document.getElementById('slides');
       if (!slides) return;
@@ -415,7 +396,6 @@
       const next = document.getElementById('nextBtn');
       const dotsWrap = document.getElementById('dots');
 
-      // build dots
       const dots = [];
       for (let i = 0; i < total; i++) {
         const d = document.createElement('button');
@@ -435,14 +415,12 @@
       prev?.addEventListener('click', () => go(-1));
       next?.addEventListener('click', () => go(1));
 
-      // keyboard
       slides.addEventListener('keydown', (e)=>{
         if (e.key === 'ArrowLeft') go(-1);
         if (e.key === 'ArrowRight') go(1);
       });
       slides.setAttribute('tabindex', '0');
 
-      // touch swipe
       let startX = 0, dragging = false;
       slides.addEventListener('touchstart', e => { dragging = true; startX = e.touches[0].clientX; }, {passive:true});
       slides.addEventListener('touchmove', e => { if (!dragging) return; }, {passive:true});
@@ -453,16 +431,8 @@
         if (Math.abs(delta) > 40) go(delta > 0 ? -1 : 1);
       });
 
-      // resize guard keeps height consistent on narrow screens if needed
       window.addEventListener('resize', ()=>update());
     })();
   </script>
 </body>
 </html>
-
-
-
-
-
-
-
