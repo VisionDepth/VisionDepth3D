@@ -1,5 +1,3 @@
-<h1 align="center"></h1>
-
 <p align="center">
   <img width="450" height="263" alt="VisionDepth3D900x527" src="https://github.com/user-attachments/assets/eaae16ce-57ff-48f8-8dbd-1aca699b8724" />
   <br>
@@ -66,7 +64,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 <h3 align="center">3D Generator (Stereo Composer)</h3>
 
 <p align="center">
-  <img width="700" height="598" alt="3Dtab" src="https://github.com/user-attachments/assets/f6c82115-c3ba-464f-91c1-7a623ed11007" />
+  <img width="700" height="598" alt="3Dtab" src="https://github.com/user-attachments/assets/fc50c0b5-02b8-412d-9b50-5da100274966" />
   <br>
   <em>(3D Generator Tab)</em>
 </p>
@@ -91,7 +89,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 # Depth Estimation (AI Depth Engine)
 
 <p align="center">
-  <img width="700" height="598" alt="Depthtab" src="https://github.com/user-attachments/assets/c2b32af2-5be5-4d3f-9b41-cceb77b30785" />
+  <img width="700" height="598" alt="Depthtab" src="https://github.com/user-attachments/assets/48453cbc-70a5-4813-9926-9ed77d3ee153" />
   <br>
   <em>(Depth Estimation Tab)</em>
 </p>
@@ -118,7 +116,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 # FPS / Upscale Enhancer (RIFE + Real-ESRGAN)
 
 <p align="center">
-  <img width="700" height="598" alt="frametools" src="https://github.com/user-attachments/assets/4abdc68f-b878-47b6-b185-2e39ace1ba1a" />
+  <img width="700" height="598" alt="frametools" src="https://github.com/user-attachments/assets/34040849-2ade-468c-81d7-f76e47d07a48" />
   <br>
   <em>(FPS / Upscale Enhancer Tab)</em>
 </p>
@@ -140,7 +138,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 # Depth Blender (Multi-Source Depth Fusion)
 
 <p align="center">
-  <img width="700" height="598" alt="DepthBlendTab" src="https://github.com/user-attachments/assets/89c61a02-55e8-4ff6-8ed0-bd3bd739d04e" />
+  <img width="700" height="598" alt="DepthBlendTab" src="https://github.com/user-attachments/assets/08ec64b0-301d-46ae-885a-e7fecd347f89" />
   <br>
   <em>(Depth Blender Tab)</em>
 </p>
