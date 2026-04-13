@@ -53,6 +53,7 @@ from core.render_depth import (
     process_image_folder,
     process_images_in_folder,
     process_videos_in_folder,
+    process_video_folder,
     update_progress,
     cancel_requested,
     request_depth_pause,
@@ -67,6 +68,9 @@ from core.merged_pipeline import (
     select_output_file,
     select_frames_folder, 
     start_ffmpeg_writer,
+    request_upscale_stop,
+    request_upscale_resume,
+    request_upscale_pause,
 )
 
 # DB.py exports you already have
@@ -308,32 +312,39 @@ def load_preset_dialog():
 def apply_3d_suffix(base_out: str, output_format: str, eye_mode: str) -> str:
     base, ext = os.path.splitext(base_out)
 
-    # Normalize
     fmt = output_format.strip().lower()
     mode = eye_mode.strip().lower()
 
     suffix = ""
 
-    if mode == "sbs":
+    # --- VR180 (DeoVR compliant naming) ---
+    if fmt == "vr180 equirect (tb)":
+        suffix = "_TB_180"
+    elif fmt == "vr180 equirect (sbs)":
+        suffix = "_SBS_180"
+
+    # --- Standard Stereo ---
+    elif mode == "sbs":
         if fmt == "full-sbs":
-            suffix = "_LRF_Full_SBS"
+            suffix = "_LR_Full_SBS"
         elif fmt == "half-sbs":
-            suffix = "_LRF_Half_SBS"
+            suffix = "_LR_Half_SBS"
         elif fmt == "vr":
             suffix = "_VR"
         elif fmt == "red-cyan anaglyph":
             suffix = "_Anaglyph"
         elif fmt == "passive interlaced":
             suffix = "_Interlaced"
-    elif mode == "left":
-        suffix = "_LRF_Left"
-    elif mode == "right":
-        suffix = "_LRF_Right"
-    elif mode == "both":
-        # handled per-eye when you build left/right names
-        pass
 
-    # If no suffix matched, just return original
+    elif mode == "left":
+        suffix = "_LR_Left"
+
+    elif mode == "right":
+        suffix = "_LR_Right"
+
+    elif mode == "both":
+        pass  # handled elsewhere
+
     if not suffix:
         return base_out
 
@@ -398,10 +409,8 @@ def handle_generate_3d():
         if 'ipd_enabled_var' in globals() and ipd_enabled_var.get():
             ipd_value = _get_num('ipd_factor_var', 1.0)
 
-        # 👇 read output-mode from the UI ("sbs"|"left"|"right"|"both")
         eye_mode = stereo_out_var.get().strip().lower()
 
-        # 👇 derive base output name depending on mode (Single / Batch / Image)
         current_mode = mode.get().strip() if 'mode' in globals() else "Single"
 
         if current_mode == "Image":
@@ -410,20 +419,16 @@ def handle_generate_3d():
             base_out = output_sbs_video_path.get().strip()
 
         if not base_out:
-            # For safety: if there's somehow no base_out, bail early
             messagebox.showerror("Output path", "Please choose an output path before rendering.")
             is_rendering = False
             return
 
-        # Normalized format string from the 3D format dropdown
         fmt = output_format.get().strip() if hasattr(output_format, "get") else str(output_format).strip()
 
-        # Precompute filenames with 3D suffixes
         sbs_out   = apply_3d_suffix(base_out, fmt, "sbs")
         left_out  = apply_3d_suffix(base_out, fmt, "left")
         right_out = apply_3d_suffix(base_out, fmt, "right")
 
-        # what we will run
         if eye_mode == "sbs":
             jobs = [("sbs", sbs_out)]
         elif eye_mode == "left":
@@ -431,11 +436,15 @@ def handle_generate_3d():
         elif eye_mode == "right":
             jobs = [("right", right_out)]
         elif eye_mode == "both":
-            # two separate renders, each gets its own suffix
             jobs = [("left", left_out), ("right", right_out)]
         else:
-            # fallback – treat as SBS
             jobs = [("sbs", sbs_out)]
+
+        vr_equi_w_var = globals().get("vr180_equi_w_var", None)
+        vr_equi_h_var = globals().get("vr180_equi_h_var", None)
+        vr_flat_w_var = globals().get("vr180_flat_w_var", None)
+        vr_flat_h_var = globals().get("vr180_flat_h_var", None)
+        vr_hfov_var   = globals().get("vr180_hfov_deg_var", None)
 
         def run_and_clear_flag():
             nonlocal start_s, end_s, sat, con, bri, ipd_value, preserve_hdr10, eye_mode
@@ -444,7 +453,6 @@ def handle_generate_3d():
                 for mode_name, out_path in jobs:
                     print(f"▶️ Render pass: {mode_name} → {out_path}")
 
-                    # 🖼️ IMAGE MODE: use render_sbs_3d_image(...)
                     if current_mode == "Image":
                         out_path_done = render_sbs_3d_image(
                             input_image_path=input_image_path.get(),
@@ -484,7 +492,6 @@ def handle_generate_3d():
                             eye_mode=mode_name,
                         )
 
-                    # 🎬 VIDEO MODES ("Single" or batch queue): use process_video(...)
                     else:
                         out_path_done = process_video(
                             input_video_path,
@@ -500,6 +507,7 @@ def handle_generate_3d():
                             suspend_flag, cancel_flag,
                             use_ffmpeg, preserve_hdr10,
                             selected_ffmpeg_codec, crf_value,
+                            nvenc_cq_value,
                             use_subject_tracking,
                             use_floating_window,
                             max_pixel_shift,
@@ -522,7 +530,12 @@ def handle_generate_3d():
                             start_s, end_s,
                             eye_mode=mode_name,
                             output_override=out_path,
-                            keep_original_audio=keep_original_audio.get()
+                            keep_original_audio=keep_original_audio.get(),
+                            vr180_equi_w_var=vr_equi_w_var,
+                            vr180_equi_h_var=vr_equi_h_var,
+                            vr180_flat_w_var=vr_flat_w_var,
+                            vr180_flat_h_var=vr_flat_h_var,
+                            vr180_hfov_deg_var=vr_hfov_var,
                         )
 
                     if out_path_done:
@@ -530,7 +543,6 @@ def handle_generate_3d():
                     if cancel_flag.is_set():
                         break
 
-                # UI notify (on main thread)
                 ui_root = progress_label.winfo_toplevel()
                 if created:
                     msg = "Created file(s):\n" + "\n".join(created)
@@ -552,13 +564,11 @@ def handle_generate_3d():
 
         
 def handle_open_preview():
-    # optional: mirror Start button behavior
     try:
         save_settings()
     except Exception:
         pass
 
-    # call the same preview function with the same args as your button
     return open_3d_preview_window(
         input_video_path,
         selected_depth_map,
@@ -592,7 +602,6 @@ def handle_open_preview():
 
 
 def _val(v):
-    # Only call .get() on actual tk.Variable instances; otherwise return as-is.
     return v.get() if isinstance(v, tk.Variable) else v
 
 def rendering_in_progress():
@@ -616,7 +625,7 @@ def load_language(lang_code):
     global translations, _loaded_language
 
     if _loaded_language == lang_code:
-        return  # already loaded, skip duplicate
+        return 
 
     try:
         path = f"languages/{lang_code}.json"
@@ -632,10 +641,9 @@ def load_language(lang_code):
 def t(key):
     return translations.get(key, key)
 
-# Load default language before building GUI
 load_language("en")
 
-# Get absolute path to resource (for PyInstaller compatibility)
+
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -644,12 +652,12 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-#Force include core/ into path
+
 core_dir = resource_path("core")
 if core_dir not in sys.path:
     sys.path.insert(0, core_dir)
 
-#Force include languages/ into path
+
 languages_dir = resource_path("languages")
 if languages_dir not in sys.path:
     sys.path.insert(0, languages_dir)
@@ -720,7 +728,6 @@ def load_settings():
             except Exception as e:
                 print(f"⚠️ Failed to set variable '{name}': {e}")
 
-    # ✅ Restore input video path and refresh thumbnail + video info
     input_path = settings.get("input_video_path", "")
     if input_path and os.path.exists(input_path):
         input_video_path.set(input_path)
@@ -751,7 +758,6 @@ def load_settings():
         except Exception as e:
             print(f"⚠️ Could not render video thumbnail: {e}")
 
-    # ✅ Restore depth map path and label
     depth_path = settings.get("selected_depth_map", "")
     if depth_path and os.path.exists(depth_path):
         selected_depth_map.set(depth_path)
@@ -762,7 +768,6 @@ def load_settings():
         except Exception as e:
             print(f"⚠️ Could not render depth label: {e}")
 
-    # ✅ Restore language and window size
     if "language" in settings:
         set_language(settings["language"], save=False)
 
@@ -774,7 +779,7 @@ def load_settings():
 def reset_settings():
     """Resets all GUI values and UI elements to their default states."""
 
-    # 🎬 File Paths and Codecs
+    
     input_video_path.set("")
     selected_depth_map.set("")
     output_sbs_video_path.set("")
@@ -782,7 +787,7 @@ def reset_settings():
     selected_ffmpeg_codec.set("H.264 / AVC (libx264 - CPU)")
     output_format.set("Full-SBS")
 
-    # 🧠 3D Shifting Parameters
+    
     fg_shift.set(5.0)
     mg_shift.set(0.5)
     bg_shift.set(-1.5)
@@ -796,20 +801,15 @@ def reset_settings():
     bg_push_multiplier.set(1.10)       # extra push-back for BG
     subject_lock_strength.set(1.00)    # subject tracking lock weight
 
-    # ✨ Visual Enhancements
     sharpness_factor.set(0.2)
 
-
-    # 🧼 Edge Cleanup
     feather_strength.set(0.0)
     blur_ksize.set(1)
 
-    # 🎛️ Advanced Stereo Controls
     parallax_balance.set(0.80)
     max_pixel_shift.set(0.20)
     dof_strength.set(2.0)
 
-    # 🟢 Toggles
     use_subject_tracking.set(False)
     use_floating_window.set(False)
     auto_crop_black_bars.set(False)
@@ -819,15 +819,12 @@ def reset_settings():
     convergence_strength.set(0.0)
     enable_dynamic_convergence.set(True)
 
-    # 🎥 CRF for FFmpeg
     crf_value.set(23)
     
-    # 🎨 Color Grading
     saturation.set(1.00)   # 0.00..2.00
     contrast.set(1.00)     # 0.00..2.00
     brightness.set(0.00)   # -0.50..+0.50
 
-    # 🖼️ UI Resets
     try:
         video_thumbnail_label.config(image="", text="No preview")
         video_thumbnail_label.image = None
@@ -835,7 +832,6 @@ def reset_settings():
     except Exception as e:
         print(f"⚠️ GUI reset skipped: {e}")
 
-    # 🔁 Reset aspect preview if available
     try:
         update_aspect_preview()
     except Exception as e:
@@ -1147,7 +1143,7 @@ class ScrollableFrame(ttk.Frame):
 
 # --- Window Setup ---
 root = tk.Tk()
-root.title("VisionDepth3D v3.8.2")
+root.title("VisionDepth3D v3.9")
 screen_w = root.winfo_screenwidth()
 screen_h = root.winfo_screenheight()
 
@@ -1399,7 +1395,7 @@ def build_dark_header(root, on_language_change):
         command=lambda: messagebox.showinfo(
             "About VisionDepth3D",
             (
-                "VisionDepth3D v3.8.2\n"
+                "VisionDepth3D v3.9\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1518,7 +1514,7 @@ header.grid(row=0, column=0, sticky="ew")
 # Shortcuts
 
 root.bind_all("<Control-q>", lambda e: root.quit())
-root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.8.2\n"
+root.bind_all("<F1>", lambda e: messagebox.showinfo("About", "VisionDepth3D v3.9\n"
                 "----------------------------\n"
                 "A hybrid 2D-to-3D conversion suite for cinema and VR.\n\n"
                 "Features:\n"
@@ -1572,7 +1568,7 @@ tab_control.grid(row=1, column=0, sticky="nsew")
 
 # --- FrameTools Tab ---
 frametools_tab = ttk.Frame(tab_control, style="VD3D.TFrame")
-tab_control.add(frametools_tab, text="FrameTools")
+tab_control.add(frametools_tab, text="FPS/Upscale Enhancement")
 frametools_tab_index = tab_control.index("end") - 1
 
 ft_scroll = ScrollableFrame(frametools_tab, vscroll=True, hscroll=False,
@@ -2330,17 +2326,19 @@ def load_supported_models():
         # Distill-Any-Depth
         "Distill-Any-Depth Large (xingyang1)": "xingyang1/Distill-Any-Depth-Large-hf",
         "Distill-Any-Depth Small (xingyang1)": "xingyang1/Distill-Any-Depth-Small-hf",
-#        "Distill-Any-Depth Large (keetrap)":   "keetrap/Distill-Any-Depth-Large-hf",
+        
+#        "Deterministic Video Depth":   "FayeHongfeiZhang/DVD",
 #        "Distill-Any-Depth Small (keetrap)":   "keetrap/Distill-Any-Depth-Small-hf",
 
         "Video Depth Anything Large": "vda:depth-anything/Video-Depth-Anything-Large",
         "Video Depth Anything Small": "vda:depth-anything/Video-Depth-Anything-Small",
 
         # in load_supported_models()
-        "Video Depth Anything (ONNX)": "onnx:VideoDepthAnything",
-        "Distill-Any-Depth Large(ONNX)": "onnx:DistillAnyDepthLarge",
-        "Distill-Any-Depth Base(ONNX)": "onnx:DistillAnyDepthBase",
-        "Distill-Any-Depth Small(ONNX)": "onnx:DistillAnyDepthSmall",
+        "Video Depth Anything (ONNX)": "FuryTMP/Video-Depth-Anything-L-ONNX-512x288",
+        "Distill-Any-Depth Large(ONNX)": "FuryTMP/Distill-Any-Depth-Large-onnx",
+        "Distill-Any-Depth Base(ONNX)": "FuryTMP/Distill-Any-Depth-Base-onnx",
+        "Distill-Any-Depth Small(ONNX)": "FuryTMP/Distill-Any-Depth-Small-onnx",
+
 
         "DA3METRIC-LARGE": "da3:depth-anything/DA3METRIC-LARGE",
         "DA3MONO-LARGE": "da3:depth-anything/DA3MONO-LARGE",
@@ -2528,13 +2526,6 @@ model_dropdown.pack(pady=5)
 # Bind event that fires *before* selection
 model_dropdown.bind("<Button-1>", lambda event: refresh_model_dropdown())
 
-# Bind event for when user selects a model
-model_dropdown.bind(
-    "<<ComboboxSelected>>",
-    lambda event: update_pipeline(selected_model, status_label, inference_res_var, offload_mode_dropdown, inference_steps_entry, use_fp16_var)
-
-)
-
 
 output_dir_label = tk.Label(
     sidebar, text=t("Output Dir: None"), bg="#1c1c1c", fg="white", wraplength=200
@@ -2690,6 +2681,47 @@ float_16_btn = tk.Checkbutton(
 )
 float_16_btn.pack()
 
+def update_depth_option_visibility(*args):
+    model_name = selected_model.get().strip()
+    normalized_models = {k.strip(): v for k, v in supported_models.items()}
+    model_value = normalized_models.get(model_name, "")
+
+    is_diffusion = isinstance(model_value, str) and model_value.startswith("diffusers:")
+
+    if is_diffusion:
+        # Show inference steps
+        if not inference_steps_label.winfo_manager():
+            inference_steps_label.pack(pady=5, before=batch_size_label)
+        if not inference_steps_entry.winfo_manager():
+            inference_steps_entry.pack(pady=5, before=batch_size_label)
+
+        # Show offload controls
+        if not offload_mode_label.winfo_manager():
+            offload_mode_label.pack(pady=5, before=float_16_btn)
+        if not offload_mode_dropdown.winfo_manager():
+            offload_mode_dropdown.pack(before=float_16_btn)
+    else:
+        # Always hide for non-diffusion models
+        inference_steps_label.pack_forget()
+        inference_steps_entry.pack_forget()
+        offload_mode_label.pack_forget()
+        offload_mode_dropdown.pack_forget()
+        
+def on_depth_model_selected(event=None):
+    update_depth_option_visibility()
+    update_pipeline(
+        selected_model,
+        status_label,
+        inference_res_var,
+        offload_mode_dropdown,
+        inference_steps_entry,
+        use_fp16_var
+    )
+
+model_dropdown.bind("<<ComboboxSelected>>", on_depth_model_selected)
+
+update_depth_option_visibility()
+
 codec_label = ttk.Label(
     sidebar,
     text=t("Video Codec:"),
@@ -2823,17 +2855,16 @@ process_video_button.pack(pady=2)
 process_video_folder_button = tk.Button(
     button_frame,
     text=t("Process Video Folder"),
-    command=lambda: process_videos_in_folder(
-        filedialog.askdirectory(),  # folder_path from dialog
+    command=lambda: process_video_folder(
         batch_size_entry,
+        codec_var,
+        inference_steps_entry,
         output_dir,
         inference_res_var,
         status_label,
         progress_bar,
         cancel_requested,
         invert_var,
-        save_frames_var.get(),        # Optional, if used
-        codec_var,
     ),
     width=25,
     bg="#4a4a4a",
@@ -2860,19 +2891,43 @@ ft3d_enable_upscale = tk.BooleanVar(value=False)
 ft3d_fps_multiplier = tk.IntVar(value=2)
 ft3d_blend_mode = tk.StringVar(value="OFF")
 ft3d_input_res_pct = tk.IntVar(value=100)
-ft3d_selected_model = tk.StringVar(value="RealESR_Gx4_fp16")
+ft3d_selected_model = tk.StringVar(value="RealESR (Balanced)")
+ft3d_selected_rife_model = tk.StringVar(value="RIFE FP32")
+
+def load_supported_upscaler_models():
+    return {
+        "  -- Select Upscaler Model -- ": "  -- Select Upscaler Model -- ",
+
+        # Hugging Face hosted
+        "RealESR (Balanced)": "upscale:FuryTMP/RealESR_Gx4_fp16",
+        "RealESRGAN (Sharp)": "upscale:FuryTMP/RealESRGANx4_fp16",
+        "RealESR Anime": "upscale:FuryTMP/RealESR_Animex4_fp16",
+        "BSRGAN x2": "upscale:FuryTMP/BSRGANx2_fp16",
+        "BSRGAN x4": "upscale:FuryTMP/BSRGANx4_fp16",
+
+        # Optional local fallback support
+#        "RealESR_Gx4_fp16 (Local)": "weights/RealESR_Gx4_fp16.onnx",
+#        "RealESRGANx4_fp16 (Local)": "weights/RealESRGANx4_fp16.onnx",
+#        "RealESR_Animex4_fp16 (Local)": "weights/RealESR_Animex4_fp16.onnx",
+#        "BSRGANx2_fp16 (Local)": "weights/BSRGANx2_fp16.onnx",
+#        "BSRGANx4_fp16 (Local)": "weights/BSRGANx4_fp16.onnx",
+    }
 
 
+def load_supported_rife_models():
+    return {
+        "  -- Select RIFE Model -- ": "  -- Select RIFE Model -- ",
 
-REAL_ESRGAN_MODELS = {
-#    "VD_SRResNet_x4_v1": "weights/VD_SRResNet_x4_v1.pth",
-#    "VD_SRResNet_x4_v1_tuned": "weights/VD_SRResNet_x4_v1_tuned.pth",
-    "RealESR_Gx4_fp16": "weights/RealESR_Gx4_fp16.onnx",
-    "RealESRGAN_x4_fp16": "weights/RealESRGANx4_fp16.onnx",
-    "RealESR_Animex4_fp16": "weights/RealESR_Animex4_fp16.onnx",
-    "BSRGANx2_fp16": "weights/BSRGANx2_fp16.onnx",
-    "BSRGANx4_fp16": "weights/BSRGANx4_fp16.onnx"
-}
+        # Hugging Face hosted
+        "RIFE FP32": "rife:FuryTMP/RIFE_fp32",
+
+        # Optional local fallback support
+#        "RIFE FP32 (Local)": "weights/RIFE_fp32.onnx",
+    }
+
+
+REAL_ESRGAN_MODELS = load_supported_upscaler_models()
+RIFE_MODELS = load_supported_rife_models()
 
 
 # 🎛️ Common settings
@@ -2927,10 +2982,395 @@ FFMPEG_CODEC_MAP = {
 }
 
 
+# ─── frametools_inner GUI Layout (Pro Upscaler, PACK-SAFE) ────────────────────
+frametools_inner.configure(bg="#1c1c1c")
+
+# ---------- helpers (pack-safe) ----------
+def _section_title(parent, text):
+    lbl = tk.Label(parent, text=text, font=("Segoe UI", 12, "bold"),
+                   bg="#1c1c1c", fg="white")
+    lbl.pack(anchor="w", padx=10, pady=(14, 6))
+    return lbl
+
+def _row_frame(parent, pady=(4, 4)):
+    row = tk.Frame(parent, bg="#1c1c1c")
+    row.pack(fill="x", padx=10, pady=pady)
+    return row
+
+def _row_label(row, text, width=22):
+    lbl = ttk.Label(row, text=text, style="VD3D.TLabel", width=width)
+    lbl.pack(side="left")
+    return lbl
+
+def _row_widget(row, widget, expand=False):
+    widget.pack(side="left", padx=(8, 0), fill="x" if expand else "none", expand=expand)
+    return widget
+
+def _right_widget(row, widget):
+    widget.pack(side="right")
+    return widget
+
+def _hint_text(parent, text):
+    lbl = tk.Label(parent, text=text, bg="#1c1c1c", fg="#cfcfcf")
+    lbl.pack(anchor="w", padx=10, pady=(0, 6))
+    return lbl
+
+
+# =============================================================================
+# 🎥 Scene Detection
+# =============================================================================
+scene_threshold_var = tk.DoubleVar(value=30.0)
+scene_output_format = tk.StringVar(value="mkv")
+
+# Keep these exact names for tooltips
+scene_detect_label = _section_title(frametools_inner, "🎥 Scene Detection (PySceneDetect)")
+scene_detect_threshold = _hint_text(frametools_inner, "Sensitivity Threshold (lower = more cuts):")
+
+# Slider row (compact)
+scene_slider_row = _row_frame(frametools_inner, pady=(0, 6))
+scene_detect_slider = ttk.Scale(
+    scene_slider_row,
+    from_=10, to=80,
+    variable=scene_threshold_var,
+    style="VD3D.Horizontal.TScale",
+    length=260
+)
+_row_widget(scene_slider_row, scene_detect_slider, expand=False)
+
+def run_scene_detect():
+    global scene_output_format
+    video_path = filedialog.askopenfilename(title="Select Video for Scene Detection", filetypes=[("Video Files", "*.mp4;*.avi;*.mov;*.mkv")])
+    if not video_path:
+        return
+    output_folder = filedialog.askdirectory(title="Select Output Folder for Scenes")
+    if not output_folder:
+        return
+    threshold = scene_threshold_var.get()
+    ext = scene_output_format.get().strip().lower()
+    if ext not in ["mp4", "mov", "avi", "mkv"]:
+        messagebox.showerror("Invalid Format", f"Unsupported output format: {ext}")
+        return
+    merged_status.config(text="⏳ Detecting scenes...")
+    merged_progress.start()
+    
+    def scene_thread():
+        from scenedetect import open_video, SceneManager
+        from scenedetect.detectors import ContentDetector
+        import os, subprocess
+
+        video = open_video(video_path)
+        scene_manager = SceneManager()
+        scene_manager.add_detector(ContentDetector(threshold=threshold))
+        scene_manager.detect_scenes(video)
+
+        scene_list = scene_manager.get_scene_list()
+        fps = video.frame_rate
+
+        for i, (start, end) in enumerate(scene_list):
+            start_frame = start.get_frames()
+            end_frame = end.get_frames()
+            start_time = start_frame / fps
+            duration = (end_frame - start_frame) / fps
+
+            scene_filename = os.path.join(output_folder, f"scene_{i+1:03d}.{ext}")
+            command = [
+                "ffmpeg", "-y", "-hwaccel", "auto",
+                "-i", video_path,
+                "-ss", f"{start_time:.3f}", "-t", f"{duration:.3f}",
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "128k",
+                scene_filename
+            ]
+            subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        merged_progress.stop()
+        merged_status.config(text=f"✅ Exported {len(scene_list)} scenes as videos.")
+        messagebox.showinfo("Done", f"✅ Exported {len(scene_list)} scenes to:\n{output_folder}")
+
+    threading.Thread(target=scene_thread, daemon=True).start()
+
+
+# Format + button row
+scene_opts_row = _row_frame(frametools_inner, pady=(0, 10))
+scene_fmt_lbl = _row_label(scene_opts_row, t("Output Format:"), width=22)
+scene_format_combo = ttk.Combobox(
+    scene_opts_row,
+    textvariable=scene_output_format,
+    values=["mp4", "mov", "avi", "mkv"],
+    state="readonly",
+    width=8,
+    style="VD3D.TEntry"
+)
+_row_widget(scene_opts_row, scene_format_combo, expand=False)
+
+detect_scenes_button = ttk.Button(
+    scene_opts_row,
+    text=t("Detect Scenes and Extract"),
+    style="VD3D.TButton",
+    command=run_scene_detect
+)
+_right_widget(scene_opts_row, detect_scenes_button)
+
+
+# =============================================================================
+# Input / Output
+# =============================================================================
+io_frame = tk.LabelFrame(frametools_inner, text=t("Input / Output"), bg="#1c1c1c", fg="white")
+io_frame.pack(fill="x", padx=10, pady=(6, 6))
+
+extract_frames_button = ttk.Button(
+    io_frame,
+    style="VD3D.TButton",
+    text=t("Extract Frames from Video"),
+    command=lambda: select_video_and_generate_frames(
+        ft3d_frames_folder.set,
+        merged_progress,
+        merged_status
+    )
+)
+extract_frames_button.pack(anchor="w", padx=10, pady=(10, 8))
+
+# Frames folder row (names preserved)
+frames_row = _row_frame(io_frame, pady=(2, 6))
+frames_folder_label = _row_label(frames_row, t("Frames Folder:"), width=18)
+
+frames_folder_entry = ttk.Entry(
+    frames_row,
+    textvariable=ft3d_frames_folder,
+    width=44,
+    style="VD3D.TEntry"
+)
+_row_widget(frames_row, frames_folder_entry, expand=True)
+
+browse_button = ttk.Button(
+    frames_row,
+    text=t("Browse"),
+    command=lambda: select_frames_folder(ft3d_frames_folder),
+    style="VD3D.TButton"
+)
+_right_widget(frames_row, browse_button)
+
+# Output file row (names preserved)
+out_row = _row_frame(io_frame, pady=(2, 10))
+output_video_file_label = _row_label(out_row, t("Output Video File:"), width=18)
+
+output_video_ft = ttk.Entry(
+    out_row,
+    textvariable=ft3d_output_file,
+    width=44,
+    style="VD3D.TEntry"
+)
+_row_widget(out_row, output_video_ft, expand=True)
+
+save_as_button = ttk.Button(
+    out_row,
+    text=t("Save As"),
+    command=lambda: select_output_file(ft3d_output_file),
+    style="VD3D.TButton"
+)
+_right_widget(out_row, save_as_button)
+
+
+# =============================================================================
+# Processing Options (compact toggles)
+# =============================================================================
+proc_frame = ttk.LabelFrame(
+    frametools_inner,
+    text=t("Processing Options"),
+    style="VD3D.TLabelframe"
+)
+proc_frame.pack(fill="x", padx=10, pady=(6, 6))
+
+proc_inner = tk.Frame(proc_frame, bg="#1c1c1c")
+proc_inner.pack(fill="x", padx=10, pady=(8, 8))
+
+RIFE_FPS_button = tk.Checkbutton(
+    proc_inner, text=t("Enable RIFE Interpolation"),
+    variable=ft3d_enable_rife, bg="#1c1c1c", fg="white",
+    selectcolor="#2b2b2b",
+    activebackground="#1c1c1c", activeforeground="white"
+)
+RIFE_FPS_button.pack(anchor="w", pady=2)
+
+esrgan_button = tk.Checkbutton(
+    proc_inner, text=t("Enable Real-ESRGAN Upscale"),
+    variable=ft3d_enable_upscale, bg="#1c1c1c", fg="white",
+    selectcolor="#2b2b2b",
+    activebackground="#1c1c1c", activeforeground="white"
+)
+esrgan_button.pack(anchor="w", pady=2)
+
+
+# =============================================================================
+# Output Settings (tight rows)
+# =============================================================================
+out_frame = tk.LabelFrame(frametools_inner, text=t("Output Settings"), bg="#1c1c1c", fg="white")
+out_frame.pack(fill="x", padx=10, pady=(6, 6))
+
+# Resolution row (names preserved)
+res_row = _row_frame(out_frame, pady=(8, 6))
+resolution_label = tk.Label(res_row, text=t("Resolution (WxH):"), bg="#1c1c1c", fg="white")
+resolution_label.pack(side="left")
+
+resolution_width_entry = ttk.Entry(res_row, width=6, textvariable=ft3d_width, style="VD3D.TEntry")
+resolution_width_entry.pack(side="left", padx=(8, 4))
+
+tk.Label(res_row, text="x", bg="#1c1c1c", fg="white").pack(side="left")
+
+resolution_height_entry = ttk.Entry(res_row, width=6, textvariable=ft3d_height, style="VD3D.TEntry")
+resolution_height_entry.pack(side="left", padx=4)
+
+# Helper function that returns label for tooltip use (unchanged name behavior)
+def combo_row(parent, label_text, var, values, combo_width=18):
+    row = tk.Frame(parent, bg="#1c1c1c")
+    row.pack(fill="x", padx=10, pady=4)
+    label = tk.Label(row, text=label_text, bg="#1c1c1c", fg="white", width=22, anchor="w")
+    label.pack(side="left")
+    ttk.Combobox(row, textvariable=var, values=values, state="readonly",
+                width=combo_width, style="VD3D.TEntry").pack(side="left", padx=(8, 0))
+    return label
+
+original_fps_label = combo_row(out_frame, t("Original FPS:"), ft3d_fps, COMMON_FPS, combo_width=12)
+fps_multi_label = combo_row(out_frame, t("FPS Interpolation Multiplier:"), ft3d_fps_multiplier, FPS_MULTIPLIERS, combo_width=12)
+selected_ffmpeg_codec_frametools_label = combo_row(out_frame, t("FFmpeg Output Codec:"), ft3d_codec, list(FFMPEG_CODEC_MAP.keys()), combo_width=22)
+
+
+# =============================================================================
+# ESRGAN Settings (tight + model wider)
+# =============================================================================
+esrgan_frame = tk.LabelFrame(frametools_inner, text=t("ESRGAN Settings"), bg="#1c1c1c", fg="white")
+esrgan_frame.pack(fill="x", padx=10, pady=(6, 10))
+
+ai_blend_select = combo_row(esrgan_frame, t("AI Blending:"), ft3d_blend_mode, ["OFF", "LOW", "MEDIUM", "HIGH"], combo_width=12)
+input_res_pct_label = combo_row(esrgan_frame, t("Input Resolution %:"), ft3d_input_res_pct, [25, 50, 75, 100], combo_width=12)
+
+model_select = combo_row(
+    esrgan_frame,
+    t("Model Selection:"),
+    ft3d_selected_model,
+    list(REAL_ESRGAN_MODELS.keys()),
+    combo_width=30
+)
+
+rife_model_select = combo_row(
+    proc_inner,
+    t("RIFE Model:"),
+    ft3d_selected_rife_model,
+    list(RIFE_MODELS.keys()),
+    combo_width=30
+)
+
+# =============================================================================
+# Actions (editor footer vibe)
+# =============================================================================
+actions_row = tk.Frame(frametools_inner, bg="#1c1c1c")
+actions_row.pack(fill="x", padx=10, pady=(0, 8))
+
+# Actions row (make sure this exists and is packed somewhere)
+# actions_row = tk.Frame(...); actions_row.pack(fill="x", ...)
+
+start_processing_button = tk.Button(
+    actions_row,
+    text=t("▶ Start Processing"),
+    bg="green", fg="white", relief="flat",
+    command=lambda: threading.Thread(
+        target=start_merged_pipeline,
+        args=(
+            {
+                "frames_folder": ft3d_frames_folder.get(),
+                "output_file": ft3d_output_file.get(),
+                "width": ft3d_width.get(),
+                "height": ft3d_height.get(),
+                "fps": ft3d_fps.get(),
+                "fps_multiplier": ft3d_fps_multiplier.get(),
+                "codec": FFMPEG_CODEC_MAP.get(ft3d_codec.get(), "h264_nvenc"),
+                "enable_rife": ft3d_enable_rife.get(),
+                "enable_upscale": ft3d_enable_upscale.get(),
+                "blend_mode": ft3d_blend_mode.get(),
+                "input_res_pct": ft3d_input_res_pct.get(),
+                "rife_model": RIFE_MODELS.get(ft3d_selected_rife_model.get(), "rife:FuryTMP/RIFE_fp32"),
+                "model_path": REAL_ESRGAN_MODELS.get(ft3d_selected_model.get(), "upscale:FuryTMP/RealESR_Gx4_fp16"),
+            },
+            merged_progress,
+            merged_status,
+        ),
+        daemon=True
+    ).start()
+)
+start_processing_button.pack(side="left", padx=(0, 8))
+
+threaded_processing_button = tk.Button(
+    actions_row,
+    text=t("Threaded RIFE + ESRGAN"),
+    bg="#007acc", fg="white", relief="flat",
+    activebackground="#005f99", activeforeground="white",
+    command=lambda: threading.Thread(
+        target=start_threaded_pipeline,
+        args=(
+            {
+                "frames_folder": ft3d_frames_folder.get(),
+                "output_file": ft3d_output_file.get(),
+                "width": ft3d_width.get(),
+                "height": ft3d_height.get(),
+                "fps": ft3d_fps.get(),
+                "fps_multiplier": ft3d_fps_multiplier.get(),
+                "codec": FFMPEG_CODEC_MAP.get(ft3d_codec.get(), "h264_nvenc"),
+                "enable_rife": ft3d_enable_rife.get(),
+                "enable_upscale": ft3d_enable_upscale.get(),
+                "blend_mode": ft3d_blend_mode.get(),
+                "input_res_pct": ft3d_input_res_pct.get(),
+                "rife_model": RIFE_MODELS.get(ft3d_selected_rife_model.get(), "rife:FuryTMP/RIFE_fp32"),
+                "model_path": REAL_ESRGAN_MODELS.get(ft3d_selected_model.get(), "upscale:FuryTMP/RealESR_Gx4_fp16"),
+            },
+            merged_progress,
+            merged_status,
+        ),
+        daemon=True
+    ).start()
+)
+threaded_processing_button.pack(side="right")
+
+pause_button = ttk.Button(
+    actions_row,
+    text="Pause",
+    command=lambda: request_upscale_pause(merged_progress, merged_status)
+)
+pause_button.pack(side="left", padx=(8, 4))
+
+resume_button = ttk.Button(
+    actions_row,
+    text="Resume",
+    command=lambda: request_upscale_resume(merged_progress, merged_status)
+)
+resume_button.pack(side="left", padx=(4, 4))
+
+stop_button = ttk.Button(
+    actions_row,
+    text="Stop",
+    command=lambda: request_upscale_stop(merged_progress, merged_status)
+)
+stop_button.pack(side="left", padx=(4, 8))
+
+
+
+# =============================================================================
+# Progress
+# =============================================================================
+merged_progress = ttk.Progressbar(
+    frametools_inner,
+    style="VD3D.Horizontal.TProgressbar",
+    length=340,
+    mode="determinate"
+)
+merged_progress.pack(padx=10, pady=(0, 6), fill="x")
+
+merged_status = tk.Label(frametools_inner, text=t("Waiting to start..."), bg="#1c1c1c", fg="white")
+merged_status.pack(padx=10, pady=(0, 10), anchor="w")
+
 
 # ─── frametools_inner GUI Layout ──────────────────────────────────────────────
 
-
+"""
 
 # 🎥 Scene Detection
 scene_threshold_var = tk.DoubleVar(value=30.0)
@@ -3234,7 +3674,7 @@ merged_progress.pack(pady=6)
 merged_status = tk.Label(frametools_inner, text=t("Waiting to start..."), bg="#1c1c1c", fg="white")
 merged_status.pack()
 
-
+"""
 
 # ---3D Generator Frame Contents ---
 
@@ -3248,9 +3688,9 @@ input_video_path = tk.StringVar()
 selected_depth_map = tk.StringVar()
 output_sbs_video_path = tk.StringVar()
 selected_codec = tk.StringVar(value="XVID")
-fg_shift = tk.DoubleVar(value=8.0)
+fg_shift = tk.DoubleVar(value=7.5)
 mg_shift = tk.DoubleVar(value=1.5)
-bg_shift = tk.DoubleVar(value=-2.5)
+bg_shift = tk.DoubleVar(value=-3.5)
 sharpness_factor = tk.DoubleVar(value=0.2)
 output_format = tk.StringVar(value="Full-SBS")
 blur_ksize = tk.IntVar(value=1)
@@ -3258,6 +3698,7 @@ feather_strength = tk.DoubleVar(value=0.0)
 preserve_hdr10_var = tk.BooleanVar(value=False)
 selected_ffmpeg_codec = tk.StringVar(value="")
 crf_value = tk.IntVar(value=23)
+nvenc_cq_value = tk.IntVar(value=23)
 use_ffmpeg = tk.BooleanVar(value=False)
 use_subject_tracking = tk.BooleanVar(value=True)
 use_floating_window = tk.BooleanVar(value=True)
@@ -3287,7 +3728,11 @@ saturation = tk.DoubleVar(value=1.00)   # 0.00..2.00
 contrast   = tk.DoubleVar(value=1.00)   # 0.00..2.00
 brightness = tk.DoubleVar(value=0.00)   # -0.50..+0.50
 keep_original_audio = tk.BooleanVar(value=True)
-
+vr180_equi_w_var = tk.IntVar(value=3840)
+vr180_equi_h_var = tk.IntVar(value=1920)
+vr180_flat_w_var = tk.IntVar(value=1920)
+vr180_flat_h_var = tk.IntVar(value=1080)
+vr180_hfov_deg_var = tk.DoubleVar(value=110.0)
 
 
 # --- Clip range (optional) ---
@@ -3355,6 +3800,19 @@ FFMPEG_CODEC_MAP = {
     "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
 }
 
+VR180_EQUI_PRESETS = {
+    "2048x1024 (Per Eye)": (2048, 1024),
+    "3072x1536 (Per Eye)": (3072, 1536),
+    "3840x1920 (Per Eye)": (3840, 1920),
+    "4096x2048 (Per Eye)": (4096, 2048),
+    "5760x2880 (Per Eye)": (5760, 2880),
+}
+
+VR180_FLAT_PRESETS = {
+    "1280x720 (Working)": (1280, 720),
+    "1920x1080 (Working)": (1920, 1080),
+    "2560x1440 (Working)": (2560, 1440),
+}
 
 # 🧠 Master list of all variables that should be saved
 gui_variables = {
@@ -3737,7 +4195,7 @@ fg_shift_label.grid(row=4, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-20, to=20, 
+    from_=-100, to=100, 
     resolution=0.1, orient=tk.HORIZONTAL,
     variable=fg_shift, bg="#1c1c1c", fg="white",
     cursor="sb_h_double_arrow"
@@ -3752,9 +4210,9 @@ convergence_strength_label.grid(row=4, column=2, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-0.05,
-    to=0.05,
-    resolution=0.001,
+    from_=-1.0,
+    to=1.0,
+    resolution=0.005,
     orient=tk.HORIZONTAL,
     variable=convergence_strength,
     length=200, bg="#1c1c1c", fg="white",
@@ -3773,7 +4231,7 @@ mg_shift_label.grid(row=5, column=0, sticky="w")
 
 tk.Scale(
     options_frame, 
-    from_=-10, to=10,
+    from_=-50, to=50,
     resolution=0.1,
     orient=tk.HORIZONTAL, variable=mg_shift,
     bg="#1c1c1c", fg="white",
@@ -3806,8 +4264,8 @@ bg_shift_label.grid(row=6, column=0, sticky="w")
 
 tk.Scale(
     options_frame,
-    from_=-20,
-    to=20,
+    from_=-100,
+    to=100,
     resolution=0.1,
     orient=tk.HORIZONTAL,
     variable=bg_shift,
@@ -4239,6 +4697,25 @@ def open_encoding_dialog():
     frame.rowconfigure(1, weight=0)
     frame.rowconfigure(2, weight=0)
 
+    # ---- VR180 presets (dropdown -> fills manual entries) ----
+    vr180_equi_preset_var = tk.StringVar(value="3840x1920 (Per Eye)")
+    vr180_flat_preset_var = tk.StringVar(value="1920x1080 (Working)")
+
+    def apply_vr180_equi_preset(choice=None):
+        key = vr180_equi_preset_var.get()
+        if key in VR180_EQUI_PRESETS:
+            w, h = VR180_EQUI_PRESETS[key]
+            vr180_equi_w_var.set(int(w))
+            vr180_equi_h_var.set(int(h))
+
+    def apply_vr180_flat_preset(choice=None):
+        key = vr180_flat_preset_var.get()
+        if key in VR180_FLAT_PRESETS:
+            w, h = VR180_FLAT_PRESETS[key]
+            vr180_flat_w_var.set(int(w))
+            vr180_flat_h_var.set(int(h))
+
+
     # =========================
     # Row 0: Checkboxes band
     # =========================
@@ -4322,6 +4799,8 @@ def open_encoding_dialog():
         "Full-SBS",
         "Half-SBS",
         "VR",
+        "VR180 Equirect (TB)",
+        "VR180 Equirect (SBS)",
         "Red-Cyan Anaglyph",
         "Passive Interlaced",
     )
@@ -4442,6 +4921,100 @@ def open_encoding_dialog():
         bd=0
     ).grid(row=0, column=1, columnspan=2, sticky="ew", padx=6, pady=6)
 
+    # =========================
+    # Row 2: VR180 controls (new row)
+    # =========================
+    # Make room: expand to more columns for this row
+    for i in range(10):
+        sliders.columnconfigure(i, weight=1, minsize=95)
+
+    # VR180 HFOV
+    vr180_hfov_label = tk.Label(
+        sliders,
+        text=t("VR180 HFOV"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    vr180_hfov_label.grid(row=1, column=0, sticky="w", padx=6, pady=(2, 6))
+
+    vr180_hfov_slider = tk.Scale(
+        sliders,
+        from_=60,
+        to=140,
+        resolution=1,
+        orient=tk.HORIZONTAL,
+        variable=vr180_hfov_deg_var,
+        length=220,
+        bg="#2b2b2b",
+        fg="white",
+        troughcolor="#444",
+        highlightthickness=0,
+        bd=0
+    )
+    vr180_hfov_slider.grid(row=1, column=1, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
+
+    # VR180 Equirect size
+    vr180_equi_label = tk.Label(
+        sliders,
+        text=t("VR180 Equirect WxH"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    vr180_equi_label.grid(row=1, column=4, sticky="w", padx=6, pady=(2, 6))
+
+    vr180_equi_w_entry = tk.Entry(sliders, textvariable=vr180_equi_w_var, width=7, bg="#2b2b2b", fg="white", insertbackground="white")
+    vr180_equi_w_entry.grid(row=1, column=5, sticky="ew", padx=(6, 2), pady=(2, 6))
+
+    vr180_equi_h_entry = tk.Entry(sliders, textvariable=vr180_equi_h_var, width=7, bg="#2b2b2b", fg="white", insertbackground="white")
+    vr180_equi_h_entry.grid(row=1, column=6, sticky="ew", padx=(2, 6), pady=(2, 6))
+
+    # VR180 Flat working size
+    vr180_flat_label = tk.Label(
+        sliders,
+        text=t("VR180 Flat WxH"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    vr180_flat_label.grid(row=1, column=7, sticky="w", padx=6, pady=(2, 6))
+
+    vr180_flat_w_entry = tk.Entry(sliders, textvariable=vr180_flat_w_var, width=7, bg="#2b2b2b", fg="white", insertbackground="white")
+    vr180_flat_w_entry.grid(row=1, column=8, sticky="ew", padx=(6, 2), pady=(2, 6))
+
+    vr180_flat_h_entry = tk.Entry(sliders, textvariable=vr180_flat_h_var, width=7, bg="#2b2b2b", fg="white", insertbackground="white")
+    vr180_flat_h_entry.grid(row=1, column=9, sticky="ew", padx=(2, 6), pady=(2, 6))
+
+    # VR180 Preset dropdowns (new row under the manual WxH entries)
+
+    vr180_equi_preset_label = tk.Label(
+        sliders,
+        text=t("VR180 Equirect Preset"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    vr180_equi_preset_label.grid(row=2, column=4, sticky="w", padx=6, pady=(2, 6))
+
+    tk.OptionMenu(
+        sliders,
+        vr180_equi_preset_var,
+        *VR180_EQUI_PRESETS.keys(),
+        command=lambda _=None: apply_vr180_equi_preset()
+    ).grid(row=2, column=5, columnspan=2, sticky="ew", padx=6, pady=(2, 6))
+
+    vr180_flat_preset_label = tk.Label(
+        sliders,
+        text=t("VR180 Flat Preset"),
+        bg="#1c1c1c",
+        fg="white"
+    )
+    vr180_flat_preset_label.grid(row=2, column=7, sticky="w", padx=6, pady=(2, 6))
+
+    tk.OptionMenu(
+        sliders,
+        vr180_flat_preset_var,
+        *VR180_FLAT_PRESETS.keys(),
+        command=lambda _=None: apply_vr180_flat_preset()
+    ).grid(row=2, column=8, columnspan=2, sticky="ew", padx=6, pady=(2, 6))
+
 
     # 🔹 Tooltips inside the dialog, using your existing language keys
     CreateToolTip(StereoOutput_label,     lambda: t("Tooltip.LROutput"))
@@ -4455,7 +5028,18 @@ def open_encoding_dialog():
     CreateToolTip(crf_value_label,              lambda: t("Tooltip.CRF"))
     CreateToolTip(nvenc_cq_value_label,         lambda: t("Tooltip.NVENCCQ"))
     CreateToolTip(format_button,         lambda: t("Tooltip.OptionMenu"))
-    
+    CreateToolTip(vr180_hfov_label,      lambda: t("Tooltip.VR180HFOV"))
+    CreateToolTip(vr180_hfov_slider,     lambda: t("Tooltip.VR180HFOV"))
+    CreateToolTip(vr180_equi_label,      lambda: t("Tooltip.VR180EquiSize"))
+    CreateToolTip(vr180_equi_w_entry,    lambda: t("Tooltip.VR180EquiSize"))
+    CreateToolTip(vr180_equi_h_entry,    lambda: t("Tooltip.VR180EquiSize"))
+    CreateToolTip(vr180_flat_label,      lambda: t("Tooltip.VR180FlatSize"))
+    CreateToolTip(vr180_flat_w_entry,    lambda: t("Tooltip.VR180FlatSize"))
+    CreateToolTip(vr180_flat_h_entry,    lambda: t("Tooltip.VR180FlatSize"))
+       
+    apply_vr180_equi_preset()
+    apply_vr180_flat_preset()
+        
     # Close button
     tk.Button(
         dlg,
@@ -5004,7 +5588,7 @@ def refresh_ui_labels():
     # Tabs
     tab_control.tab(depth_tab_index, text=t("Depth Engine"))
     tab_control.tab(visiondepth_tab_index, text=t("3D Video Generator"))
-    tab_control.tab(frametools_tab_index, text=t("FrameTools"))
+    tab_control.tab(frametools_tab_index, text=t("FPS/Upscale Enhancement"))
     tab_control.tab(depth_blend_index, text=t("Depth Blender"))
 
     # Depth tab
