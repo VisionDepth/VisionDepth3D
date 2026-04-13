@@ -15,22 +15,74 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
-
+import queue
 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 progress_bar = None
 status_label = None
 
-# ✅ Get absolute path to resource (for PyInstaller compatibility)
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS2  # ✅ Corrected for PyInstaller
-    except AttributeError:
-        base_path = os.path.abspath(".")
 
-    return os.path.join(base_path, relative_path)
+def app_root():
+    """
+    Folder beside the EXE when frozen, or current script folder in dev.
+    This is where user/runtime weights should live.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(".")
+
+
+def bundle_root():
+    """
+    PyInstaller temporary bundle folder when frozen.
+    Falls back to app_root() in normal dev runs.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return app_root()
+
+
+def resolve_model_path(*parts):
+    """
+    Prefer the real app folder first:
+        VisionDepth3D/weights/...
+    Then fall back to bundled PyInstaller data:
+        VisionDepth3D/_internal/weights/...
+    """
+    rel = os.path.join(*parts)
+
+    app_path = os.path.join(app_root(), rel)
+    if os.path.exists(app_path):
+        return app_path
+
+    bundled_path = os.path.join(bundle_root(), rel)
+    if os.path.exists(bundled_path):
+        return bundled_path
+
+    # Return the app-side path by default so logs show the expected runtime location
+    return app_path
+
+
+# ✅ Get absolute path to resource (for PyInstaller compatibility)
+#def resource_path(relative_path):
+#    try:
+#        base_path = sys._MEIPASS  # ✅ Corrected for PyInstaller
+#    except AttributeError:
+#        base_path = os.path.abspath(".")
+
+#    return os.path.join(base_path, relative_path)
+
+# =========================
+# Force Hugging Face caches into VD3D /weights
+# =========================
+_VD3D_WEIGHTS = os.path.join(app_root(), "weights")
+os.makedirs(_VD3D_WEIGHTS, exist_ok=True)
+
+os.environ.setdefault("HF_HOME", _VD3D_WEIGHTS)
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(_VD3D_WEIGHTS, "hub"))
+os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(_VD3D_WEIGHTS, "datasets"))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 # ✅ ONNX session options with graph optimization
 session_options = ort.SessionOptions()
@@ -41,25 +93,27 @@ session_options.inter_op_num_threads = 1
 
 # ✅ ONNX Execution Provider fallback logic
 available_providers = ort.get_available_providers()
+print(f"Available ONNX providers: {available_providers}")
 
 if "CUDAExecutionProvider" in available_providers:
     device = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "CUDA (NVIDIA)"
+elif "ROCMExecutionProvider" in available_providers:
+    device = ["ROCMExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "ROCm (AMD)"
+elif "DmlExecutionProvider" in available_providers:
+    device = ["DmlExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "DirectML (AMD/Intel)"
 else:
     device = ["CPUExecutionProvider"]
+    provider_txt = "CPU-only"
 
-provider_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU-only"
 print(f"Frametool Upscaler ONNX: {provider_txt}")
 
-
 # ✅ Load RIFE
-rife_path = resource_path(os.path.join("weights", "RIFE_fp32.onnx"))
-
-try:
-    rife_session = ort.InferenceSession(rife_path, sess_options=session_options, providers=device)
-    print("FPS Upscale Model: RIFE model loaded.")
-except Exception as e:
-    print(f"❌ Failed to load RIFE model: {e}")
-    rife_session = None
+rife_session = None
+rife_model_path = None
+rife_model_id = None
 
 esrgan_session = None  # ONNX ESRGAN / other ONNX SR
 srresnet_model = None  # PyTorch SRResNet
@@ -190,7 +244,7 @@ def update_progress(done, total, start):
 
     # math
     now = time.monotonic()
-    elapsed = max(1e-6, time.time() - start)
+    elapsed = max(1e-6, now - start)
     fps = done / elapsed
     remaining = max(0, total - done)
     eta_secs = (remaining / fps) if fps > 0 else None
@@ -248,29 +302,65 @@ def _frame_to_bytes(frame):
         frame = np.ascontiguousarray(frame)
     return frame.tobytes()
 
-def _frame_loader(file_list, target_size=None):
-    q = Queue(maxsize=8)
+def _frame_loader(file_list, target_size=None, max_queue=8):
+    """
+    Generator that loads frames in a background thread and yields them.
+    - Uses a bounded queue to limit RAM
+    - Supports cancellation via global cancel_flag
+    - Avoids deadlock by using timeouts on put/get
+    """
+    q = Queue(maxsize=max_queue)
     stop = object()
 
     def _worker():
-        for fp in file_list:
-            img = cv2.imread(fp, cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-            if target_size:
-                img = cv2.resize(
-                    img,
-                    target_size,
-                    interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC
-                )
-            q.put(img)
-        q.put(stop)
+        try:
+            for fp in file_list:
+                if cancel_flag.is_set():
+                    break
+
+                img = cv2.imread(fp, cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+
+                if target_size:
+                    img = cv2.resize(
+                        img,
+                        target_size,
+                        interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC
+                    )
+
+                # Put with timeout so we can observe cancel_flag and not deadlock
+                while not cancel_flag.is_set():
+                    try:
+                        q.put(img, timeout=0.25)
+                        break
+                    except queue.Full:
+                        continue
+        finally:
+            # Always try to signal end
+            while True:
+                try:
+                    q.put(stop, timeout=0.25)
+                    break
+                except queue.Full:
+                    # If consumer died, we don't want to hang forever
+                    if cancel_flag.is_set():
+                        break
+                    continue
 
     threading.Thread(target=_worker, daemon=True).start()
+
     while True:
-        item = q.get()
+        if cancel_flag.is_set():
+            break
+        try:
+            item = q.get(timeout=0.25)
+        except queue.Empty:
+            continue
+
         if item is stop:
             break
+
         yield item
 
 def select_video_and_generate_frames(set_folder_callback=None, merged_progress=None, merged_status=None):
@@ -342,8 +432,8 @@ def select_video_and_generate_frames(set_folder_callback=None, merged_progress=N
 
 def select_output_file(output_path_var):
     file_path = filedialog.asksaveasfilename(
-        defaultextension=".avi",
-        filetypes=[("AVI Files", "*.avi"), ("MP4 Files", "*.mp4"), ("All Files", "*.*")]
+        defaultextension=".mkv",
+        filetypes=[("MKV Files", "*.mkv"), ("MP4 Files", "*.mp4"), ("AVI Files", "*.avi"), ("All Files", "*.*")]
     )
     if file_path:
         output_path_var.set(file_path)
@@ -363,6 +453,149 @@ def natural_sort(files):
 def concatenate_images(frame1, frame2):
     return np.concatenate((frame1.astype(np.float32) / 255.0, frame2.astype(np.float32) / 255.0), axis=2)
 
+# =========================
+# Pause / Resume / Stop Controls (Upscale Pipeline)
+# =========================
+
+def _upscale_wait_if_paused():
+    """
+    Call this often inside loops.
+    If paused, block until resumed.
+    Cancel always wins.
+    """
+    while suspend_flag.is_set():
+        if cancel_flag.is_set():
+            return False
+        time.sleep(0.05)
+    return not cancel_flag.is_set()
+
+
+def request_upscale_pause(progress_widget=None, status_widget=None):
+    suspend_flag.set()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Paused")
+
+
+def request_upscale_resume(progress_widget=None, status_widget=None):
+    suspend_flag.clear()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Resuming...")
+
+
+def request_upscale_stop(progress_widget=None, status_widget=None):
+    # Stop means cancel the job and force-unpause so threads can exit
+    cancel_flag.set()
+    suspend_flag.clear()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Stopping...")
+        
+def resolve_runtime_model(model_ref: str) -> str | None:
+    """
+    Supported forms:
+
+      upscale:FuryTMP/RealESR_Gx4_fp16
+      upscale:FuryTMP/BSRGANx2_fp16
+      rife:FuryTMP/RIFE_fp32
+      weights/RealESR_Gx4_fp16.onnx
+      C:/absolute/path/model.onnx
+    """
+    if not model_ref:
+        return None
+
+    model_ref = str(model_ref).strip()
+
+    # ---- Hugging Face repo selectors ----
+    if model_ref.startswith("upscale:"):
+        repo_id = model_ref[len("upscale:"):].strip()
+        if not repo_id:
+            print(f"❌ Invalid upscale model ref: {model_ref}")
+            return None
+
+        filename = repo_id.rstrip("/").split("/")[-1] + ".onnx"
+        return ensure_hf_file(repo_id, filename, local_subdir="weights")
+
+    if model_ref.startswith("rife:"):
+        repo_id = model_ref[len("rife:"):].strip()
+        if not repo_id:
+            print(f"❌ Invalid RIFE model ref: {model_ref}")
+            return None
+
+        filename = repo_id.rstrip("/").split("/")[-1] + ".onnx"
+        return ensure_hf_file(repo_id, filename, local_subdir="weights")
+
+    # ---- Local path fallback ----
+    model_ref = os.path.normpath(model_ref)
+
+    if os.path.isabs(model_ref):
+        return model_ref if os.path.exists(model_ref) else None
+
+    resolved = resolve_model_path(model_ref)
+    return resolved if os.path.exists(resolved) else None
+
+def ensure_hf_file(repo_id: str, filename: str, local_subdir: str = "weights") -> str | None:
+    """
+    Download a single file from Hugging Face into VisionDepth3D/weights if missing.
+    Returns the local file path, or None on failure.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as e:
+        print(f"❌ huggingface_hub not available: {e}")
+        return None
+
+    local_dir = os.path.join(app_root(), local_subdir)
+    os.makedirs(local_dir, exist_ok=True)
+
+    local_path = os.path.join(local_dir, filename)
+    if os.path.exists(local_path):
+        print(f"✅ Model already exists: {local_path}")
+        return local_path
+
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=local_dir
+        )
+        print(f"⬇️ Downloaded {filename} from Hugging Face to: {downloaded}")
+        return downloaded
+    except Exception as e:
+        print(f"❌ Failed to download {filename} from {repo_id}: {e}")
+        return None
+
+
+def load_rife_model(model_ref: str):
+    global rife_session, rife_model_path, rife_model_id
+
+    rife_session = None
+    rife_model_path = None
+    rife_model_id = model_ref
+
+    if not model_ref:
+        print("⚠️ No RIFE model selected.")
+        return False
+
+    resolved_path = resolve_runtime_model(model_ref)
+
+    if not resolved_path or not os.path.exists(resolved_path):
+        print(f"❌ RIFE model file not found: {resolved_path}")
+        return False
+
+    try:
+        rife_session = ort.InferenceSession(
+            resolved_path,
+            sess_options=session_options,
+            providers=device
+        )
+        rife_model_path = resolved_path
+        print(f"✅ RIFE model loaded: {resolved_path}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to load RIFE model session: {e}")
+        rife_session = None
+        rife_model_path = None
+        return False
+        
 def preprocess_rife(frame):
     frame = np.transpose(frame, (2, 0, 1))
     frame = np.expand_dims(frame, axis=0)
@@ -409,6 +642,11 @@ def init_upscaler(model_path: str, enable_upscale: bool):
     Decide which backend to use based on model_path extension:
       - .onnx -> ONNX / ESRGAN
       - .pth  -> PyTorch SRResNet super-res
+
+    model_path can be:
+      - local relative path
+      - local absolute path
+      - Hugging Face ref: repo_id::filename
     """
     global esrgan_session, srresnet_model, UPSCALE_BACKEND
 
@@ -418,44 +656,55 @@ def init_upscaler(model_path: str, enable_upscale: bool):
 
     if not enable_upscale or not model_path:
         print("Upscaler disabled.")
-        return
+        return False
 
-    # Make sure we resolve correctly inside PyInstaller bundle too
-    model_path = resource_path(model_path)
-    ext = os.path.splitext(model_path)[1].lower()
+    resolved_model_path = resolve_runtime_model(model_path)
+    if not resolved_model_path:
+        print(f"❌ Failed to resolve upscaler model: {model_path}")
+        return False
+
+    print(f"Upscaler path resolved to: {resolved_model_path}")
+    ext = os.path.splitext(resolved_model_path)[1].lower()
 
     if ext == ".onnx":
         try:
-            print(f"📦 Loading ONNX upscaler from {model_path}")
+            print(f"Loading ONNX upscaler from {resolved_model_path}")
             esrgan_session = ort.InferenceSession(
-                model_path, sess_options=session_options, providers=device
+                resolved_model_path,
+                sess_options=session_options,
+                providers=device
             )
             UPSCALE_BACKEND = "onnx"
-            mode_txt = "CUDA" if "CUDAExecutionProvider" in device else "CPU"
-            print(f"⚡ ONNX upscaler ready [{mode_txt}]")
+            print(f"ONNX upscaler ready [{provider_txt}]")
+            return True
         except Exception as e:
             UPSCALE_BACKEND = "none"
             print(f"❌ Failed to load ONNX upscaler: {e}")
+            return False
 
     elif ext == ".pth":
         try:
-            print(f"📦 Loading SRResNet (.pth) upscaler from {model_path}")
+            print(f"Loading SRResNet (.pth) upscaler from {resolved_model_path}")
             model = SRResNet(num_blocks=16, upscale_factor=4)
-            state = torch.load(model_path, map_location=srresnet_device)
+            state = torch.load(resolved_model_path, map_location=srresnet_device)
             model.load_state_dict(state)
             model.to(srresnet_device)
             model.eval()
             srresnet_model = model
             UPSCALE_BACKEND = "srresnet"
             mode_txt = "CUDA" if srresnet_device.type == "cuda" else "CPU"
-            print(f"⚡ SRResNet upscaler ready [{mode_txt}]")
+            print(f"SRResNet upscaler ready [{mode_txt}]")
+            return True
         except Exception as e:
             UPSCALE_BACKEND = "none"
             print(f"❌ Failed to load SRResNet model: {e}")
+            return False
 
     else:
-        print(f"❌ Unknown upscaler model extension: {ext}. Supported: .onnx, .pth")
+        print(f"⚠️ Unknown upscaler model extension: {ext}. Supported: .onnx, .pth")
         UPSCALE_BACKEND = "none"
+        return False
+
 
 
 def _run_srresnet(frame_bgr: np.ndarray, scale: int = 4) -> np.ndarray:
@@ -590,14 +839,15 @@ def run_esrgan(frame,
     # 2x vs 4x heuristic for ONNX models
     scale = 2 if "x2" in model_name.lower() else 4
 
-    upscaled = cv2.resize(
-        upscaled,
-        (frame.shape[1] * scale, frame.shape[0] * scale),
-        interpolation=cv2.INTER_CUBIC,
-    )
-
-    upscaled = _fit_size(upscaled, (original.shape[1], original.shape[0]))
-
+    h0, w0 = frame.shape[:2]
+    h1, w1 = upscaled.shape[:2]
+    if h1 >= h0 and w1 >= w0:
+        # model already scaled, don't resize here
+        pass
+    else:
+        # model returned same size, then you can upscale if you want
+        upscaled = cv2.resize(upscaled, (w0 * scale, h0 * scale), interpolation=cv2.INTER_CUBIC)
+        
     if target_size:
         upscaled = _fit_size(upscaled, target_size)
         original_for_blend = _fit_size(original, target_size)
@@ -624,11 +874,15 @@ def _esrgan_tiled(img, tile, pad):
             yc1, xc1 = yc0 + min(tile, h - y), xc0 + min(tile, w - x)
             out[y:y+min(tile, h - y), x:x+min(tile, w - x)] = up[yc0:yc1, xc0:xc1]
     return out
-
+    
+    
 def start_merged_pipeline(settings, progress_widget, status_label_widget):
     global progress_bar, status_label, esrgan_session
     progress_bar = progress_widget
     status_label = status_label_widget
+
+    cancel_flag.clear()
+    suspend_flag.clear()
 
     frames_dir = settings["frames_folder"]
     output_path = settings["output_file"]
@@ -637,13 +891,29 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     fps = settings["fps"]
     fps_mult = settings["fps_multiplier"]
     enable_rife = settings["enable_rife"]
+    rife_model = settings.get("rife_model", "rife:FuryTMP/RIFE_fp32")
     enable_upscale = settings["enable_upscale"]
     blend_mode = settings.get("blend_mode", "OFF")
     input_res_pct = settings.get("input_res_pct", 100)
-    model_path = settings.get("model_path", "weights/RealESR_Gx4_fp16.onnx")
+    model_path = settings.get("model_path", "upscale:FuryTMP/RealESR_Gx4_fp16")
 
-    # Initialize upscaler (ONNX or SRResNet) based on model_path extension
-    init_upscaler(model_path, enable_upscale)
+    # Initialize upscaler (ONNX or SRResNet)
+    if enable_upscale:
+        if not init_upscaler(model_path, enable_upscale):
+            messagebox.showerror(
+                "Upscaler Error",
+                f"Failed to load/download upscaler model:\n{model_path}"
+            )
+            return
+
+    # Initialize RIFE only if needed
+    if enable_rife:
+        if not load_rife_model(rife_model):
+            messagebox.showerror(
+                "RIFE Error",
+                f"Failed to load/download RIFE model:\n{rife_model}"
+            )
+            return
 
     files = natural_sort([
         os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
@@ -655,14 +925,13 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
         return
 
     output_fps = fps * fps_mult if enable_rife else fps
-    video = start_ffmpeg_writer(output_path, width, height, output_fps, settings["codec"])
-    start = time.time()
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
+    start = time.monotonic()
 
     target_size = (width, height)
 
-    # 🔥 Important: keep native resolution for the SR model / RIFE
+    # Keep native resolution internally for SR / RIFE
     file_iter = _frame_loader(files, None)
-
 
     prev = next(file_iter, None)
     if prev is None:
@@ -679,20 +948,64 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     for i, curr in enumerate(file_iter, start=1):
         if cancel_flag.is_set():
             break
+        if not _upscale_wait_if_paused():
+            break
 
         if enable_rife:
+            if not _upscale_wait_if_paused():
+                break
+
             interpolated = run_rife(prev, curr, fps_mult)
+
             if enable_upscale:
-                interpolated = [run_esrgan(f, blend_mode, input_res_pct, target_size=target_size) for f in interpolated]
-                curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size)
+                if not _upscale_wait_if_paused():
+                    break
+
+                interpolated = [
+                    run_esrgan(f, blend_mode, input_res_pct, model_name=model_path, target_size=target_size)
+                    for f in interpolated
+                ]
+
+                if not _upscale_wait_if_paused():
+                    break
+
+                curr_proc = run_esrgan(
+                    curr,
+                    blend_mode,
+                    input_res_pct,
+                    model_name=model_path,
+                    target_size=target_size
+                )
             else:
                 interpolated = [cv2.resize(f, target_size) for f in interpolated]
                 curr_proc = cv2.resize(curr, target_size)
 
             for f in interpolated:
+                if cancel_flag.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
                 video.stdin.write(f.tobytes())
+
         else:
-            curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size) if enable_upscale else cv2.resize(curr, target_size)
+            if enable_upscale:
+                if not _upscale_wait_if_paused():
+                    break
+
+                curr_proc = run_esrgan(
+                    curr,
+                    blend_mode,
+                    input_res_pct,
+                    model_name=model_path,
+                    target_size=target_size
+                )
+            else:
+                curr_proc = cv2.resize(curr, target_size)
+
+        if cancel_flag.is_set():
+            break
+        if not _upscale_wait_if_paused():
+            break
 
         video.stdin.write(curr_proc.tobytes())
         prev = curr
@@ -711,197 +1024,285 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     except Exception:
         pass
 
-
 MAX_QUEUE_SIZE = 16
+END_SEG = ("END", None, None, [])
+END_FRM = ("END", None)
+
+def q_put(q, item, cancel_evt, timeout=0.25):
+    while not cancel_flag.is_set() and not cancel_evt.is_set():
+        try:
+            q.put(item, timeout=timeout)
+            return True
+        except queue.Full:
+            # normal: queue is full, retry until cancel
+            continue
+        except Exception as e:
+            # not normal: surface the real bug
+            print(f"[q_put] unexpected error: {e}")
+            cancel_evt.set()
+            return False
+    return False
+
+def q_get(q, cancel_evt, timeout=0.25):
+    while not cancel_flag.is_set() and not cancel_evt.is_set():
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            # normal: nothing ready yet, retry until cancel
+            continue
+        except Exception as e:
+            print(f"[q_get] unexpected error: {e}")
+            cancel_evt.set()
+            return None
+    return None
 
 def start_threaded_pipeline(settings, progress_widget, status_label_widget):
     global progress_bar, status_label, esrgan_session
     progress_bar = progress_widget
     status_label = status_label_widget
-    
+
+    cancel_flag.clear()
+    suspend_flag.clear()
+
     try:
-        progress_bar.after(0, lambda: progress_bar.configure(mode="determinate",
-                                                             maximum=100.0, value=0.0))
+        progress_bar.after(0, lambda: progress_bar.configure(
+            mode="determinate", maximum=100.0, value=0.0
+        ))
         status_label.after(0, lambda: status_label.configure(text="Preparing..."))
     except Exception:
         pass
-    
-    frames_dir   = settings["frames_folder"]
-    output_path  = settings["output_file"]
-    codec        = settings["codec"]
-    width        = settings["width"]
-    height       = settings["height"]
-    fps          = settings["fps"]
-    fps_mult     = settings["fps_multiplier"]
-    enable_rife  = settings["enable_rife"]
-    enable_up    = settings["enable_upscale"]
-    blend_mode   = settings.get("blend_mode", "OFF")
-    input_res_pct= settings.get("input_res_pct", 100)
-    model_path   = settings.get("model_path", "weights/RealESR_Gx4_fp16.onnx")
+
+    frames_dir    = settings["frames_folder"]
+    output_path   = settings["output_file"]
+    codec         = settings["codec"]
+    width         = settings["width"]
+    height        = settings["height"]
+    fps           = settings["fps"]
+    fps_mult      = settings["fps_multiplier"]
+    enable_rife   = settings["enable_rife"]
+    enable_up     = settings["enable_upscale"]
+    blend_mode    = settings.get("blend_mode", "OFF")
+    input_res_pct = settings.get("input_res_pct", 100)
+    rife_model    = settings.get("rife_model", "rife:FuryTMP/RIFE_fp32")
+    model_path    = settings.get("model_path", "upscale:FuryTMP/RealESR_Gx4_fp16")
 
     ui_set_status(status_label, "Preparing...")
+
     output_fps = fps * fps_mult if enable_rife else fps
-    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
-    start = time.time()
     target_size = (width, height)
+    work_size = None
 
-    # Initialize upscaler (ONNX or SRResNet) based on model_path extension
-    init_upscaler(model_path, enable_up)
-
-    # Sorted frame list
     files = natural_sort([
         os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     ])
     total_src = len(files)
+    total_pairs = max(1, total_src - 1)
+
     if total_src < 2:
-        ui_set_status(status_label, "Not enough frames to process.")
+        ui_set_status(status_label, "⚠️ Not enough frames to process.")
         return
 
-    interpolation_queue = Queue(MAX_QUEUE_SIZE)
-    upscaling_queue = Queue(MAX_QUEUE_SIZE)
+    if enable_up:
+        if not init_upscaler(model_path, enable_up):
+            ui_set_status(status_label, "❌ Failed to load/download upscaler model.")
+            messagebox.showerror(
+                "Upscaler Error",
+                f"Failed to load/download upscaler model:\n{model_path}"
+            )
+            return
 
+    if enable_rife:
+        if not load_rife_model(rife_model):
+            ui_set_status(status_label, "❌ Failed to load/download RIFE model.")
+            messagebox.showerror(
+                "RIFE Error",
+                f"Failed to load/download RIFE model:\n{rife_model}"
+            )
+            return
+
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
+    start = time.monotonic()
+
+    # Small queues. Keep them tight so RAM does not balloon.
+    segment_queue = Queue(maxsize=4)
+    write_queue = Queue(maxsize=8)
 
     cancel_local = threading.Event()
+    END_SEG = ("END", None, None)
+    END_WRITE = ("END", None)
 
-    def rife_worker():
+    def reader_rife_worker():
+        """
+        Reads frames and performs only the RIFE stage.
+        Sends:
+            (pair_index, curr_frame, interpolated_frames)
+        in natural order.
+        """
         try:
-            prev = cv2.imread(files[0]);  prev = normalize_frame(prev, target_size)
+            prev = cv2.imread(files[0], cv2.IMREAD_COLOR)
+            prev = normalize_frame(prev, work_size)
+
             for idx in range(1, len(files)):
                 if cancel_flag.is_set() or cancel_local.is_set():
                     break
-                curr = cv2.imread(files[idx]);  curr = normalize_frame(curr, target_size)
+                if not _upscale_wait_if_paused():
+                    break
 
-                interpolated = run_rife(prev, curr, fps_mult) if enable_rife else []
-                if interpolated:
-                    interpolated = [normalize_frame(f, target_size) for f in interpolated]
+                curr = cv2.imread(files[idx], cv2.IMREAD_COLOR)
+                curr = normalize_frame(curr, work_size)
 
-                # enqueue the WHOLE segment: prev, interps, curr
-                interpolation_queue.put((idx, prev, curr, interpolated))
+                if enable_rife:
+                    interpolated = run_rife(prev, curr, fps_mult)
+                else:
+                    interpolated = []
+
+                if not q_put(segment_queue, (idx, curr, interpolated), cancel_local):
+                    break
+
                 prev = curr
 
-            # tail sentinel; prev is the last frame seen
-            interpolation_queue.put(("END", prev, None, []))
         except Exception as e:
-            print("rife_worker error:", e)
-            interpolation_queue.put(("END", None, None, []))
+            print(f"⚠️ reader_rife_worker error: {e}")
+            cancel_local.set()
+        finally:
+            q_put(segment_queue, END_SEG, cancel_local)
 
-    def esrgan_worker():
+    def process_worker():
+        """
+        Consumes ordered segments, performs upscale/resize, and emits finished
+        frames in final output order. No reordering dict needed.
+        """
         try:
             processed = 0
-            frame_id = 0
+
             while True:
-                idx, prev, curr, interpolated = interpolation_queue.get()
-                if idx == "END":
-                    # write the very last prev (final frame) once
-                    if prev is not None:
-                        if (prev.shape[1], prev.shape[0]) != target_size:
-                            prev = normalize_frame(prev, target_size)
-                        final_prev = run_esrgan(prev, blend_mode, input_res_pct, target_size=target_size) if enable_up else prev
-                        upscaling_queue.put((frame_id, final_prev)); frame_id += 1
-                    upscaling_queue.put(("END", None))
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+                if not _upscale_wait_if_paused():
                     break
 
-                # last-ditch safety only — rife_worker already normalized everything
-                if (prev.shape[1], prev.shape[0]) != target_size:
-                    prev = normalize_frame(prev, target_size)
-                if (curr.shape[1], curr.shape[0]) != target_size:
-                    curr = normalize_frame(curr, target_size)
-                if interpolated and any((f.shape[1], f.shape[0]) != target_size for f in interpolated):
-                    interpolated = [normalize_frame(f, target_size) for f in interpolated]
+                item = q_get(segment_queue, cancel_local)
+                if item is None:
+                    break
 
-                # upscale (if enabled)
+                idx, curr, interpolated = item
+                if idx == "END":
+                    break
+
+                # Process interpolated frames first
                 if enable_up:
-                    prev_proc = run_esrgan(prev, blend_mode, input_res_pct, target_size=target_size)
-                    inter_proc = [run_esrgan(f, blend_mode, input_res_pct, target_size=target_size) for f in interpolated]
-                    curr_proc = run_esrgan(curr, blend_mode, input_res_pct, target_size=target_size)
+                    inter_proc = [
+                        run_esrgan(
+                            f,
+                            blend_mode,
+                            input_res_pct,
+                            model_name=model_path,
+                            target_size=target_size
+                        )
+                        for f in interpolated
+                    ]
+                    curr_proc = run_esrgan(
+                        curr,
+                        blend_mode,
+                        input_res_pct,
+                        model_name=model_path,
+                        target_size=target_size
+                    )
                 else:
-                    prev_proc = prev
-                    inter_proc = interpolated
-                    curr_proc = curr
+                    inter_proc = [cv2.resize(f, target_size) for f in interpolated]
+                    curr_proc = cv2.resize(curr, target_size)
 
-                # IMPORTANT: correct order
-                upscaling_queue.put((frame_id, prev_proc)); frame_id += 1
                 for f in inter_proc:
-                    upscaling_queue.put((frame_id, f)); frame_id += 1
-                upscaling_queue.put((frame_id, curr_proc)); frame_id += 1
+                    if cancel_flag.is_set() or cancel_local.is_set():
+                        break
+                    if not _upscale_wait_if_paused():
+                        break
+                    if not q_put(write_queue, ("FRAME", f), cancel_local):
+                        break
+
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
+
+                if not q_put(write_queue, ("FRAME", curr_proc), cancel_local):
+                    break
 
                 processed += 1
-                update_progress(processed, total_src, start)
-        except Exception as e:
-            print("esrgan_worker error:", e)
-            upscaling_queue.put(("END", None))
+                update_progress(processed, total_pairs, start)
 
+        except Exception as e:
+            print(f"⚠️ process_worker error: {e}")
+            cancel_local.set()
+        finally:
+            q_put(write_queue, END_WRITE, cancel_local)
 
     def writer_worker():
+        """
+        Writes already-ordered finished frames directly to ffmpeg.
+        """
         try:
-            buffer = {}
-            expected_id = 0
-            wrote = 0
-
             while True:
-                # If ffmpeg died, stop cleanly and print why
-                if video.poll() is not None:
-                    try:
-                        err = video.stderr.read().decode(errors="ignore") if video.stderr else ""
-                    except Exception:
-                        err = ""
-                    print("[writer] ffmpeg exited early.")
-                    if err:
-                        print(err.strip()[:1200])
+                if cancel_flag.is_set() or cancel_local.is_set():
                     break
 
-                fid, frame = upscaling_queue.get()
-
-                if fid == "END":
-                    # flush any remainder in order
-                    for k in sorted(buffer.keys()):
-                        ok, why = _validate_frame_bytes(buffer[k], width, height)
-                        if not ok:
-                            print(f"[writer] drop bad buffered frame {k}: {why}")
-                            continue
-                        try:
-                            video.stdin.write(_frame_to_bytes(buffer[k]))
-                            wrote += 1
-                        except (BrokenPipeError, OSError, ValueError) as e:
-                            print(f"[writer] flush write error: {e}")
-                            break
+                item = q_get(write_queue, cancel_local)
+                if item is None:
                     break
 
-                buffer[fid] = frame
+                kind, payload = item
+                if kind == "END":
+                    break
 
-                # write any ready frames in sequence
-                while expected_id in buffer:
-                    f = buffer.pop(expected_id)
-                    ok, why = _validate_frame_bytes(f, width, height)
-                    if not ok:
-                        print(f"[writer] drop frame {expected_id}: {why}")
-                        expected_id += 1
-                        continue
-                    try:
-                        video.stdin.write(_frame_to_bytes(f))
-                        wrote += 1
-                    except (BrokenPipeError, OSError, ValueError) as e:
-                        print(f"[writer] write error on {expected_id}: {e}")
-                        # try to read stderr for context, then stop
-                        try:
-                            err = video.stderr.read().decode(errors="ignore") if video.stderr else ""
-                            if err:
-                                print(err.strip()[:1200])
-                        except Exception:
-                            pass
-                        return
-                    expected_id += 1
+                frame = payload
+                ok, why = _validate_frame_bytes(frame, width, height)
+                if not ok:
+                    print(f"[writer] drop bad frame: {why}")
+                    continue
 
-            # close stdin only once at the end
+                try:
+                    video.stdin.write(_frame_to_bytes(frame))
+                except Exception as e:
+                    print(f"[writer] write error: {e}")
+                    cancel_local.set()
+                    break
+
+        except Exception as e:
+            print(f"⚠️ writer_worker error: {e}")
+            cancel_local.set()
+        finally:
             try:
                 video.stdin.close()
             except Exception:
                 pass
+            try:
+                video.wait()
+            except Exception:
+                pass
 
-        except Exception as e:
-            print("writer_worker error:", e)
+    t_read = threading.Thread(target=reader_rife_worker, daemon=True)
+    t_proc = threading.Thread(target=process_worker, daemon=True)
+    t_wrt  = threading.Thread(target=writer_worker, daemon=True)
 
+    print(">>> start_threaded_pipeline called")
+    t_read.start()
+    t_proc.start()
+    t_wrt.start()
+
+    ui_set_status(status_label, "Running threaded pipeline...")
+
+    def _wait_finish():
+        t_read.join()
+        t_proc.join()
+        t_wrt.join()
+
+        update_progress(total_pairs, total_pairs, start)
+        ui_set_progress(progress_bar, 100.0)
+        ui_set_status(status_label, "Processing Complete!")
+
+    threading.Thread(target=_wait_finish, daemon=True).start()
+    
 def _encoder_args(codec: str, width: int, height: int):
     c = (codec or "").lower()
     if c in {"h264_nvenc","hevc_nvenc","av1_nvenc"}:
@@ -954,5 +1355,10 @@ def start_ffmpeg_writer(output_path, width, height, fps, codec):
     ]
     enc = _encoder_args(codec, width, height)
     cmd = base + enc + [output_path]
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE)
-
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        bufsize=0
+    )
