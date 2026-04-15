@@ -226,9 +226,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 ### 📌 Step 1: Download the VisionDepth3D Program
 - 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
 - 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
-- 3️⃣ Download models [Here](https://drive.google.com/file/d/1eEMcKItBn8MqH6fTCJX890A9HD054Ei4/view?usp=sharing) and extract weights folder into VisionDepth3D Main Folder
-- 4️⃣ Download Distill Any Depth onnx models [here](https://huggingface.co/collections/FuryTMP/distill-any-depth-onnx-models-681cad0ff43990f5dc2ff670) (if you want to use it) and put the Distill Any Depth Folder into Weights Folder
-- 
+
 ### 📌 Step 2: Create Env and Install Required Dependencies 
 
 ### 🟢 Option 1: Install via pip (Standard CMD Method)
