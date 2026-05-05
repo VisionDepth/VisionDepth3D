@@ -1402,5 +1402,7 @@ def start_ffmpeg_writer(output_path, width, height, fps, codec):
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        bufsize=0
+        bufsize=0,
+        **hidden_subprocess_kwargs(),
     )
+
