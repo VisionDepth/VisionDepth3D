@@ -25,6 +25,22 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+import platform
+import subprocess
+
+
+def hidden_subprocess_kwargs():
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 
 COMMON_FPS = [
     23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0,
@@ -1328,29 +1344,34 @@ class FpsUpscalePage(QWidget):
                     dur = (end.get_frames() - start.get_frames()) / fps
                     out = os.path.join(out_dir, f"scene_{i + 1:03d}.{fmt}")
 
-                    subprocess.run([
-                        "ffmpeg",
-                        "-y",
-                        "-hwaccel",
-                        "auto",
-                        "-i",
-                        path,
-                        "-ss",
-                        f"{t0:.3f}",
-                        "-t",
-                        f"{dur:.3f}",
-                        "-c:v",
-                        "libx264",
-                        "-crf",
-                        "18",
-                        "-preset",
-                        "fast",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "128k",
-                        out,
-                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-hwaccel",
+                            "auto",
+                            "-i",
+                            path,
+                            "-ss",
+                            f"{t0:.3f}",
+                            "-t",
+                            f"{dur:.3f}",
+                            "-c:v",
+                            "libx264",
+                            "-crf",
+                            "18",
+                            "-preset",
+                            "fast",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "128k",
+                            out,
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        **hidden_subprocess_kwargs(),
+                    )
 
                     progress = int(((i + 1) / total) * 100)
 
