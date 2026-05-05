@@ -51,22 +51,7 @@ By the end of this guide, you’ll be able to confidently create smooth, comfort
    - [Optional Advanced Controls](#optional-advanced-controls)
    - [Clip Range (Optional)](#clip-range-optional)
 
-6. [Audio Tool (Ripper & Attacher)](#audio-tool-audio-ripper--attacher)
-   - [What This Tool Can Do](#what-this-tool-can-do)
-   - [Step 1 — Add Your Source Videos](#step-1--add-your-source-videos)
-   - [Step 2 — Choose Your Operation](#step-2--choose-your-operation)
-   - [Audio Source Modes (Attach / Attach+Stitch)](#audio-source-modes-attach--attachstitch)
-   - [Audio Offset (Sync Fix)](#audio-offset-sync-fix)
-   - [Force Re-encode (Per-clip Attach)](#force-re-encode-per-clip-attach)
-   - [Rip Settings (Extract Audio)](#rip-settings-extract-audio)
-   - [Final Stitch Settings (Attach+Stitch)](#final-stitch-settings-attachstitch)
-   - [Step 3 — Output Settings](#step-3--output-settings)
-   - [Preview Button (Recommended)](#preview-button-recommended)
-   - [Run Button](#run-button)
-   - [Common Workflows](#common-workflows)
-   - [Notes](#notes)
-
-7. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
+6. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
    - [Quick Start: Live Screen 3D](#quick-start-live-screen-3d)
    - [Live Preview Controls (Hotkeys)](#live-preview-controls-hotkeys)
    - [What Each Capture Setting Does](#what-each-capture-setting-does)
@@ -75,8 +60,17 @@ By the end of this guide, you’ll be able to confidently create smooth, comfort
    - [Recommended Settings for Screen Live 3D](#recommended-settings-for-screen-live-3d)
    - [Troubleshooting](#troubleshooting)
 
-8. [Recommended Workflow Summary](#recommended-workflow-summary)
-9. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
+7. [Recommended Workflow Summary](#recommended-workflow-summary)
+8. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
+9. [Hardware / Backend Support](#hardware--backend-support)
+   - [NVIDIA CUDA, Recommended](#nvidia-cuda-recommended)
+   - [AMD / Intel on Windows, DirectML](#amd--intel-on-windows-directml)
+   - [AMD on Linux, ROCm](#amd-on-linux-rocm)
+   - [CPU Fallback](#cpu-fallback)
+   - [FFmpeg Hardware Encoders](#ffmpeg-hardware-encoders)
+   - [Recommended Setup by User Type](#recommended-setup-by-user-type)
+   - [Backend Troubleshooting](#backend-troubleshooting)
+   - [VD3D Live v4.0 Shift Value Update](#vd3d-live-v40-shift-value-update)
 10. [Performance Optimization Tips](#performance-optimization-tips)
 11. [Common Issues & Fixes](#common-issues--fixes)
 12. [When to Use Depth Blending](#when-to-use-depth-blending)
@@ -1793,245 +1787,6 @@ Foreground, midground, and background controls now work together with:
 
 For the best results, start from the new presets, preview several frames, render short clip ranges, and tune gradually.
 
-
-## Audio Tool (Audio Ripper & Attacher)
-
-The Audio Tool lets you extract audio from videos, attach external audio tracks to videos, or attach audio and then stitch multiple clips into one final file.
-
-This is useful when:
-- Your source has no audio after processing
-- You rendered clips in batches and need the original audio back
-- You need to fix audio sync with an offset
-- You have per-scene outputs and want one seamless final export
-
----
-
-## What This Tool Can Do
-
-### 1) Rip (Extract) Audio
-Extracts the main audio track from one or more video files and saves it as a separate audio file.
-
-Best for:
-- Saving original audio before heavy processing
-- Creating audio files you can re-attach later
-- Archiving multiple language tracks (if you select the right source file)
-
----
-
-### 2) Attach (Mux) Audio
-Takes an external audio file and adds it to a video file (without re-encoding by default).
-
-Best for:
-- Restoring audio after a render
-- Replacing audio with a clean track
-- Adding a different language track
-
----
-
-### 3) Attach + Stitch
-Attaches audio to multiple clips and then stitches them into one final continuous video.
-
-Best for:
-- Batch renders that output multiple clips
-- Scene-split workflows where you want a single final movie
-
----
-
-## Step 1 — Add Your Source Videos
-
-Use the **Step 1 — Sources** panel:
-
-- **Add Files** to select multiple videos
-- **Add Folder** to load every supported video in a folder
-- **Up / Down** to reorder clips (important for stitching)
-- **Remove / Clear** to clean the list
-
-Supported video formats include MP4, MKV, MOV, AVI, WEBM, and more.
-
----
-
-## Step 2 — Choose Your Operation
-
-In **Step 2 — Operation & Options**, set **Operation** to one of:
-
-- **rip**  
-- **attach**  
-- **attach_stitch**
-
----
-
-## Audio Source Modes (Attach / Attach+Stitch)
-
-### Auto-match from folder
-Uses a folder of audio files and automatically matches each audio track to each video.
-
-Matching rules:
-- Exact name match works best  
-  Example:  
-  `scene_001.mp4` matches `scene_001.wav`
-
-- If names are similar, it tries common patterns  
-  Example:  
-  `scene_001.mp4` matches `scene_001_audio.wav`
-
-- If needed, it can match by the last number in the filename  
-  Example:  
-  `clip12.mp4` matches `audio12.m4a`
-
-Best for:
-- Batch clip workflows
-- Scene split outputs
-
----
-
-### Single audio for all
-Uses one audio file and applies it to every video in the list.
-
-Best for:
-- One continuous audio track
-- Short test clips that all share the same audio
-
----
-
-## Audio Offset (Sync Fix)
-
-**Audio offset (sec)** shifts the audio forward or backward.
-
-- Positive offset: audio starts later (delays audio)
-- Negative offset: audio starts earlier (pulls audio forward)
-
-Use this if:
-- Lip sync is slightly off
-- Your pipeline introduced a delay
-- Your stitched output drifts out of sync
-
-Tip:
-Start with small adjustments like ±0.05 to ±0.20 seconds.
-
----
-
-## Force Re-encode (Per-clip Attach)
-
-By default, attaching audio uses **copy** mode (fast, no quality loss).
-
-Enable **Force re-encode** only when needed.
-
-Use it when:
-- The video or audio won’t mux cleanly
-- A container doesn’t support the stream format
-- You want to convert codecs for compatibility
-
-Options include:
-- Video: copy, libx264, libx265, h264_nvenc, hevc_nvenc
-- Audio: copy, aac, mp3, opus, flac, ac3, eac3
-
----
-
-## Rip Settings (Extract Audio)
-
-### Rip codec
-Controls how audio is extracted:
-
-- **copy**  
-  Fastest, no quality loss, keeps original codec when possible
-
-- **aac / mp3 / opus / flac / wav / ac3 / eac3**  
-  Re-encodes audio into the selected codec
-
-### Bitrate (kbps)
-Used when re-encoding audio (example: 192 kbps).
-
-Higher bitrate:
-- Better quality
-- Larger files
-
----
-
-## Final Stitch Settings (Attach+Stitch)
-
-When using **attach_stitch**, the tool re-exports a final stitched file to ensure:
-- All clips match size and FPS
-- Pixel format is compatible
-- Audio is gapless when possible
-
-Key options:
-- **Final vcodec**: auto, libx264, libx265, NVENC options
-- **CRF/CQ**: quality level (lower = higher quality)
-- **Preset**: speed vs compression efficiency
-- **acodec / bitrate**: output audio format and bitrate
-
----
-
-## Step 3 — Output Settings
-
-### Rip output folder
-Required for **rip** mode.
-This is where extracted audio files will be saved.
-
----
-
-### Per-clip output folder
-Required for **attach** and **attach_stitch**.
-This is where the muxed video files will be saved.
-
----
-
-### Final stitched output
-Required only for **attach_stitch**.
-This is the final single stitched video file.
-
----
-
-## Preview Button (Recommended)
-
-Click **Preview** before running.
-
-It will show:
-- Your selected mode
-- What audio source is being used
-- Video-to-audio pairing results (including missing matches)
-
-This helps prevent wasted runs.
-
----
-
-## Run Button
-
-Click **Run** to start processing.
-
-A progress window will appear showing FFmpeg output logs.
-If something fails, the logs usually show which codec or file caused the issue.
-
----
-
-## Common Workflows
-
-### Restore audio after a 3D render
-1. Add your rendered video
-2. Set mode to **attach**
-3. Choose **Single audio for all**
-4. Pick the original audio track
-5. Set offset if needed
-6. Run
-
----
-
-### Batch clips + stitch into one final movie
-1. Add clips in correct order
-2. Set mode to **attach_stitch**
-3. Use **Auto-match from folder** or **Single audio**
-4. Set per-clip output folder
-5. Set final stitched output file
-6. Run
-
----
-
-## Notes
-
-- FFmpeg must be installed and available in PATH for this tool to work.
-- For best matching results, keep audio filenames close to the video filenames.
-- If a video has no audio when ripping, it will be skipped automatically.
-
 ---
 
 ## VD3D Live (Real-Time 2D-to-3D)
@@ -2277,6 +2032,234 @@ This approach prevents wasted long renders and ensures optimal depth quality.
 - Avoid extreme pixel shift values (eye strain risk)  
 
 Balanced depth always looks more cinematic than aggressive depth.
+
+---
+
+# Hardware / Backend Support
+
+VisionDepth3D is designed for GPU acceleration, but supported features depend on your hardware and installed backend.
+
+---
+
+## NVIDIA CUDA, Recommended
+
+NVIDIA CUDA is the recommended setup for VisionDepth3D.
+
+Best for:
+
+- Depth estimation
+- 3D stereo rendering
+- Live 3D preview
+- RIFE interpolation
+- Real-ESRGAN upscaling
+- NVENC video encoding
+
+Recommended install path:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+Use the official PyTorch install selector if your system needs a different CUDA version:
+
+```text
+https://pytorch.org/get-started/locally/
+```
+
+---
+
+## AMD / Intel on Windows, DirectML
+
+AMD and Intel GPU users on Windows can use DirectML through:
+
+```bash
+pip install torch-directml
+```
+
+DirectML can provide GPU acceleration on supported AMD Radeon, Intel Arc, and some integrated GPUs.
+
+Notes:
+
+- DirectML is usually slower than NVIDIA CUDA.
+- Some models or operations may fall back to CPU.
+- If DirectML causes issues, use CPU mode as a fallback.
+- Do not install CUDA PyTorch for AMD GPUs on Windows.
+
+---
+
+## AMD on Linux, ROCm
+
+AMD users on Linux may be able to use ROCm if their GPU and driver stack are supported.
+
+ROCm support depends heavily on:
+
+- GPU model
+- Linux distribution
+- installed ROCm version
+- PyTorch ROCm compatibility
+
+Use the official PyTorch install selector for ROCm setup:
+
+```text
+https://pytorch.org/get-started/locally/
+```
+
+---
+
+## CPU Fallback
+
+VisionDepth3D can fall back to CPU when no supported GPU backend is available.
+
+CPU mode works, but it is much slower for:
+
+- Depth map generation
+- Video processing
+- Live 3D
+- Upscaling
+- Frame interpolation
+- Full 3D renders
+
+CPU mode is best for testing, small images, or fallback compatibility.
+
+---
+
+## FFmpeg Hardware Encoders
+
+VisionDepth3D can use different FFmpeg encoders depending on your GPU.
+
+| GPU / Backend | Encoder Options |
+|---|---|
+| NVIDIA | `h264_nvenc`, `hevc_nvenc`, `av1_nvenc` |
+| AMD | `h264_amf`, `hevc_amf`, `av1_amf` |
+| Intel | `h264_qsv`, `hevc_qsv`, `av1_qsv` |
+| CPU | `libx264`, `libx265`, `libaom-av1`, `libsvtav1` |
+
+If a hardware encoder fails, try a CPU encoder for compatibility.
+
+---
+
+## Recommended Setup by User Type
+
+| User Type | Recommended Backend |
+|---|---|
+| NVIDIA GPU user | CUDA PyTorch + NVENC |
+| AMD GPU on Windows | DirectML + AMF encoder |
+| Intel GPU on Windows | DirectML + QSV encoder |
+| AMD GPU on Linux | ROCm if supported |
+| No supported GPU | CPU PyTorch |
+
+---
+
+## Backend Troubleshooting
+
+## CUDA is not detected
+
+Try:
+
+- Check NVIDIA driver installation.
+- Run `nvidia-smi`.
+- Reinstall CUDA PyTorch using the official PyTorch selector.
+- Make sure `torch`, `torchvision`, and `torchaudio` use matching CUDA builds.
+- Restart VisionDepth3D after reinstalling PyTorch.
+
+---
+
+## DirectML is not detected
+
+Try:
+
+- Install `torch-directml`.
+- Update AMD / Intel GPU drivers.
+- Confirm you are on Windows.
+- Restart VisionDepth3D after installation.
+- Use CPU mode if DirectML is unstable.
+
+---
+
+## ROCm is not detected
+
+Try:
+
+- Confirm your AMD GPU supports ROCm.
+- Confirm your Linux distribution is supported by ROCm.
+- Install the correct PyTorch ROCm build.
+- Check that your ROCm driver/runtime is installed correctly.
+
+---
+
+## FFmpeg hardware encoding fails
+
+Try:
+
+- Switch from NVENC / AMF / QSV to CPU encoding.
+- Update GPU drivers.
+- Use H.264 before trying H.265 or AV1.
+- Confirm your GPU supports the selected encoder.
+- Try another container such as `.mkv` if `.mp4` fails.
+
+---
+
+## VD3D Live v4.0 Shift Value Update
+
+The VD3D should follow the new v4.0 shift convention.
+
+Older 3D values may have used:
+
+```text
+FG shift: 6 to 10
+MG shift: 1 to 3
+BG shift: -3 to -6
+```
+
+For VisionDepth3D v4.0, use the new convention:
+
+```text
+FG shift: -5 to -10
+MG shift: -0.5 to -2
+BG shift: +2 to +5
+```
+
+Recommended Live 3D starter preset:
+
+```text
+FG/MG/BG: -6 / -0.8 / +2.2
+```
+
+Stronger Live 3D test preset:
+
+```text
+FG/MG/BG: -8.5 / -1.2 / +3.5
+```
+
+If 3D looks inverted, check:
+
+- depth inversion
+- eye order
+- foreground shift direction
+- whether an older preset was loaded
+- whether the depth model uses the opposite near/far convention
+
+For comfortable realtime Live 3D, start with softer values and increase strength slowly.
+
+Recommended comfort settings:
+
+```text
+Capture FPS: 30
+Inference: 384x384 or 518x518
+Depth FPS: 4 to 6
+Smooth Depth: On
+Foreground Shift: -6.0
+Midground Shift: -0.8
+Background Shift: +2.2
+Max Pixel Shift: 0.020 to 0.030
+Parallax Balance: 0.70
+Depth Pop Gamma: 1.05 to 1.15
+Subject Tracking: Off for testing, On for stability
+Dynamic Convergence: On
+Edge Masking: On
+Feathering: Off for speed, On for cleaner edges
+Floating Window: Off for testing, On if edge violations appear
+```
 
 ---
 
