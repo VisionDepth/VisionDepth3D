@@ -19,24 +19,24 @@ class AppState:
     crf_value: int = 23
     nvenc_cq_value: int = 23
 
-    fg_shift: float = 5.0
-    mg_shift: float = 0.5
-    bg_shift: float = -1.5
+    fg_shift: float = -8.10
+    mg_shift: float = -1.30
+    bg_shift: float = 3.10
     sharpness_factor: float = 0.2
 
-    max_pixel_shift: float = 0.20
-    zero_parallax_strength: float = 0.0
+    max_pixel_shift: float = 0.100
+    zero_parallax_strength: float = 0.7
     parallax_balance: float = 0.80
-    dof_strength: float = 2.0
+    dof_strength: float = 0.6
     convergence_strength: float = 0.0
     enable_dynamic_convergence: bool = True
 
-    depth_pop_gamma: float = 0.85
+    depth_pop_gamma: float = 0.80
     depth_pop_mid: float = 0.50
     depth_stretch_lo: float = 0.05
     depth_stretch_hi: float = 0.95
-    fg_pop_multiplier: float = 1.20
-    bg_push_multiplier: float = 1.10
+    fg_pop_multiplier: float = 1.08
+    bg_push_multiplier: float = 1.04
     subject_lock_strength: float = 1.00
 
     feather_strength: float = 0.0
@@ -46,7 +46,7 @@ class AppState:
     contrast: float = 1.0
     brightness: float = 0.0
 
-    use_subject_tracking: bool = False
+    use_subject_tracking: bool = True
     use_floating_window: bool = False
     enable_edge_masking: bool = True
     enable_feathering: bool = True
@@ -58,7 +58,7 @@ class AppState:
     preview_frame_index: int = 0
     preview_width: int = 960
     preview_height: int = 540
-    ipd_enabled: bool = True
+    ipd_enabled: bool = False
     ipd_scale: float = 1.0
     show_convergence_guides: bool = False
     disable_shift_ema: bool = False
