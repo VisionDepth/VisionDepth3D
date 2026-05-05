@@ -55,5 +55,9 @@ from .DB import (
 )
 
 from .vd3d_live import launch_live_gui
-from .preview_gui import open_3d_preview_window
+from .models.depth_anything_v2.dpt import DepthAnythingV2
+from .adapters.depthanything_adapter import load_da_v2_adapter
+from .adapters.depthanything3_adapter import load_da3_adapter
+from .adapters.videodepthanything_adapter import load_vda_adapter
+from .adapters.lbm_adapter import load_lbm_adapter
 from .models.depth_anything_v2.dpt import DepthAnythingV2
