@@ -64,7 +64,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 <h3 align="center">3D Generator (Stereo Composer)</h3>
 
 <p align="center">
-  <img width="700" height="400" alt="3Dtab" src="https://github.com/user-attachments/assets/e79384c3-d398-4db0-a6e3-434893549988" />
+  <img width="700" height="400" alt="3Dtab" src="https://github.com/user-attachments/assets/31541274-90e3-485e-9f3d-d56730e715e8" />
   <br>
   <em>(3D Generator Tab)</em>
 </p>
