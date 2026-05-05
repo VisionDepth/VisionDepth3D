@@ -19,6 +19,22 @@ import torch.nn.functional as F
 import math
 import queue
 
+import platform
+
+
+def hidden_subprocess_kwargs():
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
+
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 progress_bar = None
@@ -428,8 +444,13 @@ def select_video_and_generate_frames(set_folder_callback=None, merged_progress=N
             "-q:v", "2",
             output_pattern
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            **hidden_subprocess_kwargs(),
+        )
         if merged_progress:
             merged_progress.after(0, lambda: stop_spinner(result.returncode == 0))
 
