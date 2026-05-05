@@ -592,13 +592,115 @@ The blended results are grayscale depth and are ready to use in the 3D Generator
 
 ---
 
-## 3D Generator Tab
+# 3D Generator Tab
 
-The 3D Generator tab converts a 2D video and its corresponding depth map into a stereoscopic 3D video.
+The **3D Generator** tab converts a 2D source video and its matching depth map into a stereoscopic 3D video.
 
-It uses depth-based pixel shifting to create left and right eye views, with advanced control over convergence, parallax, floating windows, and stereo stabilization.
+This is the final stage of the VisionDepth3D workflow. It takes:
 
-This is the final stage of the VisionDepth3D workflow.
+- the original 2D video
+- the generated or blended depth map video
+- your stereo/parallax settings
+- your output and encoding options
+
+and renders a final 3D video using the current **VisionDepth3D Method**.
+
+The current method uses subject-aware depth normalization, pop-control depth shaping, structured near / mid / far disparity weighting, GPU stereo warping, edge-aware repair, dynamic convergence, and floating-window protection to create a controllable stereo result.
+
+---
+
+## Important: New VisionDepth3D Shift Direction
+
+VisionDepth3D now uses the updated VisionDepth3D Method for stereo generation.
+
+This method uses a different stereo shift convention than older versions of VisionDepth3D.
+
+In the current pipeline:
+
+- **Foreground Shift is usually negative**
+- **Midground Shift is usually slightly negative or near zero**
+- **Background Shift is usually positive**
+
+This may feel opposite from older VisionDepth3D presets.
+
+Older presets that used positive foreground values may now produce a very different stereo result. If you are updating from an older version, it is recommended to start from the new default presets instead of copying older shift values directly.
+
+### Recommended starting range
+
+| Control | Recommended Range |
+|---|---|
+| Foreground Shift | `-5.0` to `-10.0` |
+| Midground Shift | `-0.5` to `-2.0` |
+| Background Shift | `+2.0` to `+5.0` |
+
+### Example natural preset
+
+```text
+Foreground Shift: -6.0
+Midground Shift:  -0.8
+Background Shift: +2.2
+```
+
+### Example stronger showcase preset
+
+```text
+Foreground Shift: -8.5
+Midground Shift:  -1.2
+Background Shift: +3.5
+```
+
+### Example aggressive pop preset
+
+```text
+Foreground Shift: -10.0 to -12.0
+Midground Shift:  -2.0
+Background Shift: +4.0 to +5.0
+```
+
+The 3D effect comes from separation between near, mid, and far depth regions. In the current renderer, negative foreground shift pulls near objects toward the viewer, while positive background shift pushes distant areas deeper behind the screen plane.
+
+A good basic relationship is:
+
+```text
+Foreground Shift < Midground Shift < Background Shift
+```
+
+Example:
+
+```text
+FG -6.0 / MG -0.8 / BG +2.2
+```
+
+---
+
+## Updating Older Presets
+
+Presets created for older VisionDepth3D versions may not transfer directly to the new method.
+
+If an older preset used positive foreground values, it may now:
+
+- push depth in the wrong direction
+- reduce pop-out
+- make the scene feel inverted
+- create uncomfortable or flat stereo separation
+- produce a very different output than expected
+
+### Old-style approach
+
+```text
+Foreground: positive
+Background: negative
+```
+
+### Current method approach
+
+```text
+Foreground: negative
+Midground: slightly negative or near zero
+Background: positive
+```
+
+When converting older presets, do not simply copy the same numbers. Start with one of the new default presets, then tune using Preview Mode, Shift Heatmap, and Anaglyph preview.
 
 ---
 
@@ -608,471 +710,1089 @@ This is the final stage of the VisionDepth3D workflow.
 
 You must provide:
 
-- **Source Video** (original 2D video)
-- **Depth Map Video** (generated from the Depth Engine tab or Depth Blender)
+- **Input Video**  
+  The original 2D source video.
 
-Both videos must match in:
-- Resolution  
-- Frame count  
-- Frame rate  
+- **Depth Map Video**  
+  The matching depth map video generated from the Depth Engine tab or Depth Blender.
 
-If these do not match, the stereo render will not align correctly.
+- **Output Path**  
+  The location where the final 3D video will be saved.
+
+The source video and depth map video should match in:
+
+- resolution
+- frame count
+- frame rate
+- clip length
+
+If they do not match, the stereo render may drift, desync, or produce incorrect depth alignment.
 
 ---
 
-### 2. Choose Output File
+### 2. Check Original Resolution and Aspect Ratio
 
-Select your output file path and format (MP4, MKV, etc.).
+The 3D Generator displays the original source video size in the preview metadata bar when available.
 
-This is where your final 3D video will be saved.
+Example:
+
+```text
+Original: 1920×1080 (1.78:1)
+```
+
+Use this information to choose the correct output size and aspect ratio.
+
+Common source sizes:
+
+| Source Size | Aspect Ratio | Notes |
+|---|---:|---|
+| `1920×1080` | `1.78:1` | Standard 16:9 |
+| `3840×2160` | `1.78:1` | 4K 16:9 |
+| `1920×800` | `2.40:1` | Cinematic widescreen |
+| `1440×1080` | `1.33:1` | 4:3 style |
+| `1080×1920` | `0.56:1` | Vertical 9:16 |
+
+This helps users avoid accidentally stretching or cropping their video into the wrong output shape.
 
 ---
 
-### 3. Configure Encoder Settings
+### 3. Choose Output and Encoding Settings
 
-Click **Open Encoder Settings** to configure how the 3D video is packaged.
+Use **Output & Encoding** to configure how the final 3D video is packaged.
 
 Here you can set:
 
-- **3D Format**
-  - Full Side-by-Side (recommended for VR)
-  - Other stereo layouts if needed
+- **Output Format**
+  - Full-SBS
+  - Half-SBS
+  - VR
+  - VR180 Equirect Top-Bottom
+  - VR180 Equirect Side-by-Side
+  - Red-Cyan Anaglyph
+  - Passive Interlaced
+
+- **Stereo Output**
+  - SBS
+  - Left eye only
+  - Right eye only
+  - Both eyes separately
 
 - **Aspect Ratio**
-  - Classic (4:3)
-  - Widescreen (16:9)
-  - Or custom formats depending on your source
+  - Default 16:9
+  - Classic 4:3
+  - Square 1:1
+  - Vertical 9:16
+  - CinemaScope / Anamorphic / UltraWide formats
 
 - **Codec**
-  - H.264 or H.265 CPU encoding (most compatible)
-  - NVENC GPU encoding (recommended for NVIDIA GPUs)
+  - H.264 / H.265 CPU encoding
+  - NVENC for NVIDIA GPUs
+  - AMF for AMD GPUs
+  - QSV for Intel GPUs
+  - AV1 options where supported
 
 - **Audio Handling**
-  - Keep original audio (recommended)
-  - Optional cleanup of intermediate SBS files
+  - Keep original audio when available
+  - Export video-only if audio is not needed
 
-- **HDR10 Preservation** (if working with HDR content)
+- **HDR10 Preservation**
+  - Use when working with compatible HDR source material
 
-Once configured, close the window to apply the settings.
+NVENC H.264 or NVENC H.265 is recommended for NVIDIA users who want faster encoding.
 
 ---
 
 ### 4. Configure Processing Options
 
-Click **Open Processing Options** to control how depth is stabilized and refined.
+Use **Processing Options** to control stereo stability, edge behavior, and render safety.
 
 Common recommended options:
 
-- Enable **Dynamic Convergence** for smoother depth transitions  
-- Enable **Edge Masking** to reduce halo artifacts  
-- Enable **Feathering** for softer depth edges  
-- Enable **Stereo Scaling (IPD)** for adaptive depth strength  
+- **Preserve Original Aspect Ratio**  
+  Keeps the source framing from being stretched.
 
-Optional tools:
+- **Auto Crop Black Bars**  
+  Detects and removes letterbox bars before stereo generation when appropriate.
 
-- Auto crop black bars  
-- Skip blank frames  
-- Floating window (cinematic edge protection)  
-- Clip range rendering for testing short sections  
+- **Stabilize Zero-Parallax**  
+  Helps keep the subject or dominant depth region closer to the screen plane.
 
-These settings directly affect visual stability and comfort.
+- **Skip Blank / White Frames**  
+  Avoids rendering empty frames that can appear in some sources.
 
----
+- **Enable Edge Masking**  
+  Reduces harsh stereo artifacts around strong depth edges.
 
-### 5. Open Preview Quick Testing
+- **Enable Feathering**  
+  Softens transitions between shifted regions.
 
-Click **Open Preview** to test your depth before rendering.
+- **Enable Dynamic Convergence**  
+  Smooths convergence changes across scenes.
 
-The preview window lets you:
+- **Enable Floating Window**  
+  Adds cinematic edge protection when strong pop-out approaches frame borders.
 
-- Scrub frame-by-frame through the video  
-- Test different 3D visualization modes  
-- Tune depth strength in real time  
+- **Clip Range**  
+  Allows short test renders before committing to a full video.
 
-This step is highly recommended before starting a full render.
-
----
-
-## Using Preview Modes for Tuning
-
-### Shift Heatmap (Best for Depth Tuning)
-
-The **Shift Heatmap** view visualizes stereo displacement:
-
-- **Dark blue** = closest to the viewer (strong pop-out)
-- **Green/yellow** = mid-depth
-- **Red** = far background
-
-Use this mode to:
-
-- Balance foreground, midground, and background shift
-- Avoid extreme parallax that may cause discomfort
-- Ensure depth layers are clean and separated
+These settings directly affect visual comfort, stereo stability, and artifact control.
 
 ---
 
-### Red–Blue Anaglyph (Quick Stereo Check)
+## Open Preview for Testing
 
-Switch to **Red–Blue Anaglyph** mode to:
+Click **Load Preview Sources** to open the source video and depth map for preview.
 
-- Visually inspect stereo alignment
-- Spot edge artifacts and ghosting
-- Verify convergence placement
+The preview system lets you:
 
-If you see halos or misalignment:
+- scrub through frames
+- test different preview modes
+- inspect stereo direction
+- check depth alignment
+- tune shift values before rendering
+- save preview images for comparison
 
-- Reduce foreground shift
-- Adjust convergence strength
-- Adjust MG Shift to reduce edge tearing
-
----
-
-### Other Preview Tools
-
-Additional preview modes allow:
-
-- Shift intensity visualization  
-- Parallax direction overlays  
-- Feather mask inspection  
-- Convergence Guide Overlay
-
-These are useful for diagnosing depth artifacts and fine-tuning advanced scenes.
+Testing preview frames is strongly recommended before starting a full render.
 
 ---
 
-### 6. Tune Depth & Parallax Controls
+## Preview Modes
 
-Back in the main 3D Generator tab, adjust:
+### Red-Blue Anaglyph
 
-- Foreground Shift  
-- Midground Shift  
-- Background Shift  
-- Convergence Strength  
-- Parallax Balance  
-- Stereo Scaling (IPD)  
-- Depth Pop Gamma  
+Use this for a quick stereo check.
 
-Begin with a built-in preset and refine depth using the Live Preview for real-time feedback.
+It helps you inspect:
 
----
+- stereo direction
+- subject placement
+- edge ghosting
+- convergence comfort
+- whether the scene feels pushed forward or backward
 
-### 7. Start Rendering
-
-Once satisfied:
-
-- Click **Generate 3D** for a single render  
-- Or **Start Batch Render** for multiple inputs  
-
-Monitor progress, FPS, and ETA in the Video Info panel.
+If the image feels inverted, uncomfortable, or backwards, check depth inversion, shift direction, and eye order.
 
 ---
 
-## Recommended First-Time Workflow
+### Passive Interlaced
 
-1. Load source + depth video  
-2. Configure Encoder Settings  
-3. Enable basic Processing Options  
-4. Open Live Preview  
-5. Tune using Shift Heatmap + Anaglyph view  
-6. Render a short clip range (optional)  
-7. Render full video  
-
-This prevents wasted long renders and ensures optimal depth quality.
+Useful for displays that support interlaced stereo or for checking alternating-line stereo separation.
 
 ---
 
-### Sliders and Settings
-### Depth Shaping (Pop Curve Controls)
+### HSBS
 
-This section remaps depth values to enhance separation between foreground, midground, and background.
+Shows a half side-by-side stereo preview.
 
-It redistributes depth intensity rather than simply increasing shift amounts.
-
-Used to:
-- Add stronger 3D “pop”  
-- Prevent flat-looking scenes  
-- Maintain smooth depth transitions  
+Use this when checking headset-style or SBS-based output.
 
 ---
 
-#### Depth Pop Gamma  
+### Shift Heatmap
 
-Controls how aggressively depth values are redistributed across the scene.
+The Shift Heatmap visualizes stereo displacement.
 
-- Lower values create softer, flatter depth  
-- Higher values increase separation between depth layers for stronger 3D impact  
+Use it to check:
 
-Main control for overall depth strength.
+- whether foreground, midground, and background are separating correctly
+- whether foreground is receiving enough negative shift
+- whether background is receiving positive push
+- whether extreme shift is being clamped
 
----
-
-#### Pop Mid  
-
-Controls where the curve focuses its strongest depth separation.
-
-- Lower values emphasize foreground depth  
-- Higher values emphasize midground and background  
-
-Useful when subjects feel flat but backgrounds already have depth.
+This is one of the best modes for tuning the new method.
 
 ---
 
-#### Stretch Lo  
+### Shift Heatmap (Abs)
 
-Controls how much detail is expanded in the near-depth (foreground) range.
+Shows the strength of displacement without focusing on direction.
 
-- Lower values keep foreground depth tighter and more subtle  
-- Higher values expand foreground depth separation for stronger subject pop  
-
-Best used when close objects feel compressed or lack depth clarity.
+Use this to see where the strongest stereo stress exists.
 
 ---
 
-#### Stretch Hi  
+### Shift Heatmap (Clipped ±5px)
 
-Controls how much detail is expanded in the far-depth (background) range.
+Shows a clipped range of shift values to make smaller displacement differences easier to inspect.
 
-- Lower values keep background depth softer and closer  
-- Higher values push distant elements farther back for greater scene scale  
-
-Best used when environments feel flat or lack depth range.
+Useful when tuning subtle scenes.
 
 ---
 
-#### FG Pop ×  
+### Overlay Arrows
+
+Displays shift direction visually.
+
+Use this to confirm whether near and far regions are moving in the expected directions.
+
+---
+
+### Left-Right Diff
+
+Shows differences between the two generated eye views.
+
+Useful for spotting:
+
+- excessive disparity
+- edge tearing
+- ghosting
+- overly aggressive stereo separation
+
+---
+
+### Feather Mask
+
+Shows the feathering mask used to soften depth transitions.
+
+Useful when diagnosing harsh cutout edges.
+
+---
+
+### Feather Blend
+
+Shows the blended feathering result.
+
+Useful when checking whether stereo transitions are too sharp or too soft.
+
+---
+
+## Depth and Parallax Controls
+
+### Foreground Shift
+
+Controls how strongly near objects are pulled toward the viewer.
+
+In the current VisionDepth3D Method, foreground pop is usually created with **negative values**.
+
+More negative values:
+
+- increase foreground pop-out
+- pull close subjects and objects forward
+- create stronger stereo separation
+
+Less negative values:
+
+- create a more subtle 3D effect
+- reduce eye strain
+- keep subjects closer to the screen plane
+
+Recommended range:
+
+| Style | Range |
+|---|---|
+| Natural | `-5.0` to `-7.0` |
+| Strong | `-8.0` to `-10.0` |
+| Aggressive | `-10.0` to `-12.0` |
+
+If the foreground looks too flat, make the value more negative.
+
+If the foreground feels uncomfortable, stretched, or too separated, move it closer to zero.
+
+---
+
+### Midground Shift
+
+Controls the depth position of objects between foreground and background.
+
+In the current method, midground shift is usually **slightly negative or near zero**.
+
+Typical values:
+
+| Style | Value |
+|---|---:|
+| Subtle mid-depth | `-0.5` |
+| Natural layering | `-0.8` to `-1.2` |
+| Strong layering | `-1.5` to `-2.0` |
+| Neutral screen-plane feel | `0.0` |
+
+Midground shift helps connect the foreground and background so the scene does not feel like only two flat layers.
+
+If the image looks like cardboard cutouts, reduce the gap between foreground and midground values.
+
+Example:
+
+```text
+Too separated:
+FG -12.0 / MG 0.0 / BG +5.0
+
+More natural:
+FG -6.0 / MG -0.8 / BG +2.2
+```
+
+---
+
+### Background Shift
+
+Controls how far distant scene elements are pushed behind the screen plane.
+
+In the current VisionDepth3D Method, background depth is usually created with **positive values**.
+
+Higher positive values:
+
+- push backgrounds deeper
+- increase cinematic depth scale
+- make environments feel larger
+
+Lower positive values:
+
+- keep backgrounds closer
+- reduce eye strain
+- create a more natural stereo effect
+
+Recommended range:
+
+| Style | Range |
+|---|---|
+| Subtle | `+1.0` to `+2.0` |
+| Natural | `+2.0` to `+3.0` |
+| Strong | `+3.5` to `+5.0` |
+
+Avoid pushing the background too far if the foreground is already very negative, because the scene can start to look stretched, separated, or uncomfortable.
+
+---
+
+### Convergence Strength
+
+Controls how strongly the convergence plane is adjusted.
+
+Higher values:
+
+- move the perceived focus plane more aggressively
+- increase perceived depth movement between shots
+- can make scene transitions more dramatic
+
+Lower values:
+
+- produce more stable convergence
+- reduce eye strain
+- keep long-form content more comfortable
+
+Use smaller values for full-length videos.
+
+For aggressive pop-out testing, reduce convergence strength or disable dynamic convergence temporarily so the pipeline does not pull the foreground back toward the screen plane.
+
+---
+
+### Zero Parallax Strength
+
+Fine-tunes the depth level that sits at the screen surface.
+
+Use this when:
+
+- the scene feels too far forward
+- the scene feels pushed too far backward
+- subjects are not sitting where expected
+- the stereo field feels offset
+
+Zero parallax is a precision control. Small changes can have a noticeable effect.
+
+---
+
+### Parallax Balance
+
+Controls the overall stereo balance between foreground and background.
+
+Higher values:
+
+- increase overall stereo strength
+- make foreground and background separation stronger
+- may increase eye strain
+
+Lower values:
+
+- create a gentler stereo effect
+- improve comfort
+- reduce extreme parallax
+
+Recommended starting range:
+
+```text
+0.70 to 1.00
+```
+
+For comfort, start around `0.70`.
+
+For stronger showcase depth, try `0.90` to `1.05`.
+
+---
+
+### Max Pixel Shift (%)
+
+Limits the maximum allowed parallax displacement.
+
+This is a safety clamp.
+
+Lower values:
+
+- reduce extreme stereo separation
+- improve comfort
+- help prevent eye strain
+- may reduce pop-out
+
+Higher values:
+
+- allow stronger depth
+- allow more foreground pop
+- can increase artifacts or discomfort
+
+Recommended range:
+
+```text
+0.020 to 0.050
+```
+
+For subtle or VR-friendly output, use lower values.
+
+For stronger pop tests, temporarily try higher values such as `0.050`, then reduce if the image becomes uncomfortable.
+
+---
+
+### Stereo Scaling (IPD)
+
+Controls overall stereo separation intensity, similar to virtual eye distance.
+
+Higher values:
+
+- stronger 3D effect
+- larger parallax
+- more separation between eyes
+
+Lower values:
+
+- more comfortable viewing
+- softer depth
+- less eye strain
+
+Use this as a global depth strength control after your FG / MG / BG balance feels correct.
+
+---
+
+### Sharpness Factor
+
+Enhances perceived edge clarity in the stereo output.
+
+Higher values:
+
+- make depth edges look crisper
+- emphasize fine detail
+- may also emphasize halos or edge artifacts
+
+Lower values:
+
+- produce softer transitions
+- reduce harsh edge behavior
+
+Use moderately.
+
+---
+
+### Depth of Field Strength
+
+Applies optional focus blur based on depth.
+
+This can add cinematic realism, but should be used lightly.
+
+Too much DOF can make the stereo output feel artificial or reduce depth readability.
+
+---
+
+## Depth Shaping: Pop and Subject Controls
+
+The current VisionDepth3D Method does not rely only on direct shift amounts.
+
+It uses a separate shaped depth representation for stereo design. This lets the renderer tune how near, mid, and far regions are emphasized without corrupting the underlying subject-tracking depth.
+
+Depth shaping controls affect how the depth map is redistributed before the near / mid / far weighting system builds the final stereo shift field.
+
+---
+
+### Depth Pop Gamma
+
+Controls how aggressively depth values are reshaped around the stereo midpoint.
+
+Lower values:
+
+- increase near/mid separation
+- create stronger perceived pop
+- can make scenes more dramatic
+
+Higher values:
+
+- soften the depth curve
+- reduce cutout-like separation
+- can make live or difficult scenes more natural
+
+Recommended range:
+
+```text
+0.75 to 1.15
+```
+
+For stronger pop, try `0.75` to `0.90`.
+
+For a more natural or less cardboard look, try `1.05` to `1.20`.
+
+---
+
+### Pop Mid
+
+Controls where the shaping curve focuses its strongest separation.
+
+Lower values:
+
+- emphasize foreground depth
+- help subjects stand forward
+- increase near-object separation
+
+Higher values:
+
+- shift emphasis toward midground and background
+- help environments feel deeper
+- reduce aggressive foreground pop
+
+Recommended starting value:
+
+```text
+0.45 to 0.50
+```
+
+---
+
+### Stretch Lo
+
+Controls how the near-depth range is stretched.
+
+Lower values:
+
+- keep foreground tighter
+- reduce over-expansion of near subjects
+
+Higher values:
+
+- expand foreground separation
+- can make near objects feel stronger
+
+Recommended starting range:
+
+```text
+0.02 to 0.06
+```
+
+---
+
+### Stretch Hi
+
+Controls how the far-depth range is stretched.
+
+Lower values:
+
+- keep background closer
+- reduce background exaggeration
+
+Higher values:
+
+- push distant elements farther back
+- increase scene scale
+
+Recommended starting range:
+
+```text
+0.94 to 0.98
+```
+
+---
+
+### FG Pop ×
 
 Multiplies foreground depth strength after curve shaping.
 
-- Lower values keep subjects natural  
-- Higher values exaggerate subject separation  
+Higher values:
 
-Use for fine-tuning how strongly subjects stand out.
+- exaggerate subject separation
+- increase near-object presence
+- can create stronger pop-out
+
+Lower values:
+
+- keep subjects more natural
+- reduce sticker-like foreground separation
+
+Recommended range:
+
+```text
+1.00 to 1.45
+```
+
+For aggressive testing, values around `1.50` to `1.60` may be useful, but should be reduced for final comfort.
 
 ---
 
-#### BG Push ×  
+### BG Push ×
 
 Multiplies background depth recession after curve shaping.
 
-- Lower values keep environments closer  
-- Higher values increase cinematic depth scale  
+Higher values:
 
-Use to enhance scene size without flattening foreground.
+- push environments deeper
+- increase cinematic scale
+
+Lower values:
+
+- keep backgrounds closer
+- reduce excessive depth spread
+- help prevent cardboard separation
+
+Recommended range:
+
+```text
+0.85 to 1.15
+```
 
 ---
 
-#### Subject Lock  
+### Subject Lock
 
-Biases depth shaping toward detected subject depth.
-
-When enabled:
-- Keeps main subjects visually dominant  
-- Prevents flattening during strong depth enhancement  
-
-Best for character-focused scenes and dialogue shots.
-
----
-
-#### Foreground Shift  
-Controls how strongly foreground objects are pushed toward the viewer.
+Controls how strongly the pipeline anchors the detected subject depth.
 
 Higher values:
-- Increase 3D “pop-out” effect  
-- Make characters and close objects appear closer  
+
+- keep subjects stable
+- reduce subject drift
+- improve comfort
+- may reduce pop-out if too strong
 
 Lower values:
-- Create more subtle depth  
-- Reduce eye strain during long viewing sessions  
 
-Use this to define how aggressive the 3D effect feels.
+- allow more foreground movement
+- can help pop-out testing
+- may increase depth instability
 
----
+Recommended range:
 
-#### Midground Shift  
-Controls depth separation for objects between foreground and background.
+```text
+0.00 to 0.25
+```
 
-Higher values:
-- Increase depth layering across the scene  
-- Improve sense of spatial depth  
+For strong pop-out testing, keep Subject Lock very low.
 
-Lower values:
-- Keep mid-depth areas flatter  
-
-Helps prevent scenes from feeling like only foreground and background exist.
+For long-form viewing, use light subject locking for stability.
 
 ---
 
-#### Background Shift  
-Controls how far distant elements recede into depth.
+## Pop-Out vs Depth Layering
 
-Higher negative values:
-- Push backgrounds deeper  
-- Increase cinematic depth scale  
+Strong 3D does not come only from increasing shift values.
 
-Lower values:
-- Keep backgrounds closer to the screen plane  
+VisionDepth3D separates stereo design into multiple stages:
 
-Useful for adding scale without over-popping subjects.
+- normalized depth
+- tracked subject depth
+- shaped disparity depth
+- near / mid / far weighting
+- subject-aware zero parallax
+- dynamic convergence
+- edge-aware repair
+- floating-window safety
 
----
+Because of this, pop-out is controlled by more than Foreground Shift alone.
 
-#### Convergence Strength  
-Controls how strongly the zero-parallax plane is adjusted.
+If foreground objects do not pop forward enough, check:
 
-Higher values:
-- Move focus plane faster between scenes  
-- Increase perceived depth shifts  
+- Foreground Shift is negative enough
+- Max Pixel Shift is not too low
+- Parallax Balance is not too low
+- Subject Lock is not anchoring the subject too strongly
+- Dynamic Convergence is not pulling the scene back to the screen plane
+- Floating Window is not limiting aggressive pop near frame edges
+- Edge Masking is not suppressing too much shift around the foreground
+- The depth map is not inverted
+- The depth map has enough near-depth contrast
 
-Lower values:
-- More stable and subtle convergence  
+### Stronger pop-out test preset
 
-Use smaller values for comfort on long content.
+Use this only for testing, not as a final comfort preset:
 
----
+```text
+Foreground Shift: -10.0
+Midground Shift:  -1.0
+Background Shift: +2.5
 
-#### Zero Parallax Strength  
-Fine-tunes the exact depth level that sits at the screen surface.
+Max Pixel Shift: 0.050
+Parallax Balance: 1.00
+Subject Lock: 0.00 to 0.05
+Floating Window: Off for testing
+Dynamic Convergence: Off for testing
+Edge Masking: Off for testing
+Feathering: Off for testing
+```
 
-Adjust this when:
-- Objects feel too far forward  
-- Or everything feels pushed backward  
-
-This is your precision convergence control.
-
----
-
-#### Stereo Scaling (IPD)  
-Controls overall stereo separation intensity.
-
-Higher values:
-- Stronger depth effect  
-- Larger parallax  
-
-Lower values:
-- More comfortable viewing  
-- Subtle depth  
-
-Acts like virtual eye separation.
-
----
-
-#### Sharpness Factor  
-Enhances perceived edge clarity in stereo output.
-
-Higher values:
-- Crisper depth edges  
-- Emphasizes fine detail  
-
-Lower values:
-- Softer transitions  
-
-Use moderately to avoid halo artifacts.
-
----
-
-#### Parallax Balance  
-Balances depth emphasis between foreground and background.
-
-Toward foreground:
-- Stronger pop-out effect  
-
-Toward background:
-- Deeper environments  
-
-Useful for scene-specific tuning.
-
----
-
-#### Max Pixel Shift (%)  
-Limits the maximum allowed parallax displacement.
-
-Lower values:
-- Safer for VR  
-- Prevent extreme eye strain  
-
-Higher values:
-- Allow more aggressive depth  
-
-Acts as a safety clamp.
+Once the pop direction is confirmed, re-enable comfort and repair settings for final renders.
 
 ---
 
 ## Optional Advanced Controls
 
-#### Floating Window (DFW)  
+### Floating Window
+
 Adds cinematic edge protection to prevent objects from breaking the screen border.
-Helps maintain professional stereo composition.
 
----
-
-#### Dynamic Convergence (Stabilization)
-
-Automatically adjusts convergence based on scene depth while smoothing transitions over time.
-
-When enabled:
-- Tracks subject depth naturally  
-- Smooths frame-to-frame convergence  
-- Reduces flicker and sudden depth jumps  
-- Improves long-term viewing comfort  
-
-Recommended for full-length videos.
-
----
-
-#### Stabilize Zero-Parallax (Center-Depth)
-
-Keeps the zero-parallax plane aligned with the scene’s dominant depth range.
-
-When enabled:
-- Prevents depth drift  
-- Keeps subjects consistently at screen depth  
-- Reduces eye strain during transitions  
-
-Works alongside Dynamic Convergence for stable depth behavior.
-
-Recommended for long content and fast scene changes.
-
----
-
-#### Edge-Aware Masking  
-Detects strong depth edges and suppresses stereo artifacts.
+This is useful when strong foreground pop approaches the left or right frame edge.
 
 Benefits:
-- Reduces halos  
-- Improves depth cleanliness  
 
-Enable when ghosting appears around subjects.
+- reduces window violations
+- improves viewing comfort
+- protects aggressive stereo shots
+- makes the render feel more professionally composed
+
+For strong pop-out testing, disable Floating Window temporarily. For final renders, re-enable it if edge violations appear.
 
 ---
 
-#### Feathering  
-Softens depth transitions between layers.
+### Dynamic Convergence
+
+Automatically adjusts convergence based on the tracked subject path and smooths transitions over time.
+
+When enabled:
+
+- tracks subject depth more naturally
+- smooths frame-to-frame convergence
+- reduces sudden depth jumps
+- improves comfort for full-length content
+
+Recommended for long renders.
+
+For aggressive pop-out testing, disable Dynamic Convergence temporarily to make sure it is not pulling the foreground back toward the screen plane.
+
+---
+
+### Stabilize Zero-Parallax
+
+Keeps the zero-parallax plane aligned with the dominant or tracked depth range.
+
+When enabled:
+
+- prevents depth drift
+- keeps subjects more stable
+- reduces eye strain during scene changes
+
+This can improve comfort, but high subject locking can reduce strong pop-out.
+
+---
+
+### Edge-Aware Masking
+
+Suppresses unstable stereo shift near hard depth edges such as:
+
+- hair
+- fingers
+- shoulders
+- thin foreground objects
+- high-contrast silhouettes
 
 Benefits:
-- More natural blending  
-- Less harsh stereo edges  
 
-Pairs well with Edge Masking.
+- reduces halos
+- reduces edge tearing
+- improves contour cleanliness
+
+If the scene lacks pop, test with Edge Masking off temporarily to see whether it is suppressing too much foreground shift. Re-enable it for final renders if edge artifacts appear.
 
 ---
 
-#### Depth of Field Simulation  
+### Feathering
+
+Softens transitions between shifted regions.
+
+Benefits:
+
+- smoother depth blending
+- fewer harsh stereo edges
+- less cutout-like transitions
+
+Too much feathering may make the scene feel softer or reduce perceived sharpness.
+
+---
+
+### Disable Shift EMA
+
+Disables temporal shift smoothing for debugging.
+
+Use this only for testing.
+
+When enabled:
+
+- raw shift changes are easier to inspect
+- pop direction can be tested more directly
+- motion may look less stable
+
+For final renders, shift smoothing is usually recommended.
+
+---
+
+### Depth of Field Simulation
+
 Applies subtle focus blur based on depth.
 
-Adds cinematic realism when used sparingly.
+Use sparingly.
+
+This can help cinematic presentation, but too much blur can make depth harder to read.
 
 ---
 
-## Clip Range (Optional)
+## Clip Range Rendering
 
 Set start and end timecodes to render only a portion of the video.
 
 Useful for:
-- Testing settings quickly  
-- Tuning difficult scenes  
-- Avoiding long re-renders  
+
+- testing settings quickly
+- tuning difficult scenes
+- checking pop-out behavior
+- checking edge artifacts
+- avoiding long re-renders
 
 Recommended before full-length renders.
+
+Example:
+
+```text
+Start: 00:01:20
+End:   00:01:35
+```
+
+---
+
+## Recommended First-Time Workflow
+
+1. Load source video and depth map video.
+2. Confirm the original resolution and aspect ratio.
+3. Choose output format and codec.
+4. Open preview sources.
+5. Test a few frames in Anaglyph and Shift Heatmap mode.
+6. Start with the new negative-foreground shift convention.
+7. Tune FG / MG / BG shift.
+8. Tune Max Pixel Shift and Parallax Balance.
+9. Adjust Depth Pop Gamma and FG Pop × if the scene feels flat.
+10. Render a short clip range.
+11. Re-enable comfort tools such as Dynamic Convergence, Edge Masking, Feathering, and Floating Window.
+12. Render the full video.
+
+---
+
+## Recommended Starting Presets
+
+### Natural Comfortable 3D
+
+```text
+Foreground Shift: -6.0
+Midground Shift:  -0.8
+Background Shift: +2.2
+
+Max Pixel Shift: 0.022
+Parallax Balance: 0.70
+Depth Pop Gamma: 1.05
+FG Pop ×: 1.00
+BG Push ×: 0.95
+Subject Lock: 0.15
+Dynamic Convergence: On
+Edge Masking: On
+Feathering: On
+Floating Window: On if needed
+```
+
+Best for:
+
+- full-length movies
+- dialogue scenes
+- comfortable VR viewing
+- natural depth layering
+
+---
+
+### Strong Showcase 3D
+
+```text
+Foreground Shift: -8.5
+Midground Shift:  -1.2
+Background Shift: +3.5
+
+Max Pixel Shift: 0.035
+Parallax Balance: 0.90
+Depth Pop Gamma: 0.85
+FG Pop ×: 1.20
+BG Push ×: 1.05
+Subject Lock: 0.10
+Dynamic Convergence: On
+Edge Masking: On
+Feathering: On
+Floating Window: On if needed
+```
+
+Best for:
+
+- demo clips
+- trailers
+- scenes with clear subjects
+- stronger depth presentation
+
+---
+
+### Aggressive Pop-Out Test
+
+```text
+Foreground Shift: -10.0 to -12.0
+Midground Shift:  -2.0
+Background Shift: +4.0 to +5.0
+
+Max Pixel Shift: 0.050
+Parallax Balance: 1.00
+Depth Pop Gamma: 0.75
+FG Pop ×: 1.45
+BG Push ×: 0.85
+Subject Lock: 0.00 to 0.05
+Dynamic Convergence: Off for testing
+Edge Masking: Off for testing
+Feathering: Off for testing
+Floating Window: Off for testing
+```
+
+Best for:
+
+- confirming pop direction
+- diagnosing whether the foreground can move forward
+- testing depth map strength
+- checking if stabilization is suppressing pop
+
+Not recommended as a final full-length preset without comfort adjustments.
+
+---
+
+## Troubleshooting
+
+### The scene looks inverted
+
+Try checking:
+
+- depth inversion
+- eye order
+- preview mode
+- whether the depth map uses white-near or black-near convention
+- whether old presets are being reused incorrectly
+
+---
+
+### The scene has depth but no pop-out
+
+Check:
+
+- Foreground Shift is negative enough
+- Max Pixel Shift is high enough
+- Parallax Balance is not too low
+- Subject Lock is not too strong
+- Dynamic Convergence is not over-stabilizing the subject
+- Floating Window is not suppressing aggressive foreground depth
+- the depth map has enough near-depth contrast
+
+Try the Aggressive Pop-Out Test preset to confirm whether the renderer can produce forward disparity.
+
+---
+
+### The scene looks like cardboard cutouts
+
+Try:
+
+- reducing Foreground Shift strength
+- moving Midground Shift closer to Foreground Shift
+- increasing Depth Pop Gamma above `1.00`
+- lowering FG Pop ×
+- lowering Subject Lock
+- enabling Feathering
+- using a smoother depth map
+- blending depth maps in Depth Blender
+
+Example adjustment:
+
+```text
+From:
+FG -12.0 / MG 0.0 / BG +5.0
+
+To:
+FG -6.0 / MG -0.8 / BG +2.2
+```
+
+---
+
+### There are halos around subjects
+
+Try:
+
+- enabling Edge Masking
+- enabling Feathering
+- lowering Max Pixel Shift
+- reducing Foreground Shift strength
+- checking depth map edge quality
+- using Depth Blender to smooth or refine the depth map
+
+---
+
+### There is too much eye strain
+
+Try:
+
+- reducing Max Pixel Shift
+- reducing Parallax Balance
+- moving Foreground Shift closer to zero
+- lowering Background Shift
+- enabling Dynamic Convergence
+- enabling Floating Window
+- using a shorter clip range for testing
+
+---
+
+### The background is too flat
+
+Try:
+
+- increasing Background Shift
+- increasing BG Push ×
+- lowering Pop Mid slightly
+- increasing Stretch Hi
+- increasing Parallax Balance carefully
+
+---
+
+### The foreground is too flat
+
+Try:
+
+- making Foreground Shift more negative
+- increasing FG Pop ×
+- lowering Depth Pop Gamma
+- lowering Pop Mid slightly
+- increasing Max Pixel Shift
+- lowering Subject Lock
+
+---
+
+## Final Notes
+
+The current VisionDepth3D Method is designed around a full stereo pipeline rather than simple positive/negative pixel shifting.
+
+Foreground, midground, and background controls now work together with:
+
+- depth normalization
+- pop-control depth shaping
+- structured near / mid / far weighting
+- subject-aware zero parallax
+- dynamic convergence
+- edge-aware shift limiting
+- contour-safe repair
+- floating-window control
+- temporal stabilization
+
+For the best results, start from the new presets, preview several frames, render short clip ranges, and tune gradually.
+
 
 ## Audio Tool (Audio Ripper & Attacher)
 
