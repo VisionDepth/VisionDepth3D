@@ -36,6 +36,9 @@ flask
 omegaconf
 addict
 einops
+psutil
+nvidia-ml-py
+GPUtil
 
 # 3D / reconstruction related
 pycolmap
