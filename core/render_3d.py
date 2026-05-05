@@ -1,3 +1,4 @@
+# render_3D.py
 import os, platform, warnings
 import time
 import cv2
@@ -17,18 +18,53 @@ from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
 from core.ffmpeg_blackdetect import detect_black_white_frames
 import math
 from typing import Iterable, Optional
+import platform
 
+
+def hidden_subprocess_kwargs():
+    """
+    Prevents ffmpeg/ffprobe subprocess console windows from flashing
+    in PyInstaller windowed builds on Windows.
+    """
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 # Device setup
-#onnx_device = "CUDAExecutionProvider" if ort.get_device() == "GPU" else "CPUExecutionProvider"
 def pick_torch_device():
+    # NVIDIA CUDA
     if torch.cuda.is_available():
         return torch.device("cuda")
 
-    # macOS Metal support
+    # AMD ROCm (Linux) — presents as 'cuda' via HIP
+    try:
+        if hasattr(torch, 'hip') and torch.hip.is_available():
+            return torch.device("cuda")
+    except Exception:
+        pass
+
+    # AMD / Intel / Any GPU via DirectML (Windows)
+    try:
+        import torch_directml
+        dml_device = torch_directml.device()
+        # Quick test to verify the device works
+        _ = torch.zeros(1, device=dml_device)
+        return dml_device
+    except Exception:
+        pass
+
+    # macOS Metal (Apple Silicon / AMD)
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
 
-    # CPU fallback (Linux/Windows with no GPU, or AMD GPU for ONNX)
+    # CPU fallback
     return torch.device("cpu")
 
 torch_device = pick_torch_device()
@@ -143,7 +179,13 @@ def get_video_info_safe(video_path):
                 "-of", "default=noprint_wrappers=1:nokey=0",
                 video_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                **hidden_subprocess_kwargs(),
+            )
             info = {}
 
             for line in result.stdout.splitlines():
@@ -174,10 +216,10 @@ def get_video_info_safe(video_path):
 
     return width, height, fps
 
-def merge_audio_from_source(final_video, original_video, output_with_audio):
+def merge_audio_from_source(final_video, original_video, output_with_audio, start_s=None):
     """
     Muxes the original audio track into the final 3D render without re-encoding.
-    Fast + lossless. If audio missing, automatically falls back to video-only output.
+    Uses two-pass seek to avoid frozen frames at the start.
     """
     if not os.path.exists(original_video) or not os.path.exists(final_video):
         return final_video
@@ -185,25 +227,47 @@ def merge_audio_from_source(final_video, original_video, output_with_audio):
     cmd = [
         "ffmpeg", "-y",
         "-i", final_video,
-        "-i", original_video,
-        "-map", "0:v:0",
-        "-map", "1:a?",          # optional audio
+    ]
+
+    # Two-pass seek on the original: fast keyframe seek then accurate decode seek
+    if start_s is not None and start_s > 0:
+        cmd += ["-ss", str(start_s)]  # fast seek before input
+        cmd += ["-i", original_video]
+        cmd += ["-ss", str(start_s)]  # accurate seek after input (on audio)
+    else:
+        cmd += ["-i", original_video]
+
+    cmd += [
+        "-map", "0:v:0",      # video from rendered file
+        "-map", "1:a:0?",     # audio from original
         "-c:v", "copy",
         "-c:a", "copy",
-        "-shortest",             # stop when video ends
+        "-shortest",
+        "-fflags", "+shortest",
         output_with_audio
     ]
 
-    process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **hidden_subprocess_kwargs(),
+    )
 
-    if process.returncode == 0 and os.path.exists(output_with_audio):
+    if process.returncode != 0:
+        print(f"[AUDIO MERGE] ffmpeg failed (code {process.returncode}):")
+        print(process.stderr[:500])
+        return final_video
+
+    if os.path.exists(output_with_audio) and os.path.getsize(output_with_audio) > 1000:
         try:
-            os.remove(final_video)  # replace silently
+            os.remove(final_video)
         except Exception:
             pass
         return output_with_audio
 
-    return final_video  # fallback
+    return final_video
 
 
 
@@ -248,7 +312,12 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
         "-"
     ]
 
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**7)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        bufsize=10**7,
+        **hidden_subprocess_kwargs(),
+    )
     frame_bytes = int(width) * int(height) * 3 * 2  # 3 channels * 16-bit
 
     try:
@@ -284,7 +353,11 @@ def ffmpeg_yuv10_reader(path, width, height):
         "-pix_fmt","p010le",   # 10-bit 4:2:0
         "-"
     ]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
+    )
     stride = width * height * 2 * 3 // 2  # P010 size
     while True:
         buf = p.stdout.read(stride)
@@ -325,8 +398,7 @@ def reset_render_state():
 
     # reset depth percentile EMA so it learns per render
     global depth_ema_norm
-    depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.85)
-
+    depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.82)
 
 def sculpt_depth_u8(base_depth_u8, mask_u8, *,
                     near=1.0, far=0.4,
@@ -544,92 +616,48 @@ def frame_to_tensor(frame):
     frame_tensor = torch.from_numpy(frame_rgb).float().permute(2, 0, 1) / 255.0
     return frame_tensor.to(torch_device)
 
-def depth_to_tensor(depth_frame):
+def depth_to_tensor(depth_frame, invert_depth=True):
     depth_gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
     depth_tensor = torch.from_numpy(depth_gray).float().unsqueeze(0) / 255.0
-    return depth_tensor.to(torch_device)
 
+    if invert_depth:
+        depth_tensor = 1.0 - depth_tensor
+
+    return depth_tensor.to(torch_device)
 
 @torch.no_grad()
 def estimate_subject_depth(depth_tensor: torch.Tensor) -> torch.Tensor:
-    """
-    Robust subject depth estimator (scalar in [0,1]) from a single-frame depth map [1,H,W].
-    Improvements over the basic version:
-      - Gaussian center prior (soft, resolution-aware)
-      - Edge suppression via gradient magnitude
-      - Outlier trimming by percentiles
-      - Weighted histogram + local mean around the dominant mode
-      - Safe fallbacks when content is ambiguous
-    """
-    assert depth_tensor.dim() == 3 and depth_tensor.shape[0] == 1, "depth_tensor must be [1,H,W]"
     d = depth_tensor.clamp(0.0, 1.0)
     device = d.device
     _, H, W = d.shape
 
-    # 1) Soft center weighting (Gaussian prior)
-    # sigma scaled to frame size so it behaves consistently across resolutions
     yy, xx = torch.meshgrid(
         torch.linspace(-1, 1, H, device=device),
         torch.linspace(-1, 1, W, device=device),
         indexing="ij"
     )
-    # make it a little wider horizontally (common subject framing)
-    gauss = torch.exp(-0.5 * ((yy / 0.65)**2 + (xx / 0.85)**2))  # [H,W]
-    center_w = gauss / (gauss.max() + 1e-8)
 
-    # 2) Suppress high-gradient depth edges (prefer coherent regions over boundaries)
+    center_w = torch.exp(-0.5 * ((yy / 0.55) ** 2 + (xx / 0.70) ** 2))
+
     dx = F.pad(d[:, :, 1:] - d[:, :, :-1], (1, 0))
     dy = F.pad(d[:, 1:, :] - d[:, :-1, :], (0, 0, 1, 0))
-    grad = torch.sqrt(dx.pow(2) + dy.pow(2)).squeeze(0)  # [H,W]
-    # map gradient to [0..1] weight where 1 = smooth, 0 = edge
-    smooth_w = 1.0 - torch.sigmoid(12.0 * (grad - 0.03))  # 0.03 is a gentle edge threshold
+    grad = torch.sqrt(dx.pow(2) + dy.pow(2)).squeeze(0)
+    smooth_w = 1.0 - torch.sigmoid(10.0 * (grad - 0.025))
 
-    # 3) Trim extreme outliers using percentiles on the center crop
-    # use a soft 70% crop to avoid bars/floor while keeping enough pixels
-    y0, y1 = int(H * 0.15), int(H * 0.85)
-    x0, x1 = int(W * 0.20), int(W * 0.80)
-    crop = d[:, y0:y1, x0:x1]
-    lo = torch.quantile(crop, 0.03)
-    hi = torch.quantile(crop, 0.97)
-    valid_mask = (d >= lo) & (d <= hi)
+    w = center_w * smooth_w
+    vals = d.squeeze(0).reshape(-1)
+    weights = w.reshape(-1)
 
-    # 4) Compose weights
-    w = (center_w * smooth_w) * valid_mask.float()  # [H,W]
-    w_sum = w.sum()
+    # nearer-biased weighted percentile, since "subject" is often nearer than background
+    sort_idx = torch.argsort(vals)
+    vals_sorted = vals[sort_idx]
+    w_sorted = weights[sort_idx]
+    cdf = torch.cumsum(w_sorted, dim=0) / (w_sorted.sum() + 1e-8)
 
-    if float(w_sum) < 1e-3:
-        # Safeguard: fall back to plain median of center crop
-        return torch.median(crop)
-
-    # 5) Weighted histogram to find the dominant mode
-    # bucketize into bins, then scatter_add the weights
-    nbins = 64
-    bin_edges = torch.linspace(0.0, 1.0, nbins + 1, device=device)
-    vals = d.squeeze(0)  # [H,W]
-    idx = torch.clamp((vals * nbins).long(), 0, nbins - 1)  # bin index 0..63
-
-    hist = torch.zeros(nbins, device=device)
-    hist.scatter_add_(0, idx.view(-1), w.view(-1))
-
-    peak = torch.argmax(hist)  # dominant bin
-    # 6) Local weighted mean around the peak for stability (±2 bins window)
-    left = int(torch.clamp(peak - 2, 0, nbins - 1))
-    right = int(torch.clamp(peak + 2, 0, nbins - 1))
-
-    # mask pixels that fall inside the peak neighborhood
-    in_win = (idx >= left) & (idx <= right)
-    w_win = torch.where(in_win, w, torch.zeros(1, device=device))
-    w_win_sum = w_win.sum()
-
-    if float(w_win_sum) < 1e-6:
-        # If window is empty, return bin center of the peak
-        return (peak.float() + 0.5) / nbins
-
-    # weighted mean inside the local window
-    subject = (vals * w_win).sum() / (w_win_sum + 1e-8)
-
-    # 7) Final clamp
-    return subject.clamp(0.0, 1.0)
+    # 35th percentile in white-near convention
+    idx = torch.searchsorted(cdf, torch.tensor(0.35, device=device))
+    idx = torch.clamp(idx, 0, vals_sorted.numel() - 1)
+    return vals_sorted[idx]
 
 
 
@@ -744,8 +772,8 @@ class SubjectDepthEMA:
             self.val = self.alpha * self.val + (1 - self.alpha) * x
         return self.val
 
-subject_depth_ema = SubjectDepthEMA(alpha=0.90)
-depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.92)
+subject_depth_ema = SubjectDepthEMA(alpha=0.80)
+depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.82)
 conv_ema = ConvergenceEMA(alpha=0.90)
 MID_GAMMA = 0.90  # 0.80–0.95 works well
 
@@ -944,49 +972,34 @@ def crop_black_bars_torch(frame_tensor, cached_crop=None, threshold=10):
 def feather_shift_edges(
     shifted_tensor: torch.Tensor,
     original_tensor: torch.Tensor,
-    depth_tensor: torch.Tensor,
-    blur_ksize: int = 7,
-    feather_strength: float = 10.0,
+    occ_mask: torch.Tensor | None = None,
     enable_feathering: bool = True
 ) -> torch.Tensor:
     """
-    Blends shifted frame with original frame based on depth edge gradients.
-    Helps reduce hard-edge ghosting artifacts in 3D rendering.
+    Blend only in likely disocclusion / warp-stress regions.
+    occ_mask should be [H, W] or [1, H, W], with values in [0,1].
     """
     assert shifted_tensor.shape == original_tensor.shape, "Shape mismatch"
-    assert depth_tensor.dim() == 3, "Depth tensor must be [1, H, W]"
 
-    if not enable_feathering:
-        return shifted_tensor  # 🔥 skip blending and return shifted
+    if not enable_feathering or occ_mask is None:
+        return shifted_tensor
 
-    # Compute depth gradient magnitude
-    grad_x = F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0))
-    grad_y = F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0))
-    grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+    if occ_mask.dim() == 2:
+        occ_mask = occ_mask.unsqueeze(0)   # [H,W] -> [1,H,W]
 
-    # Normalize & exaggerate gradients into mask
-    edge_mask = torch.clamp(grad_mag * feather_strength, 0.0, 1.0)
-
-    # Apply blur for smooth feathering
-    blurred_mask = F.avg_pool2d(
-        edge_mask.unsqueeze(0),
-        kernel_size=blur_ksize,
-        stride=1,
-        padding=blur_ksize // 2
-    ).squeeze(0)
-
-    # Expand to match 3 channels (C=3, H, W)
-    blend_mask = blurred_mask.repeat(3, 1, 1)
+    if occ_mask.shape[0] == 1:
+        blend_mask = occ_mask.repeat(3, 1, 1)  # [1,H,W] -> [3,H,W]
+    else:
+        blend_mask = occ_mask
 
     min_h = min(shifted_tensor.shape[1], blend_mask.shape[1])
     min_w = min(shifted_tensor.shape[2], blend_mask.shape[2])
 
-    blend_mask = blend_mask[:, :min_h, :min_w]
+    blend_mask     = blend_mask[:, :min_h, :min_w]
     shifted_tensor = shifted_tensor[:, :min_h, :min_w]
     original_tensor = original_tensor[:, :min_h, :min_w]
 
     output_tensor = shifted_tensor * (1.0 - blend_mask) + original_tensor * blend_mask
-
     return output_tensor.clamp(0.0, 1.0)
 
 
@@ -1110,7 +1123,7 @@ class FloatingWindowTracker:
 
         return self.prev_offset
 
-floating_window_tracker = FloatingWindowTracker(alpha=0.97)
+floating_window_tracker = FloatingWindowTracker(alpha=0.88)
 
 class FloatingBarEaser:
     def __init__(self, alpha=0.95):
@@ -1131,45 +1144,472 @@ def _signed_pow(x: torch.Tensor, gamma: float):
 
 @torch.no_grad()
 def shape_depth_for_pop(
-    depth_01: torch.Tensor,
-    subject_depth: torch.Tensor,
+    depth_01,
+    subject_depth,
     *,
-    stretch_lo: float = 0.05,      # percentile low
-    stretch_hi: float = 0.95,      # percentile high
-    depth_mid: float = 0.50,       # where you want the subject to sit after shaping
-    gamma: float = 0.85,           # <1 amplifies near/mid separation
-) -> torch.Tensor:
-    """
-    1) Robustly stretch depth to full 0..1 using percentiles
-    2) Recentre so subject ≈ depth_mid
-    3) Apply symmetric power curve to exaggerate away from mid
-    """
+    stretch_lo=0.05,
+    stretch_hi=0.95,
+    depth_mid=0.50,
+    gamma=0.85,
+    recenter_strength=0.35,
+):
     d = depth_01.clamp(0, 1)
-
     lo = torch.quantile(d, stretch_lo)
     hi = torch.quantile(d, stretch_hi)
+
     if (hi - lo) < 1e-5:
-        # fallback, nothing to stretch
         d_stretched = d
     else:
         d_stretched = ((d - lo) / (hi - lo + 1e-6)).clamp(0, 1)
 
-    # recenter around subject so subject maps to depth_mid
-    # shift by the subject’s current value in stretched space
-    subj = subject_depth.clamp(0, 1)
-    # compute subject in stretched domain too
-    subj_lo = torch.quantile(d, stretch_lo)
-    subj_hi = torch.quantile(d, stretch_hi)
-    if (subj_hi - subj_lo) < 1e-5:
-        subj_stretched = subj
-    else:
-        subj_stretched = ((subj - subj_lo) / (subj_hi - subj_lo + 1e-6)).clamp(0, 1)
+    subj_stretched = ((subject_depth - lo) / (hi - lo + 1e-6)).clamp(0, 1)
+    delta = (depth_mid - subj_stretched) * recenter_strength
+    centered = (d_stretched + delta).clamp(0, 1)
 
-    centered = d_stretched - subj_stretched + depth_mid
-    # symmetric “S” contrast around depth_mid
     shaped = _signed_pow(centered - depth_mid, gamma) + depth_mid
     return shaped.clamp(0, 1)
 
+def compute_occlusion_mask_from_shift(
+    shift_vals: torch.Tensor,
+    blur_ksize: int = 7,
+    occ_threshold: float = 0.02,
+    occ_strength: float = 8.0,
+    max_mask: float = 0.30,
+) -> torch.Tensor:
+    """
+    Builds a soft mask from displacement gradients instead of depth gradients.
+    shift_vals: [H, W] or [1, H, W], normalized grid shift.
+    Returns [H, W] in [0, max_mask].
+    """
+    if shift_vals.dim() == 3:
+        shift_vals = shift_vals.squeeze(0)
+
+    shift_grad_x = torch.abs(F.pad(shift_vals[:, 1:] - shift_vals[:, :-1], (1, 0)))
+    shift_grad_y = torch.abs(F.pad(shift_vals[1:, :] - shift_vals[:-1, :], (0, 0, 1, 0)))
+
+    occ_mask = torch.clamp(
+        (shift_grad_x + shift_grad_y - occ_threshold) * occ_strength,
+        0.0,
+        1.0
+    )
+
+    if blur_ksize > 1:
+        occ_mask = F.avg_pool2d(
+            occ_mask.unsqueeze(0).unsqueeze(0),
+            kernel_size=blur_ksize,
+            stride=1,
+            padding=blur_ksize // 2
+        ).squeeze(0).squeeze(0)
+
+    return (occ_mask * max_mask).clamp(0.0, max_mask)
+
+def compute_warp_validity_mask(grid: torch.Tensor, H: int, W: int, device) -> torch.Tensor:
+    """
+    Returns per-pixel sampling validity for a warp grid.
+    grid: [H,W,2] in grid_sample coords
+    returns: [H,W] float, 1 = fully valid, 0 = outside / strongly disoccluded
+    """
+    ones = torch.ones((1, 1, H, W), device=device, dtype=torch.float32)
+    valid = F.grid_sample(
+        ones,
+        grid.unsqueeze(0),
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=True
+    ).squeeze(0).squeeze(0)
+    return valid.clamp(0.0, 1.0)
+
+def rgb_guided_depth_refine(depth_tensor, frame_tensor, kernel_size=5, sigma_color=0.1, sigma_space=5.0):
+    """
+    Joint bilateral-style refinement: smooth depth using RGB as edge guide.
+    depth_tensor: [1, H, W] in 0..1
+    frame_tensor: [3, H, W] in 0..1
+    Returns refined depth [1, H, W]
+    """
+    device = depth_tensor.device
+    _, H, W = depth_tensor.shape
+    
+    # Convert RGB to grayscale for edge guidance
+    gray = 0.299 * frame_tensor[0] + 0.587 * frame_tensor[1] + 0.114 * frame_tensor[2]  # [H, W]
+    
+    # Unfold into patches
+    pad = kernel_size // 2
+    depth_pad = F.pad(depth_tensor.unsqueeze(0), (pad, pad, pad, pad), mode='reflect').squeeze(0)  # [1, H+2p, W+2p]
+    gray_pad = F.pad(gray.unsqueeze(0).unsqueeze(0), (pad, pad, pad, pad), mode='reflect').squeeze(0).squeeze(0)  # [H+2p, W+2p]
+    
+    # Extract patches: [1, k*k, H, W] for depth, [k*k, H, W] for gray
+    depth_patches = F.unfold(depth_pad.unsqueeze(0), kernel_size=kernel_size)  # [1, k*k, H*W]
+    gray_patches = F.unfold(gray_pad.unsqueeze(0).unsqueeze(0), kernel_size=kernel_size)  # [1, k*k, H*W]
+    
+    depth_patches = depth_patches.view(1, kernel_size*kernel_size, H, W)
+    gray_patches = gray_patches.view(1, kernel_size*kernel_size, H, W)
+    
+    # Center pixel for color distance
+    gray_center = gray.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    
+    # Color weight: how similar is each patch pixel to center?
+    color_dist = (gray_patches - gray_center).abs()
+    color_weight = torch.exp(-color_dist / (sigma_color + 1e-6))
+    
+    # Spatial weight: distance from center of kernel
+    coords = torch.arange(-pad, pad + 1, device=device, dtype=torch.float32)
+    gy, gx = torch.meshgrid(coords, coords, indexing='ij')
+    spatial_dist = (gx**2 + gy**2).sqrt().view(-1, 1, 1).to(device)  # [k*k, 1, 1]
+    spatial_weight = torch.exp(-spatial_dist / (2 * sigma_space**2)).unsqueeze(0)  # [1, k*k, 1, 1]
+    
+    # Combined weight
+    weight = color_weight * spatial_weight
+    weight = weight / (weight.sum(dim=1, keepdim=True) + 1e-8)
+    
+    # Weighted average
+    refined = (depth_patches * weight).sum(dim=1)  # [1, H, W]
+    return refined.clamp(0, 1)
+
+def build_repair_mask(
+    validity_mask: torch.Tensor,       # [H,W]
+    shift_occ_mask: torch.Tensor,      # [H,W]
+    valid_threshold: float = 0.999,
+    expand_ksize: int = 5,
+    max_mask: float = 1.0,
+) -> torch.Tensor:
+    """
+    Build a repair mask that focuses on actually exposed / invalid regions,
+    reinforced by shift-gradient occlusion likelihood.
+
+    validity_mask  < threshold => disocclusion / undersampled region
+    shift_occ_mask => where disparity discontinuity is likely
+    """
+    disocc = (validity_mask < valid_threshold).float()
+
+    # combine true invalidity with shift-edge stress
+    repair = torch.max(disocc, shift_occ_mask)
+
+    if expand_ksize > 1:
+        repair = F.max_pool2d(
+            repair.unsqueeze(0).unsqueeze(0),
+            kernel_size=expand_ksize,
+            stride=1,
+            padding=expand_ksize // 2
+        ).squeeze(0).squeeze(0)
+
+    return repair.clamp(0.0, max_mask)
+
+
+def directional_background_fill(
+    warped_tensor: torch.Tensor,       # [3,H,W]
+    repair_mask: torch.Tensor,         # [H,W] in [0,1]
+    direction: str = "right",
+    radius: int = 6,
+) -> torch.Tensor:
+    """
+    Adaptive one-sided fill: keeps pulling background pixels into the
+    disocclusion zone until the repair mask is fully covered or max radius
+    is reached. Each step blends with decreasing weight for a natural fade.
+    """
+    assert warped_tensor.dim() == 3 and warped_tensor.shape[0] == 3
+    assert repair_mask.dim() == 2
+    
+    out = warped_tensor.clone()
+    C, H, W = out.shape
+    
+    # Track what's been filled — start with the repair mask
+    remaining = repair_mask.clone()
+    max_radius = min(radius, W // 2)
+    
+    for step in range(1, max_radius + 1):
+        if remaining.max() < 0.001:
+            break  # gap fully covered
+            
+        shifted = out.clone()
+        if direction == "right":
+            shifted[:, :, step:] = out[:, :, :-step]
+        else:
+            shifted[:, :, :-step] = out[:, :, step:]
+        
+        # Only fill pixels that still need it
+        step_weight = max(0.15, 1.0 - (step / max_radius) * 0.85)
+        m = (remaining * step_weight).unsqueeze(0)  # [1, H, W]
+        out = out * (1.0 - m) + shifted * m
+        
+        # Check what's still uncovered after this step
+        if direction == "right":
+            still_uncovered = remaining.clone()
+            still_uncovered[:, :-step] = 0
+        else:
+            still_uncovered = remaining.clone()
+            still_uncovered[:, step:] = 0
+        remaining = torch.min(remaining, still_uncovered)
+    
+    return out.clamp(0.0, 1.0)
+
+
+def repair_disocclusion_regions(
+    warped_tensor: torch.Tensor,       # [3,H,W]
+    repair_mask: torch.Tensor,         # [H,W]
+    protect_mask: torch.Tensor,        # [H,W]
+    direction: str,
+    blur_ksize: int = 1,
+    fill_radius: int = 2,
+    repair_strength: float = 0.20,     # ✅ FIX: Reduced from 0.35 to prevent aggressive fill
+    protect_dilate_ksize: int = 11,    # ✅ FIX: Increased from 7 to create wider barrier
+) -> torch.Tensor:
+    """
+    Silhouette-safe background repair:
+    - create a stronger foreground barrier from both the shift-derived protect mask
+      and local image edges
+    - forbid repair inside that barrier and add a small safety buffer around it
+    - use a shorter one-sided fill so repaired pixels do not smear around ears / hair
+    - keep blur minimal so bright contour rims do not turn into halos
+    - ✅ FIX #5: Explicit collision prevention between repair and protect masks
+    """
+    assert warped_tensor.dim() == 3 and warped_tensor.shape[0] == 3
+    assert repair_mask.dim() == 2
+    assert protect_mask.dim() == 2
+
+    repair_mask = repair_mask.clamp(0.0, 1.0)
+    protect_mask = protect_mask.clamp(0.0, 1.0)
+
+    # Strong barrier around the foreground contour.
+    protect_barrier = dilate_mask(protect_mask, ksize=protect_dilate_ksize)
+
+    # Extra image-edge barrier from the warped eye itself.
+    # This catches bright rims and furry / spiky silhouettes even when the shift mask is soft.
+    luma = warped_tensor.mean(dim=0)
+    luma_gx = torch.abs(F.pad(luma[:, 1:] - luma[:, :-1], (1, 0)))
+    luma_gy = torch.abs(F.pad(luma[1:, :] - luma[:-1, :], (0, 0, 1, 0)))
+    luma_edge = torch.sqrt(luma_gx * luma_gx + luma_gy * luma_gy)
+    edge_barrier = torch.clamp((luma_edge - 0.030) / 0.070, 0.0, 1.0)
+    edge_barrier = dilate_mask(edge_barrier, ksize=max(3, protect_dilate_ksize - 2))
+
+    # Combine barriers and add a wider safety buffer to prevent repair erosion.
+    combined_barrier = torch.max(protect_barrier, edge_barrier * 0.85).clamp(0.0, 1.0)
+    safety_buffer = dilate_mask(combined_barrier, ksize=5)  # ✅ FIX: 3 → 5
+
+    # Never repair across the preserved contour or right beside it.
+    effective_repair = (repair_mask * (1.0 - safety_buffer)).clamp(0.0, 1.0)
+
+    # ============================================================
+    # ✅ FIX #5 v3: Simple collision prevention (no squeeze issues)
+    # ============================================================
+    
+    # Build hard barrier by dilating the combined barrier
+    hard_barrier = dilate_mask(combined_barrier, ksize=3)
+    
+    # Soften the barrier edge with a blur so the transition isn't visible
+    barrier_soft = F.avg_pool2d(
+        hard_barrier.unsqueeze(0).unsqueeze(0),
+        kernel_size=5,
+        stride=1,
+        padding=2
+    )
+    # Keep as 4D: [1, 1, H, W] — don't squeeze yet
+    
+    # Reshape effective_repair to 4D for consistent math
+    effective_repair_4d = effective_repair.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    
+    # Multiply in 4D
+    effective_repair_4d = effective_repair_4d * (1.0 - barrier_soft)
+    
+    # Binary barrier in 4D
+    binary_barrier = (combined_barrier > 0.01).float().unsqueeze(0).unsqueeze(0)
+    binary_barrier = F.max_pool2d(binary_barrier, kernel_size=5, stride=1, padding=2)
+    effective_repair_4d = effective_repair_4d * (1.0 - binary_barrier)
+    
+    # Clamp and squeeze back to 2D
+    effective_repair = effective_repair_4d.squeeze(0).squeeze(0).clamp(0.0, 1.0)
+    
+    # Verify shape is correct
+    assert effective_repair.dim() == 2, f"effective_repair should be 2D, got {effective_repair.shape}"
+    # ============================================================
+    # ✅ FIX #5 v3 END
+    # ============================================================
+
+    # 🔍 Diagnostic: verify no overlap between repair and protection
+    overlap = (effective_repair * combined_barrier).max().item()
+    if overlap > 0.002:
+        print(f"⚠️ WARNING: Repair/protect overlap detected: {overlap:.6f}")
+
+    # Keep the repair zone tight so it only touches the newly exposed strip.
+    effective_repair = F.avg_pool2d(
+        effective_repair.unsqueeze(0).unsqueeze(0),
+        kernel_size=3,
+        stride=1,
+        padding=1
+    ).squeeze(0).squeeze(0)
+    effective_repair = (effective_repair * 0.85).clamp(0.0, 1.0)
+
+    filled = directional_background_fill(
+        warped_tensor,
+        effective_repair,
+        direction=direction,
+        radius=fill_radius
+    )
+
+    if blur_ksize > 1:
+        blurred = F.avg_pool2d(
+            filled.unsqueeze(0),
+            kernel_size=blur_ksize,
+            stride=1,
+            padding=blur_ksize // 2
+        ).squeeze(0)
+    else:
+        blurred = filled
+
+    m = (effective_repair * float(repair_strength)).clamp(0.0, 1.0).unsqueeze(0)
+    out = filled * (1.0 - m) + blurred * m
+
+    # Restore the protected contour directly from the warped image.
+    p = combined_barrier.unsqueeze(0)
+    out = out * (1.0 - p) + warped_tensor * p
+
+    return out.clamp(0.0, 1.0)
+
+def compute_signed_shift_gradients(shift_vals: torch.Tensor):
+    """
+    shift_vals: [H,W] or [1,H,W]
+    returns gx, gy signed gradients in shift field
+    """
+    if shift_vals.dim() == 3:
+        shift_vals = shift_vals.squeeze(0)
+
+    gx = F.pad(shift_vals[:, 1:] - shift_vals[:, :-1], (1, 0))
+    gy = F.pad(shift_vals[1:, :] - shift_vals[:-1, :], (0, 0, 1, 0))
+    return gx, gy
+
+
+def build_one_sided_repair_and_protect_masks(
+    shift_vals: torch.Tensor,       # [H,W]
+    validity_mask: torch.Tensor,    # [H,W]
+    eye: str,                       # "left" or "right"
+    grad_threshold: float = 0.0045,
+    validity_soft_threshold: float = 0.9985,
+    expand_ksize: int = 5,
+):
+    """
+    More conservative silhouette-safe repair/protect masks.
+    The goal is to shrink the repair strip and strengthen the foreground barrier
+    so spiky outlines do not get a glowing halo during background fill.
+    """
+    gx, gy = compute_signed_shift_gradients(shift_vals)
+    grad_mag = torch.sqrt(gx * gx + gy * gy)
+
+    grad_gate = torch.clamp((grad_mag - grad_threshold) / max(grad_threshold, 1e-6), 0.0, 1.0)
+    validity_loss = torch.clamp(
+        (validity_soft_threshold - validity_mask) / max(1.0 - validity_soft_threshold, 1e-6),
+        0.0, 1.0
+    )
+
+    if eye == "left":
+        trailing = torch.clamp(gx / max(grad_threshold, 1e-6), 0.0, 1.0)
+        leading  = torch.clamp((-gx) / max(grad_threshold, 1e-6), 0.0, 1.0)
+    else:
+        trailing = torch.clamp((-gx) / max(grad_threshold, 1e-6), 0.0, 1.0)
+        leading  = torch.clamp(gx / max(grad_threshold, 1e-6), 0.0, 1.0)
+
+    # Keep repair more local and rely less on validity spillover.
+    repair_mask = trailing * grad_gate
+    repair_mask = torch.max(repair_mask, repair_mask * 0.50 + validity_loss * 0.20)
+
+    # Stronger leading-side contour protection.
+    protect_mask = leading * grad_gate
+    protect_mask = torch.max(protect_mask, leading * 0.55)
+
+    if expand_ksize > 1:
+        repair_mask = F.max_pool2d(
+            repair_mask.unsqueeze(0).unsqueeze(0),
+            kernel_size=expand_ksize,
+            stride=1,
+            padding=expand_ksize // 2
+        ).squeeze(0).squeeze(0)
+
+        protect_mask = F.max_pool2d(
+            protect_mask.unsqueeze(0).unsqueeze(0),
+            kernel_size=expand_ksize,
+            stride=1,
+            padding=expand_ksize // 2
+        ).squeeze(0).squeeze(0)
+
+    repair_mask = (repair_mask * 0.42).clamp(0.0, 1.0)
+    protect_mask = (protect_mask * 1.25).clamp(0.0, 1.0)
+
+    return repair_mask, protect_mask
+
+def dilate_mask(mask: torch.Tensor, ksize: int = 3) -> torch.Tensor:
+    """
+    mask: [H,W] in [0,1]
+    returns dilated mask [H,W]
+    """
+    if ksize <= 1:
+        return mask.clamp(0.0, 1.0)
+
+    return F.max_pool2d(
+        mask.unsqueeze(0).unsqueeze(0),
+        kernel_size=ksize,
+        stride=1,
+        padding=ksize // 2
+    ).squeeze(0).squeeze(0).clamp(0.0, 1.0)
+
+def estimate_edge_window_violation(shift_vals: torch.Tensor, edge_band_px: int = 32):
+    """
+    Estimate likely frame-edge window violations from the final shift field.
+
+    shift_vals: [H,W] normalized shift map used for actual warp
+    Returns:
+        left_violation, right_violation
+
+    Interpretation:
+      - left_violation: positive shift pressure near left border
+      - right_violation: negative shift pressure near right border
+
+    These are not perfect geometric violations, but they are much closer to
+    actual edge risk than using only zero_parallax_offset.
+    """
+    assert shift_vals.dim() == 2
+
+    H, W = shift_vals.shape
+    band = min(int(edge_band_px), max(1, W // 4))
+
+    left_band = shift_vals[:, :band]
+    right_band = shift_vals[:, W - band:]
+
+    left_violation = torch.relu(left_band).mean()
+    right_violation = torch.relu(-right_band).mean()
+
+    return float(left_violation.item()), float(right_violation.item())
+
+def compute_visual_stress_mask(warped_tensor: torch.Tensor,
+                               threshold: float = 0.035,
+                               expand_ksize: int = 3) -> torch.Tensor:
+    luma = warped_tensor.mean(dim=0)
+    gx = torch.abs(F.pad(luma[:, 1:] - luma[:, :-1], (1, 0)))
+    gy = torch.abs(F.pad(luma[1:, :] - luma[:-1, :], (0, 0, 1, 0)))
+    g = torch.sqrt(gx * gx + gy * gy)
+    m = torch.clamp((g - threshold) / max(threshold, 1e-6), 0.0, 1.0)
+
+    if expand_ksize > 1:
+        m = F.max_pool2d(
+            m.unsqueeze(0).unsqueeze(0),
+            kernel_size=expand_ksize,
+            stride=1,
+            padding=expand_ksize // 2
+        ).squeeze(0).squeeze(0)
+
+    return m.clamp(0.0, 1.0)
+
+def debug_depth_histogram(depth_tensor, title="Depth"):
+    """Print depth distribution to understand where your values actually are"""
+    d = depth_tensor.cpu().numpy().flatten()
+    print(f"\n🔍 {title} Stats:")
+    print(f"   min={d.min():.3f}, max={d.max():.3f}")
+    print(f"   mean={d.mean():.3f}, median={np.median(d):.3f}")
+    print(f"   10th={np.percentile(d, 10):.3f}, 90th={np.percentile(d, 90):.3f}")
+    
+    # Bucket counts
+    near = (d < 0.3).mean() * 100
+    mid = ((d >= 0.3) & (d < 0.7)).mean() * 100
+    far = (d >= 0.7).mean() * 100
+    print(f"   Near: {near:.1f}%, Mid: {mid:.1f}%, Far: {far:.1f}%")
+    print(f"   Shape: {'GOOD separation' if near > 5 and mid > 5 and far > 5 else 'FLAT - poor 3D potential'}")
 
 def pixel_shift_cuda(
     frame_tensor,
@@ -1200,6 +1640,7 @@ def pixel_shift_cuda(
     bg_push_multiplier=1.10,
     subject_lock_strength=0.35,
     return_tensors=False,
+    disable_shift_ema=False
 ):
     width = int(width)
     height = int(height)
@@ -1212,74 +1653,107 @@ def pixel_shift_cuda(
         depth_tensor = enhance_curvature(depth_tensor, strength=0.08)
 
     depth_tensor = depth_tensor.clamp(0.0, 1.0)
+    
+    # 🛡️ STRONGER depth refinement for cleaner edges
+    depth_tensor = rgb_guided_depth_refine(depth_tensor, frame_tensor, kernel_size=7, sigma_color=0.06, sigma_space=4.0)
+    
+    # 🛡️ Edge-aware depth blur to prevent sharp transitions
+    depth_grad_x = torch.abs(F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0)))
+    depth_grad_y = torch.abs(F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0)))
+    depth_edge = (depth_grad_x + depth_grad_y).squeeze(0)
+    edge_soft_mask = torch.clamp(depth_edge * 12.0, 0.0, 0.7)
+    depth_blurred = tv_gaussian_blur(depth_tensor, kernel_size=5, sigma=1.8)
+    depth_tensor = depth_tensor * (1 - edge_soft_mask.unsqueeze(0)) + depth_blurred * edge_soft_mask.unsqueeze(0)
 
-    # --- subject estimate on raw map ---
-    subj_depth_raw = estimate_subject_depth(depth_tensor)
+    # assume caller already provides stabilized normalized depth
+    d_norm = depth_tensor.clamp(0.0, 1.0)
 
-    # --- shape depth for pop: stretch range, recenter on subject, apply symmetric curve ---
+    # estimate subject from normalized RAW depth, before recenter/pop shaping
+    subject_depth_track = estimate_subject_depth(d_norm)
+    subject_depth_track = torch.tensor(
+        subject_depth_ema.update(subject_depth_track.item()),
+        device=device
+    )
+
+    # shape a copy for disparity design only
     d_shaped = shape_depth_for_pop(
-        depth_tensor,
-        subj_depth_raw,
+        d_norm,
+        subject_depth_track,
         stretch_lo=depth_stretch_lo,
         stretch_hi=depth_stretch_hi,
         depth_mid=depth_pop_mid,
         gamma=depth_pop_gamma
     )
 
-    # recompute subject after shaping for tighter screen-plane lock
-    subject_depth = estimate_subject_depth(d_shaped)
+    # use tracking depth for convergence, not shaped depth
+    subject_depth = subject_depth_track
     
-    subject_depth = torch.tensor(subject_depth_ema.update(subject_depth.item()), device=device)
+    # Broader mid-ground influence for smoother transitions
+    near_center = 0.15
+    mid_center  = depth_pop_mid
+    far_center  = 0.85
 
-    
-    # weights from shaped depth (steeper foreground falloff)
-    fg_weight = (1.0 - d_shaped).pow(1.5).clamp(0, 1)
-    mg_weight = (1.0 - (d_shaped - depth_pop_mid).abs() * 5.0).clamp(0, 1)  # slightly tighter mid band
-    bg_weight = d_shaped.clamp(0, 1)
+    near_sigma = 0.30   # Wider for smoother falloff
+    mid_sigma  = 0.35   # Much wider mid zone
+    far_sigma  = 0.30   # Wider for smoother falloff
+
+    fg_weight = torch.exp(-0.5 * ((d_shaped - near_center) / near_sigma) ** 2)
+    mg_weight = torch.exp(-0.5 * ((d_shaped - mid_center)  / mid_sigma)  ** 2)
+    bg_weight = torch.exp(-0.5 * ((d_shaped - far_center)  / far_sigma)  ** 2)
+
+    w_sum = fg_weight + mg_weight + bg_weight + 1e-6
+    fg_weight = fg_weight / w_sum
+    mg_weight = mg_weight / w_sum
+    bg_weight = bg_weight / w_sum
 
     half_width = width / 2.0
 
-    # amplify near pop and far push locally, not globally
     raw_shift = (fg_weight * fg_shift * fg_pop_multiplier +
                  mg_weight * mg_shift +
                  bg_weight * bg_shift * bg_push_multiplier)
 
     total_shift = (raw_shift * parallax_balance) / half_width
 
+    zero_parallax_offset = 0.0
+
     if use_subject_tracking:
-        adjusted_depth = subject_depth * parallax_balance
+        subj = subject_depth.clamp(0.0, 1.0)
 
-        zero_parallax_offset = (
-            (-adjusted_depth * fg_shift * fg_pop_multiplier) +
-            (-adjusted_depth * mg_shift) +
-            ( adjusted_depth * bg_shift * bg_push_multiplier)
-        ) / half_width
+        fg_w_subj = torch.exp(-0.5 * ((subj - near_center) / near_sigma) ** 2)
+        mg_w_subj = torch.exp(-0.5 * ((subj - mid_center)  / mid_sigma)  ** 2)
+        bg_w_subj = torch.exp(-0.5 * ((subj - far_center)  / far_sigma)  ** 2)
 
-        # actively lock to subject
+        w_subj_sum = fg_w_subj + mg_w_subj + bg_w_subj + 1e-6
+        fg_w_subj = fg_w_subj / w_subj_sum
+        mg_w_subj = mg_w_subj / w_subj_sum
+        bg_w_subj = bg_w_subj / w_subj_sum
+
+        subj_shift = (
+            fg_w_subj * fg_shift * fg_pop_multiplier +
+            mg_w_subj * mg_shift +
+            bg_w_subj * bg_shift * bg_push_multiplier
+        )
+
+        zero_parallax_offset = (subj_shift * parallax_balance) / half_width
         zero_parallax_offset = zero_parallax_offset * float(subject_lock_strength)
-        # include user zero_parallax_strength as a bias away from screen plane if desired
         zero_parallax_offset = zero_parallax_offset - float(zero_parallax_strength)
 
-        # --- Adaptive floating window offset (internal convergence dampening) ---
         if enable_floating_window:
-            # Bias toward mid-depth (0.5) rather than raw near/far extremes
-            depth_bias = abs(subject_depth - 0.5)
+            depth_bias = torch.abs(subject_depth - 0.5)
             subject_weight = torch.clamp(1.0 - depth_bias * 2.0, 0.4, 1.0)
-
-            # Apply smoother attenuation before clamping
-            zero_parallax_offset *= subject_weight
+            zero_parallax_offset = zero_parallax_offset * subject_weight
             zero_parallax_offset = torch.clamp(zero_parallax_offset, -0.30, 0.30)
-
-            # Use tracker for temporal coherence (less jitter)
             zero_parallax_offset = floating_window_tracker.smooth_offset(
-                zero_parallax_offset.item(),
+                float(zero_parallax_offset.item()),
                 threshold=0.001
             )
 
-        # Apply final offset
+        total_shift -= zero_parallax_offset
+    else:
+        zero_parallax_offset = 0.0
         total_shift -= zero_parallax_offset
 
-    disparity_gain = 1.20
+    disparity_gain = 1.0
     total_shift = total_shift * disparity_gain
 
     max_shift_px = width * max_pixel_shift_percent
@@ -1288,37 +1762,51 @@ def pixel_shift_cuda(
 
     if convergence_strength != 0.0:
         if enable_dynamic_convergence:
-            # use shaped depth for convergence estimate
-            subj_for_conv = estimate_subject_depth(d_shaped)
+            subj_for_conv = subject_depth_track
             convergence_bias = subj_for_conv * convergence_strength
         else:
             convergence_bias = torch.tensor(convergence_strength, device=device)
 
-        # ✅ Smooth convergence to prevent “3D shimmer”
         conv_smooth = conv_ema.update(convergence_bias.item())
-
-        # Apply smoothed convergence bias
         total_shift -= conv_smooth / half_width
 
+    mask_strength = 0.0 if feather_strength <= 1e-6 else float(np.clip(feather_strength / 10.0, 0.05, 0.3))
 
-    mask_strength = np.clip(feather_strength / 10.0, 0.05, 0.3)
+    if enable_edge_masking and mask_strength > 0.0:
+        occ_mask_shift = compute_occlusion_mask_from_shift(
+            total_shift.squeeze(0),
+            blur_ksize=7,           # ← Larger blur for softer mask
+            occ_threshold=0.025,    # ← Higher threshold = less aggressive
+            occ_strength=3.0,       # ← Lower strength = gentler
+            max_mask=0.12,          # ← Lower max mask
+        ).unsqueeze(0)
 
-    if enable_edge_masking:
-        # use shaped depth for edge awareness so it aligns with weighting
-        edge_suppressed = suppress_artifacts_with_edge_mask(d_shaped, total_shift, feather_strength)
+        edge_suppressed = total_shift * (1.0 - occ_mask_shift)
         final_shift = (1.0 - mask_strength) * total_shift + mask_strength * edge_suppressed
     else:
         final_shift = total_shift
-    
-    # Initialize the EMA buffer on first run
-    if not hasattr(pixel_shift_cuda, "_shift_ema") or pixel_shift_cuda._shift_ema is None:
-        pixel_shift_cuda._shift_ema = final_shift.clone()
-    else:
-        pixel_shift_cuda._shift_ema = 0.90 * pixel_shift_cuda._shift_ema + 0.10 * final_shift
 
-    final_shift = pixel_shift_cuda._shift_ema
+    # optional EMA
+    if disable_shift_ema:
+        final_shift = final_shift
+    else:
+        shift_ema_alpha = 0.65
+        if not hasattr(pixel_shift_cuda, "_shift_ema") or pixel_shift_cuda._shift_ema is None:
+            pixel_shift_cuda._shift_ema = final_shift.clone()
+        else:
+            pixel_shift_cuda._shift_ema = (
+                shift_ema_alpha * pixel_shift_cuda._shift_ema +
+                (1.0 - shift_ema_alpha) * final_shift
+            )
+        final_shift = pixel_shift_cuda._shift_ema
 
     shift_vals = final_shift.squeeze(0)
+    mask_shift_vals = final_shift.squeeze(0)
+    
+    edge_violation_left, edge_violation_right = estimate_edge_window_violation(
+        shift_vals,
+        edge_band_px=max(16, width // 40)
+    )
 
     H, W = d_shaped.shape[1:]
     xx, yy = torch.meshgrid(
@@ -1333,22 +1821,106 @@ def pixel_shift_cuda(
     grid_left[..., 0] += shift_vals
     grid_right[..., 0] -= shift_vals
 
-    warped_left = F.grid_sample(frame_tensor.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
-    warped_right = F.grid_sample(frame_tensor.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_left = F.grid_sample(
+        frame_tensor.unsqueeze(0),
+        grid_left.unsqueeze(0),
+        mode='bilinear',
+        padding_mode='border',
+        align_corners=True
+    ).squeeze(0)
 
-    warped_depth_left = F.grid_sample(d_shaped.unsqueeze(0), grid_left.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
-    warped_depth_right = F.grid_sample(d_shaped.unsqueeze(0), grid_right.unsqueeze(0), mode='bilinear', padding_mode='border', align_corners=True).squeeze(0)
+    warped_right = F.grid_sample(
+        frame_tensor.unsqueeze(0),
+        grid_right.unsqueeze(0),
+        mode='bilinear',
+        padding_mode='border',
+        align_corners=True
+    ).squeeze(0)
+
+    # 🛡️ STRONGER smear suppression
+    shift_grad_x = torch.abs(F.pad(shift_vals[:, 1:] - shift_vals[:, :-1], (1, 0)))
+    shift_grad_y = torch.abs(F.pad(shift_vals[1:, :] - shift_vals[:-1, :], (0, 0, 1, 0)))
+    shift_grad = shift_grad_x + shift_grad_y
+    
+    smear_zone = (shift_grad > 0.006).float()  # ← Lower threshold catches more
+    smear_zone = F.max_pool2d(
+        smear_zone.unsqueeze(0).unsqueeze(0),
+        kernel_size=5, stride=1, padding=2    # ← Larger expansion
+    ).squeeze(0).squeeze(0)
+    
+    blend = smear_zone.unsqueeze(0) * 0.60   # ← Stronger blend back to original
+    warped_left = warped_left * (1.0 - blend) + frame_tensor * blend
+    warped_right = warped_right * (1.0 - blend) + frame_tensor * blend
+
+    # --- per-eye validity / disocclusion analysis ---
+    valid_left = compute_warp_validity_mask(grid_left, H, W, device)
+    valid_right = compute_warp_validity_mask(grid_right, H, W, device)
+
+    repair_mask_left, protect_mask_left = build_one_sided_repair_and_protect_masks(
+        mask_shift_vals,
+        valid_left,
+        eye="left",
+        grad_threshold=0.008,            # ← Lower = more repair
+        validity_soft_threshold=0.995,   # ← Higher = more repair
+        expand_ksize=7,                  # ← Larger expansion
+    )
+
+    repair_mask_right, protect_mask_right = build_one_sided_repair_and_protect_masks(
+        mask_shift_vals,
+        valid_right,
+        eye="right",
+        grad_threshold=0.008,
+        validity_soft_threshold=0.995,
+        expand_ksize=7,
+    )
 
     if enable_feathering:
-        left_blended  = feather_shift_edges(warped_left,  frame_tensor, warped_depth_left,  blur_ksize, feather_strength, enable_feathering)
-        right_blended = feather_shift_edges(warped_right, frame_tensor, warped_depth_right, blur_ksize, feather_strength, enable_feathering)
+        # 🛡️ MAXIMUM EDGE REPAIR SETTINGS
+        left_blended = repair_disocclusion_regions(
+            warped_left,
+            repair_mask_left,
+            protect_mask_left,
+            direction="right",
+            blur_ksize=3,              # ← Light blur on repair
+            fill_radius=32,            # ← MUCH larger fill
+            repair_strength=0.55,      # ← Stronger repair
+            protect_dilate_ksize=17    # ← Wider protection
+        )
+
+        right_blended = repair_disocclusion_regions(
+            warped_right,
+            repair_mask_right,
+            protect_mask_right,
+            direction="left",
+            blur_ksize=3,
+            fill_radius=32,
+            repair_strength=0.55,
+            protect_dilate_ksize=17
+        )
     else:
-        left_blended, right_blended = warped_left, warped_right
+        left_blended = warped_left
+        right_blended = warped_right
+
+    zero_meta = {
+        "shift_map": final_shift.detach().cpu(),
+        "subject_depth": float(subject_depth.item()) if torch.is_tensor(subject_depth) else float(subject_depth),
+        "zero_parallax_offset": float(zero_parallax_offset) if use_subject_tracking else 0.0,
+        "edge_violation_left": float(edge_violation_left),
+        "edge_violation_right": float(edge_violation_right),
+        "repair_mask_left_mean": float(repair_mask_left.mean().item()),
+        "repair_mask_right_mean": float(repair_mask_right.mean().item()),
+        "protect_mask_left_mean": float(protect_mask_left.mean().item()),
+        "protect_mask_right_mean": float(protect_mask_right.mean().item()),
+        "valid_left_min": float(valid_left.min().item()),
+        "valid_right_min": float(valid_right.min().item()),
+        "valid_left_p01": float(torch.quantile(valid_left, 0.01).item()),
+        "valid_right_p01": float(torch.quantile(valid_right, 0.01).item()),
+    }
 
     if return_shift_map:
         if return_tensors:
-            return left_blended, right_blended, final_shift.detach().cpu()
-        return tensor_to_frame(left_blended), tensor_to_frame(right_blended), final_shift.detach().cpu()
+            return left_blended, right_blended, zero_meta
+        return tensor_to_frame(left_blended), tensor_to_frame(right_blended), zero_meta
     else:
         if return_tensors:
             return left_blended, right_blended
@@ -1711,6 +2283,7 @@ def render_sbs_3d(
     vr180_flat_w=None,
     vr180_flat_h=None,
     vr180_hfov_deg=110.0,
+    disable_shift_ema=False,
 ):
     reset_render_state()
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
@@ -2106,7 +2679,13 @@ def render_sbs_3d(
               "out=", out_width, out_height,
               "equi_eye=", equi_eye_w, equi_eye_h,
               "flat_eye=", flat_eye_w, flat_eye_h)
-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+        ffmpeg_proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_subprocess_kwargs(),
+        )
 
 
     else:
@@ -2177,7 +2756,7 @@ def render_sbs_3d(
             if cancel_flag.is_set():
                 break
 
-            depth_tensor = depth_to_tensor(depth)
+            depth_tensor = depth_to_tensor(depth, invert_depth=True)
 
             if auto_crop_black_bars:
                 # Reuse the first-frame crop for the entire clip so frame and depth
@@ -2249,6 +2828,19 @@ def render_sbs_3d(
             dyn_scale = 1.0
             fg *= dyn_scale; mg *= dyn_scale; bg *= dyn_scale
 
+            shift_meta = {
+                "subject_depth": 0.5,
+                "zero_parallax_offset": 0.0,
+                "edge_violation_left": 0.0,
+                "edge_violation_right": 0.0,
+                "repair_mask_left_mean": 0.0,
+                "repair_mask_right_mean": 0.0,
+                "protect_mask_left_mean": 0.0,
+                "protect_mask_right_mean": 0.0,
+                "valid_left_p01": 1.0,
+                "valid_right_p01": 1.0,
+            }
+
             if (blank_offset + idx) in blank_frames:
                 print(f"⏩ Skipping blank frame {idx}")
                 if preserve_hdr10:
@@ -2265,7 +2857,7 @@ def render_sbs_3d(
                     mg_run *= ipd_factor
                     bg_run *= ipd_factor
 
-                left_frame, right_frame = pixel_shift_cuda(
+                left_frame, right_frame, shift_meta = pixel_shift_cuda(
                     frame_tensor,
                     depth_tensor,
                     eye_w,
@@ -2277,7 +2869,7 @@ def render_sbs_3d(
                     feather_strength=feather_strength,
                     use_subject_tracking=use_subject_tracking,
                     enable_floating_window=use_floating_window,
-                    return_shift_map=False,
+                    return_shift_map=True,
                     max_pixel_shift_percent=max_pixel_shift_percent,
                     zero_parallax_strength=zero_parallax_strength,
                     enable_edge_masking=enable_edge_masking,
@@ -2293,7 +2885,23 @@ def render_sbs_3d(
                     bg_push_multiplier=bg_push_multiplier,
                     subject_lock_strength=subject_lock_strength,
                     return_tensors=True,
+                    disable_shift_ema=disable_shift_ema,
                 )
+                
+                if idx % 24 == 0:
+                    print(
+                        f"[3DDBG] f={idx} "
+                        f"subj={shift_meta.get('subject_depth', 0.0):.3f} "
+                        f"zpo={shift_meta.get('zero_parallax_offset', 0.0):.5f} "
+                        f"evL={shift_meta.get('edge_violation_left', 0.0):.5f} "
+                        f"evR={shift_meta.get('edge_violation_right', 0.0):.5f} "
+                        f"rL={shift_meta.get('repair_mask_left_mean', 0.0):.4f} "
+                        f"rR={shift_meta.get('repair_mask_right_mean', 0.0):.4f} "
+                        f"pL={shift_meta.get('protect_mask_left_mean', 0.0):.4f} "
+                        f"pR={shift_meta.get('protect_mask_right_mean', 0.0):.4f} "
+                        f"vL01={shift_meta.get('valid_left_p01', 1.0):.4f} "
+                        f"vR01={shift_meta.get('valid_right_p01', 1.0):.4f}"
+                    )
                 
                 candidate_focal = estimate_subject_depth(depth_tensor)  # 0..1
                 motion_metric   = compute_motion_metric(prev_depth_tensor, depth_tensor)
@@ -2340,48 +2948,34 @@ def render_sbs_3d(
                         right_frame = tensor_to_frame(right_t)
 
 
-            # floating window mask
-            subject_depth = estimate_subject_depth(depth_tensor)
+            subject_depth_val = float(shift_meta.get("subject_depth", 0.5))
+            zero_parallax_offset = float(shift_meta.get("zero_parallax_offset", 0.0))
 
-            # AFTER:
-            raw_zero = (
-                (-subject_depth * fg)
-              + (-subject_depth * mg)
-              + ( subject_depth * bg)
-            ) / (width_for_bars / 2 + 1e-6)
-            
-            zero_parallax_offset = float(
-                floating_window_tracker.smooth_offset(raw_zero, threshold=0.001)
-            )
-            
             # --- Dynamic Floating Window (shared compute, HDR + SDR) ---
             dfw_apply = False
             dfw_side = "left"
             dfw_width = 0
 
-            if use_floating_window and use_subject_tracking:
+            if use_floating_window:
                 global dfw_last_side, dfw_last_width
 
                 if "dfw_last_side" not in globals():
                     dfw_last_side = "left"
                     dfw_last_width = 0
 
-                # zero_parallax_offset is in "grid" space, usually [-1, 1]
-                parallax_mag = abs(float(zero_parallax_offset))
+                edge_violation_left = float(shift_meta.get("edge_violation_left", 0.0))
+                edge_violation_right = float(shift_meta.get("edge_violation_right", 0.0))
 
-                if parallax_mag < DFW_MIN_PARALLAX:
+                parallax_mag = abs(zero_parallax_offset)
+                edge_violation_mag = max(edge_violation_left, edge_violation_right)
+
+                if max(parallax_mag, edge_violation_mag) < DFW_MIN_PARALLAX:
                     target_width = 0
                 else:
-                    # Subject depth bias from mid-plane
-                    if torch.is_tensor(subject_depth):
-                        subject_depth_val = float(subject_depth.mean().item())
-                    else:
-                        subject_depth_val = float(subject_depth)
-
                     depth_delta = abs(subject_depth_val - 0.5)
 
                     parallax_delta = (
-                        DFW_PARALLAX_WEIGHT * parallax_mag +
+                        DFW_PARALLAX_WEIGHT * max(parallax_mag, edge_violation_mag) +
                         DFW_DEPTH_WEIGHT   * depth_delta
                     )
 
@@ -2391,7 +2985,12 @@ def render_sbs_3d(
                     max_bar_px   = int(width_for_bars * DFW_MAX_BAR_FRAC)
                     target_width = max(0, min(target_width, max_bar_px))
 
-                    dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
+                    if edge_violation_left > edge_violation_right:
+                        dfw_last_side = "left"
+                    elif edge_violation_right > edge_violation_left:
+                        dfw_last_side = "right"
+                    else:
+                        dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
 
                 dfw_last_width = int(
                     DFW_WIDTH_EASE * dfw_last_width +
@@ -2667,6 +3266,7 @@ def render_sbs_3d_image(
     color_contrast: float = 1.0,
     color_brightness: float = 0.0,
     eye_mode: str = "sbs",
+    disable_shift_ema: bool = False,
 ):
     reset_render_state()
 
@@ -2870,7 +3470,7 @@ def render_sbs_3d_image(
         bg *= ipd_factor
 
     # Run your CUDA pixel shift exactly like the video pipeline
-    left_frame, right_frame = pixel_shift_cuda(
+    left_frame, right_frame, shift_meta = pixel_shift_cuda(
         frame_tensor,
         depth_tensor,
         eye_w,
@@ -2882,7 +3482,8 @@ def render_sbs_3d_image(
         feather_strength=feather_strength,
         use_subject_tracking=use_subject_tracking,
         enable_floating_window=use_floating_window,
-        return_shift_map=False,
+        return_shift_map=True,
+        return_tensors=True,
         max_pixel_shift_percent=max_pixel_shift_percent,
         zero_parallax_strength=zero_parallax_strength,
         enable_edge_masking=enable_edge_masking,
@@ -2897,6 +3498,7 @@ def render_sbs_3d_image(
         fg_pop_multiplier=fg_pop_multiplier,
         bg_push_multiplier=bg_push_multiplier,
         subject_lock_strength=subject_lock_strength,
+        disable_shift_ema=disable_shift_ema,
     )
 
     # Optional DOF and color grade, same order as video
@@ -2964,39 +3566,29 @@ def render_sbs_3d_image(
         right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
 
     # Dynamic floating window, same logic as video (one frame)
-    if use_floating_window and use_subject_tracking:
+    if use_floating_window:
         global dfw_last_side, dfw_last_width
 
         if "dfw_last_side" not in globals():
             dfw_last_side = "left"
             dfw_last_width = 0
 
-        subject_depth = estimate_subject_depth(depth_tensor)
+        subject_depth_val = float(shift_meta.get("subject_depth", 0.5))
+        zero_parallax_offset = float(shift_meta.get("zero_parallax_offset", 0.0))
 
-        raw_zero = (
-            (-subject_depth * fg)
-            + (-subject_depth * mg)
-            + (subject_depth * bg)
-        ) / (width_for_bars / 2 + 1e-6)
-
-        zero_parallax_offset = float(
-            floating_window_tracker.smooth_offset(raw_zero, threshold=0.001)
-        )
+        edge_violation_left = float(shift_meta.get("edge_violation_left", 0.0))
+        edge_violation_right = float(shift_meta.get("edge_violation_right", 0.0))
 
         parallax_mag = abs(zero_parallax_offset)
+        edge_violation_mag = max(edge_violation_left, edge_violation_right)
 
-        if parallax_mag < DFW_MIN_PARALLAX:
+        if max(parallax_mag, edge_violation_mag) < DFW_MIN_PARALLAX:
             target_width = 0
         else:
-            if torch.is_tensor(subject_depth):
-                subject_depth_val = float(subject_depth.mean().item())
-            else:
-                subject_depth_val = float(subject_depth)
-
             depth_delta = abs(subject_depth_val - 0.5)
 
             parallax_delta = (
-                DFW_PARALLAX_WEIGHT * parallax_mag
+                DFW_PARALLAX_WEIGHT * max(parallax_mag, edge_violation_mag)
                 + DFW_DEPTH_WEIGHT * depth_delta
             )
             parallax_delta = min(parallax_delta, 0.12)
@@ -3005,7 +3597,12 @@ def render_sbs_3d_image(
             max_bar_px = int(width_for_bars * DFW_MAX_BAR_FRAC)
             target_width = max(0, min(target_width, max_bar_px))
 
-            dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
+            if edge_violation_left > edge_violation_right:
+                dfw_last_side = "left"
+            elif edge_violation_right > edge_violation_left:
+                dfw_last_side = "right"
+            else:
+                dfw_last_side = "left" if zero_parallax_offset > 0.0 else "right"
 
         dfw_last_width = int(
             DFW_WIDTH_EASE * dfw_last_width
@@ -3203,6 +3800,7 @@ def process_video(
     vr180_flat_w_var=None,
     vr180_flat_h_var=None,
     vr180_hfov_deg_var=None,
+    disable_shift_ema=False,
 ):
 
 
@@ -3415,6 +4013,7 @@ def process_video(
             vr180_flat_w=flat_w,
             vr180_flat_h=flat_h,
             vr180_hfov_deg=hfov,
+            disable_shift_ema=disable_shift_ema,
         )
 
     if not final_render_path:
@@ -3427,7 +4026,7 @@ def process_video(
         base, ext = os.path.splitext(final_render_path)
         merged_output = base + "_audio" + ext  # keep .mkv/.mp4/.mov etc
 
-        final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output)
+        final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output, start_s=start_s)
         print("🎧 Audio merge done!")
 
     return final_render_path

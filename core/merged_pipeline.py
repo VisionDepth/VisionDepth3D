@@ -1,3 +1,5 @@
+# merged_pipeline.py
+
 import os
 import re
 import sys
@@ -16,6 +18,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import queue
+
+import platform
+
+
+def hidden_subprocess_kwargs():
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
@@ -117,7 +135,12 @@ rife_model_id = None
 
 esrgan_session = None  # ONNX ESRGAN / other ONNX SR
 srresnet_model = None  # PyTorch SRResNet
-srresnet_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    srresnet_device = torch.device("cuda")
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    srresnet_device = torch.device("mps")
+else:
+    srresnet_device = torch.device("cpu")
 
 # which backend is currently active: "onnx", "srresnet", or "none"
 UPSCALE_BACKEND = "none"
@@ -421,8 +444,13 @@ def select_video_and_generate_frames(set_folder_callback=None, merged_progress=N
             "-q:v", "2",
             output_pattern
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            **hidden_subprocess_kwargs(),
+        )
         if merged_progress:
             merged_progress.after(0, lambda: stop_spinner(result.returncode == 0))
 
@@ -692,7 +720,12 @@ def init_upscaler(model_path: str, enable_upscale: bool):
             model.eval()
             srresnet_model = model
             UPSCALE_BACKEND = "srresnet"
-            mode_txt = "CUDA" if srresnet_device.type == "cuda" else "CPU"
+            if srresnet_device.type == "cuda":
+                mode_txt = "CUDA" if not getattr(torch.version, "hip", None) else "ROCm"
+            elif srresnet_device.type == "mps":
+                mode_txt = "Metal"
+            else:
+                mode_txt = "CPU"
             print(f"SRResNet upscaler ready [{mode_txt}]")
             return True
         except Exception as e:
@@ -722,7 +755,11 @@ def _run_srresnet(frame_bgr: np.ndarray, scale: int = 4) -> np.ndarray:
     tensor = torch.from_numpy(rgb).unsqueeze(0).to(srresnet_device)
 
     with torch.no_grad():
-        sr = srresnet_model(tensor)
+        if srresnet_device.type == "cuda" and not getattr(torch.version, "hip", None):
+            with torch.autocast("cuda", dtype=torch.float16):
+                sr = srresnet_model(tensor)
+        else:
+            sr = srresnet_model(tensor)
 
     sr = sr.clamp(0.0, 1.0).cpu().numpy()[0]
     sr = np.transpose(sr, (1, 2, 0))  # H,W,C
@@ -1064,6 +1101,13 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
     cancel_flag.clear()
     suspend_flag.clear()
 
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    import gc
+    gc.collect()
+
     try:
         progress_bar.after(0, lambda: progress_bar.configure(
             mode="determinate", maximum=100.0, value=0.0
@@ -1104,21 +1148,19 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
         return
 
     if enable_up:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         if not init_upscaler(model_path, enable_up):
             ui_set_status(status_label, "❌ Failed to load/download upscaler model.")
-            messagebox.showerror(
-                "Upscaler Error",
-                f"Failed to load/download upscaler model:\n{model_path}"
-            )
             return
 
     if enable_rife:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         if not load_rife_model(rife_model):
             ui_set_status(status_label, "❌ Failed to load/download RIFE model.")
-            messagebox.showerror(
-                "RIFE Error",
-                f"Failed to load/download RIFE model:\n{rife_model}"
-            )
             return
 
     video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
@@ -1360,5 +1402,7 @@ def start_ffmpeg_writer(output_path, width, height, fps, codec):
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        bufsize=0
+        bufsize=0,
+        **hidden_subprocess_kwargs(),
     )
+

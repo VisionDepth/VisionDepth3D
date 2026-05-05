@@ -6,12 +6,13 @@ from PIL import Image, ImageTk
 # --- Universal PyTorch device selector ---
 try:
     import torch
+    import torch.nn.functional as F
     torch.set_grad_enabled(False)
 
     if torch.cuda.is_available():
-        device = torch.device("cuda")  # NVIDIA or AMD ROCm if compiled with CUDA runtime
+        device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")   # Apple Silicon GPU
+        device = torch.device("mps")
     else:
         device = torch.device("cpu")
 
@@ -20,6 +21,7 @@ try:
 except Exception as e:
     print(f"Depth Blender: PyTorch not available: {e}")
     torch = None
+    F = None
     device = None
 
 # ------------ Core blending ------------
@@ -37,7 +39,6 @@ def boost_whites(image, threshold, boost_percent=30):
     return np.clip(boosted, 0, 255).astype(np.uint8)
 
 def blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=35, white_strength=1.0):
-    # ensure odd kernel for GaussianBlur
     k = int(blur_kernel_size) | 1
     thr = detect_white_threshold(v2_map)
     v1_w = create_soft_white_mask(v1_map, thr)
@@ -55,65 +56,6 @@ def normalize_to_v2(blended_map, v2_map):
     b_mean, b_std   = float(np.mean(blended_map)), float(np.std(blended_map)) or 1.0
     out = (blended_map - b_mean) * (v2_std / b_std) + v2_mean
     return np.clip(out, 0, 255).astype(np.uint8)
-
-def lighten_beta(v1_map, v2_map,
-                 clip_limit=2.0, tile_grid=(8,8),
-                 d=12, sC=75, sS=75, blur_k=35, white_strength=1.0,
-                 use_gpu=False):
-    if v1_map.ndim != 2 or v2_map.ndim != 2:
-        raise ValueError("Inputs must be grayscale.")
-    if isinstance(tile_grid, int):
-        tile_grid = (tile_grid, tile_grid)
-
-    h, w = v2_map.shape
-    tg = (min(tile_grid[0], w), min(tile_grid[1], h))
-
-    # --- GPU path (torch) for mask/feathering + norm ---
-    if use_gpu and (device is not None and device.type != "cpu"):
-        sigma = max(1.0, (int(blur_k) - 1) / 6.0)  # approx from kernel size
-        blended = _blend_whites_torch(v1_map, v2_map, blur_sigma=sigma,
-                                      white_strength=float(white_strength), device=device)
-        # CLAHE & bilateral on CPU (OpenCV)
-        clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tg)
-        blended = clahe.apply(blended)
-        blended = cv2.bilateralFilter(blended, int(d), float(sC), float(sS))
-        blended = _normalize_to_v2_torch(blended, v2_map, device=device)
-        thr = detect_white_threshold(v2_map)
-        blended = boost_whites(blended, thr, boost_percent=30)
-        return blended
-
-    # --- CPU fallback ---
-    blended = blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=int(blur_k),
-                                      white_strength=float(white_strength))
-    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tg)
-    blended = clahe.apply(blended)
-    blended = cv2.bilateralFilter(blended, int(d), float(sC), float(sS))
-    blended = normalize_to_v2(blended, v2_map)
-    thr = detect_white_threshold(v2_map)
-    blended = boost_whites(blended, thr, boost_percent=30)
-    return blended
-
-def _draw_preview_placeholder(self):
-    self.preview_canvas.delete("all")
-    self.preview_canvas.create_text(
-        self.preview_canvas.winfo_width() // 2,
-        self.preview_canvas.winfo_height() // 2,
-        text="Preview will appear here",
-        fill="#666",
-        font=("Segoe UI", 14, "italic")
-    )
-
-def _redraw_preview(self, imgtk=None):
-    if imgtk:
-        self._preview_imgtk = imgtk  # keep reference
-        self.preview_canvas.delete("all")
-        cw = self.preview_canvas.winfo_width()
-        ch = self.preview_canvas.winfo_height()
-        w = imgtk.width()
-        h = imgtk.height()
-        x = (cw - w) // 2
-        y = (ch - h) // 2
-        self._preview_canvas_img = self.preview_canvas.create_image(x, y, anchor="nw", image=imgtk)
 
 # ------------ Torch helpers ------------
 def _to_torch_u8_gray(np_u8):
@@ -166,6 +108,18 @@ def _blend_whites_torch(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0, device
     out = v2 * (1.0 - trans) + v1_cap * (trans * float(white_strength))
     return _from_torch_u8_gray(out)
 
+def _median_blur_torch(t, kernel=3, device="cpu"):
+    """Fast approximate median blur using average pool as proxy (GPU)."""
+    pad = kernel // 2
+    t_pad = F.pad(t, (pad, pad, pad, pad), mode='reflect')
+    return F.avg_pool2d(t_pad, kernel, stride=1)
+
+def _normalize_to_v2_torch_gpu(blended_t, v2_t):
+    """Normalize on GPU without CPU round-trip."""
+    bm, bs = blended_t.mean(), blended_t.std().clamp_min(1e-6)
+    vm, vs = v2_t.mean(), v2_t.std().clamp_min(1e-6)
+    return (blended_t - bm) * (vs / bs) + vm
+
 def _normalize_to_v2_torch(blended_u8, v2_u8, device="cpu"):
     b = _to_torch_u8_gray(blended_u8).to(device)
     v = _to_torch_u8_gray(v2_u8).to(device)
@@ -173,6 +127,57 @@ def _normalize_to_v2_torch(blended_u8, v2_u8, device="cpu"):
     vm, vs = v.mean(), v.std().clamp_min(1e-6)
     out = (b - bm) * (vs / bs) + vm
     return _from_torch_u8_gray(out)
+
+# ------------ Optimized lighten_beta ------------
+def lighten_beta(v1_map, v2_map,
+                 clip_limit=2.0, tile_grid=(8,8),
+                 d=12, sC=75, sS=75, blur_k=35, white_strength=1.0,
+                 use_gpu=False):
+    if v1_map.ndim != 2 or v2_map.ndim != 2:
+        raise ValueError("Inputs must be grayscale.")
+    if isinstance(tile_grid, int):
+        tile_grid = (tile_grid, tile_grid)
+
+    # Cache threshold once — used by both paths
+    thr = detect_white_threshold(v2_map)
+
+    # --- GPU path: keep everything on GPU ---
+    if use_gpu and (device is not None and device.type != "cpu"):
+        sigma = max(1.0, (int(blur_k) - 1) / 6.0)
+        blended = _blend_whites_torch(v1_map, v2_map, blur_sigma=sigma,
+                                      white_strength=float(white_strength), device=device)
+        blended_t = _to_torch_u8_gray(blended).to(device)
+
+        # GPU percentile stretch (CLAHE proxy)
+        lo = torch.quantile(blended_t, 0.02)
+        hi = torch.quantile(blended_t, 0.98)
+        if hi - lo > 1e-6:
+            blended_t = (blended_t - lo) / (hi - lo)
+        blended_t = blended_t.clamp(0, 1)
+
+        # GPU edge-aware blur (bilateral proxy)
+        blended_t = _median_blur_torch(blended_t, kernel=3, device=device)
+
+        # GPU normalize to V2
+        v2_t = _to_torch_u8_gray(v2_map).to(device)
+        blended_t = _normalize_to_v2_torch_gpu(blended_t, v2_t)
+        blended = _from_torch_u8_gray(blended_t)
+
+        blended = boost_whites(blended, thr, boost_percent=30)
+        return blended
+
+    # --- CPU fallback ---
+    h, w = v2_map.shape
+    tg = (min(tile_grid[0], w), min(tile_grid[1], h))
+
+    blended = blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=int(blur_k),
+                                      white_strength=float(white_strength))
+    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tg)
+    blended = clahe.apply(blended)
+    blended = cv2.bilateralFilter(blended, int(d), float(sC), float(sS))
+    blended = normalize_to_v2(blended, v2_map)
+    blended = boost_whites(blended, thr, boost_percent=30)
+    return blended
 
 
 # ------------ Workers ------------
@@ -294,24 +299,30 @@ class VideosWorker(threading.Thread):
             done = 0
             self.prog(0, total if total > 0 else 1)
 
-            # first pair
-            blended = lighten_beta(
-                v1g, v2g,
-                clip_limit=self.params.get("clip_limit", 2.0),
-                tile_grid=(self.params.get("tile_grid", 8), self.params.get("tile_grid", 8)),
-                d=self.params.get("bf_d", 12),
-                sC=self.params.get("bf_sigmaColor", 75),
-                sS=self.params.get("bf_sigmaSpace", 75),
-                blur_k=self.params.get("blur_k", 35),
-                white_strength=self.params.get("white_strength", 1.0),
-                use_gpu=self.use_gpu
-            )
-            if (out_w, out_h) != (blended.shape[1], blended.shape[0]):
-                blended = cv2.resize(blended, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+            # Pre-compute params dict once
+            p = {
+                "clip_limit": self.params.get("clip_limit", 2.0),
+                "tile_grid": (self.params.get("tile_grid", 8), self.params.get("tile_grid", 8)),
+                "d": self.params.get("bf_d", 12),
+                "sC": self.params.get("bf_sigmaColor", 75),
+                "sS": self.params.get("bf_sigmaSpace", 75),
+                "blur_k": self.params.get("blur_k", 35),
+                "white_strength": self.params.get("white_strength", 1.0),
+            }
+
+            def process_pair(v1g, v2g):
+                blended = lighten_beta(v1g, v2g, use_gpu=self.use_gpu, **p)
+                if (out_w, out_h) != (blended.shape[1], blended.shape[0]):
+                    blended = cv2.resize(blended, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+                return blended
+
+            # Process first frame
+            blended = process_pair(v1g, v2g)
             writer.write(blended)
             done += 1
             self.prog(done, total if total > 0 else done)
 
+            # Process remaining frames
             while True:
                 if self.stop_evt.is_set():
                     self.log("Stopped by user.")
@@ -326,23 +337,12 @@ class VideosWorker(threading.Thread):
                 if v1g.shape != v2g.shape:
                     v2g = cv2.resize(v2g, (v1g.shape[1], v1g.shape[0]), interpolation=cv2.INTER_AREA)
 
-                blended = lighten_beta(
-                    v1g, v2g,
-                    clip_limit=self.params.get("clip_limit", 2.0),
-                    tile_grid=(self.params.get("tile_grid", 8), self.params.get("tile_grid", 8)),
-                    d=self.params.get("bf_d", 12),
-                    sC=self.params.get("bf_sigmaColor", 75),
-                    sS=self.params.get("bf_sigmaSpace", 75),
-                    blur_k=self.params.get("blur_k", 35),
-                    white_strength=self.params.get("white_strength", 1.0),
-                    use_gpu=self.use_gpu
-                )
-                if (out_w, out_h) != (blended.shape[1], blended.shape[0]):
-                    blended = cv2.resize(blended, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+                blended = process_pair(v1g, v2g)
                 writer.write(blended)
 
                 done += 1
-                if done % 100 == 0: gc.collect()
+                if done % 100 == 0:
+                    gc.collect()
                 self.prog(done, total if total > 0 else done)
 
             writer.release(); cap1.release(); cap2.release()
@@ -351,7 +351,22 @@ class VideosWorker(threading.Thread):
             self.log(f"Error: {e}")
 
 
-# ------------ GUI (with Live Preview + Frame Scrubber) ------------
+# ---- small helpers for preview visuals ----
+def _put_label(img_bgr, text):
+    out = img_bgr.copy()
+    cv2.rectangle(out, (0, 0), (out.shape[1], 36), (0, 0, 0), thickness=-1)
+    cv2.putText(out, text, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+    return out
+
+def _resize_max(img, max_w=840, max_h=520):
+    h, w = img.shape[:2]
+    sc = min(max_w / max(w, 1), max_h / max(h, 1), 1.0)
+    if sc < 1.0:
+        img = cv2.resize(img, (int(w*sc), int(h*sc)), interpolation=cv2.INTER_AREA)
+    return img
+
+
+# ------------ Standalone App (Tkinter, kept for legacy) ------------
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -359,7 +374,6 @@ class App(tk.Tk):
         self.geometry("980x740")
         self.minsize(920, 680)
 
-        # state
         self.mode = tk.StringVar(value="frames")
         self.overwrite_v2 = tk.BooleanVar(value=True)
         self.v1_path = tk.StringVar()
@@ -369,85 +383,57 @@ class App(tk.Tk):
         self.h_var = tk.StringVar()
         self.use_gpu = tk.BooleanVar(value=(device is not None and device.type != "cpu"))
 
-        # params
         self.white_strength = tk.DoubleVar(value=1.0)
-        self.blur_k = tk.IntVar(value=35)              # feather kernel size
-        self.clip_limit = tk.DoubleVar(value=2.0)      # CLAHE
-        self.tile_grid = tk.IntVar(value=8)            # CLAHE tile size
-        self.bf_d = tk.IntVar(value=12)                # bilateral d
+        self.blur_k = tk.IntVar(value=35)
+        self.clip_limit = tk.DoubleVar(value=2.0)
+        self.tile_grid = tk.IntVar(value=8)
+        self.bf_d = tk.IntVar(value=12)
         self.bf_sigmaColor = tk.IntVar(value=75)
         self.bf_sigmaSpace = tk.IntVar(value=75)
 
-        # preview infra
         self._preview_lock = threading.Lock()
         self._preview_thread = None
         self._preview_after = None
-        self._preview_imgtk = None  # to keep reference
+        self._preview_imgtk = None
 
-        # NEW: scrubber state
-        self.preview_index = tk.IntVar(value=0)   # 0-based index
-        self.preview_max   = tk.IntVar(value=0)   # max available index
+        self.preview_index = tk.IntVar(value=0)
+        self.preview_max   = tk.IntVar(value=0)
         self._idx_scale = None
 
         self._build_ui()
-        # Key bindings for scrubbing
         self.bind("<Left>",  lambda e: self._nudge_preview(-1))
         self.bind("<Right>", lambda e: self._nudge_preview(+1))
 
-        # background poller
         self.qlog = queue.Queue()
         self.qprog = queue.Queue()
         self.stop_evt = threading.Event()
         self.worker = None
         self.after(100, self._poll)
 
-    # ---------- UI ----------
     def _build_ui(self):
         pad = {"padx": 10, "pady": 6}
-
         title = ttk.Label(self, text="Depth Blender", font=("Segoe UI", 18, "bold"))
         title.pack(fill="x", **pad)
-
         top = ttk.Frame(self); top.pack(fill="x", **pad)
-
-        # Left: controls
         left = ttk.Frame(top); left.pack(side="left", fill="y", padx=6)
         self._build_controls(left)
-
-        # Right: preview
         right = ttk.Frame(top); right.pack(side="left", fill="both", expand=True)
         ttk.Label(right, text="Preview (scrubbable):", style="VD3D.TLabel").pack(anchor="w")
-
-        # subtle border frame
         border = tk.Frame(right, bg="#2a2a2a", highlightthickness=0)
         border.pack(fill="both", expand=True, padx=6, pady=6)
-
-        # the actual drawing area (dark bg, no white highlight)
-        self.preview_canvas = tk.Canvas(
-            border,
-            bg="#1c1c1c",
-            highlightthickness=0,  # no white border
-            bd=0,
-            width=640, height=360   # sensible minimum so it’s visible when empty
-        )
+        self.preview_canvas = tk.Canvas(border, bg="#1c1c1c", highlightthickness=0, bd=0, width=640, height=360)
         self.preview_canvas.pack(fill="both", expand=True, padx=1, pady=1)
-
-        # keep last image id so we can re-center on resize
         self._preview_canvas_img = None
         self.preview_canvas.bind("<Configure>", lambda e: self._redraw_preview())
         self._draw_preview_placeholder()
-
-        # Bottom: progress/log
         bottom = ttk.Frame(self); bottom.pack(fill="both", expand=True, **pad)
         self._build_progress_and_log(bottom)
-
         self._toggle_mode()
         self._toggle_out_controls()
         self._update_preview_bounds()
         self._schedule_preview(0)
 
     def _build_controls(self, parent):
-        # Mode
         mode_frame = ttk.LabelFrame(parent, text="Mode")
         mode_frame.pack(fill="x", padx=6, pady=6)
         ttk.Radiobutton(mode_frame, text="Folders (frames)", variable=self.mode, value="frames",
@@ -455,41 +441,35 @@ class App(tk.Tk):
         ttk.Radiobutton(mode_frame, text="Videos", variable=self.mode, value="videos",
                         command=self._toggle_mode).grid(row=0, column=1, sticky="w", padx=12, pady=4)
 
+        gpu_row = ttk.Frame(parent)
+        gpu_row.pack(fill="x", padx=6, pady=0)
         gpu_type = device.type if device else "cpu"
         ttk.Checkbutton(gpu_row, text=f"Use GPU ({gpu_type})",
                         variable=self.use_gpu,
                         command=lambda: self._schedule_preview(120)).pack(anchor="w")
-
-                        
         if device is None or device.type == "cpu":
             ttk.Label(gpu_row, text="GPU not available. Using CPU.", foreground="#c77").pack(anchor="w")
         else:
             ttk.Label(gpu_row, text=f"GPU Mode: {device.type}", foreground="#7c7").pack(anchor="w")
 
-        # Paths
         paths = ttk.LabelFrame(parent, text="Inputs")
         paths.pack(fill="x", padx=6, pady=6)
-
         ttk.Label(paths, text="V1 path:").grid(row=0, column=0, sticky="e")
         ttk.Entry(paths, textvariable=self.v1_path, width=40).grid(row=0, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse…", command=self._browse_v1).grid(row=0, column=2, padx=4)
-
         ttk.Label(paths, text="V2 path:").grid(row=1, column=0, sticky="e")
         ttk.Entry(paths, textvariable=self.v2_path, width=40).grid(row=1, column=1, sticky="we", padx=6)
         ttk.Button(paths, text="Browse…", command=self._browse_v2).grid(row=1, column=2, padx=4)
 
-        # Output
         outf = ttk.LabelFrame(parent, text="Output")
         outf.pack(fill="x", padx=6, pady=6)
         self.chk_over = ttk.Checkbutton(outf, text="Overwrite V2 (frames mode only)",
                                         variable=self.overwrite_v2, command=self._toggle_out_controls)
         self.chk_over.grid(row=0, column=0, sticky="w", padx=6)
-
         ttk.Label(outf, text="Output path/file:").grid(row=1, column=0, sticky="e")
         ttk.Entry(outf, textvariable=self.out_path, width=40).grid(row=1, column=1, sticky="we", padx=6)
         ttk.Button(outf, text="Browse…", command=self._browse_out).grid(row=1, column=2, padx=4)
 
-        # Size
         sizef = ttk.LabelFrame(parent, text="Final Size (optional)")
         sizef.pack(fill="x", padx=6, pady=6)
         ttk.Label(sizef, text="Width:").grid(row=0, column=0, sticky="e")
@@ -498,10 +478,8 @@ class App(tk.Tk):
         ttk.Entry(sizef, textvariable=self.h_var, width=8).grid(row=0, column=3, sticky="w", padx=6)
         ttk.Label(sizef, text="(Leave blank to keep source)").grid(row=0, column=4, sticky="w", padx=12)
 
-        # Tunable parameters (with preview)
         parms = ttk.LabelFrame(parent, text="Blend Parameters (preview live)")
         parms.pack(fill="x", padx=6, pady=6)
-
         self._add_slider(parms, "White Strength", 0.0, 2.0, self.white_strength, 0)
         self._add_slider(parms, "Feather Blur (kernel)", 1, 99, self.blur_k, 1)
         self._add_slider(parms, "CLAHE Clip Limit", 0.5, 4.0, self.clip_limit, 2)
@@ -510,25 +488,18 @@ class App(tk.Tk):
         self._add_slider(parms, "Bilateral sigmaColor", 1, 200, self.bf_sigmaColor, 5)
         self._add_slider(parms, "Bilateral sigmaSpace", 1, 200, self.bf_sigmaSpace, 6)
 
-        # NEW: Preview Frame scrubber controls
         scrub = ttk.LabelFrame(parent, text="Preview Frame")
         scrub.pack(fill="x", padx=6, pady=6)
-
-        self._idx_scale = ttk.Scale(
-            scrub, from_=0, to=0, orient="horizontal",
-            command=lambda _=None: self._schedule_preview(50),
-            variable=self.preview_index
-        )
+        self._idx_scale = ttk.Scale(scrub, from_=0, to=0, orient="horizontal",
+                                    command=lambda _=None: self._schedule_preview(50),
+                                    variable=self.preview_index)
         self._idx_scale.grid(row=0, column=0, sticky="we", padx=6, pady=4)
         scrub.grid_columnconfigure(0, weight=1)
-
         ttk.Label(scrub, textvariable=self.preview_index, width=6).grid(row=0, column=1, sticky="e", padx=6)
-
         btns = ttk.Frame(scrub); btns.grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=2)
         ttk.Button(btns, text="⟨ Prev", command=lambda: self._nudge_preview(-1)).pack(side="left", padx=2)
         ttk.Button(btns, text="Next ⟩", command=lambda: self._nudge_preview(+1)).pack(side="left", padx=2)
 
-        # Buttons
         btns2 = ttk.Frame(parent); btns2.pack(fill="x", padx=6, pady=6)
         self.btn_preview = ttk.Button(btns2, text="Preview Now", command=self._preview_now)
         self.btn_start   = ttk.Button(btns2, text="Start Batch", command=self._start)
@@ -549,12 +520,29 @@ class App(tk.Tk):
         pf = ttk.Frame(parent); pf.pack(fill="x")
         self.prog = ttk.Progressbar(pf, mode="determinate"); self.prog.pack(fill="x")
         self.prog_lbl = ttk.Label(pf, text="Progress: 0/0"); self.prog_lbl.pack(anchor="w")
-
         lf = ttk.LabelFrame(parent, text="Log"); lf.pack(fill="both", expand=True, padx=6, pady=6)
         self.log = tk.Text(lf, height=10, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True)
 
-    # ---------- Browsers ----------
+    def _draw_preview_placeholder(self):
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_text(
+            self.preview_canvas.winfo_width() // 2,
+            self.preview_canvas.winfo_height() // 2,
+            text="Preview will appear here", fill="#666", font=("Segoe UI", 14, "italic"))
+
+    def _redraw_preview(self, imgtk=None):
+        if imgtk:
+            self._preview_imgtk = imgtk
+            self.preview_canvas.delete("all")
+            cw = self.preview_canvas.winfo_width()
+            ch = self.preview_canvas.winfo_height()
+            w = imgtk.width()
+            h = imgtk.height()
+            x = (cw - w) // 2
+            y = (ch - h) // 2
+            self._preview_canvas_img = self.preview_canvas.create_image(x, y, anchor="nw", image=imgtk)
+
     def _browse_v1(self):
         if self.mode.get() == "frames":
             p = filedialog.askdirectory(title="Select V1 frames folder")
@@ -589,7 +577,6 @@ class App(tk.Tk):
                                              filetypes=[("MP4", "*.mp4"), ("All", "*.*")])
             if p: self.out_path.set(p)
 
-    # ---------- Toggles ----------
     def _toggle_mode(self):
         if self.mode.get() == "videos":
             self.chk_over.state(["disabled"])
@@ -600,9 +587,8 @@ class App(tk.Tk):
         self._schedule_preview(0)
 
     def _toggle_out_controls(self):
-        pass  # keep simple
+        pass
 
-    # ---------- Scrubber helpers ----------
     def _nudge_preview(self, delta):
         cur = int(self.preview_index.get())
         mx  = int(self.preview_max.get())
@@ -612,7 +598,6 @@ class App(tk.Tk):
             self._schedule_preview(50)
 
     def _update_preview_bounds(self):
-        """Recompute preview_max and slider range when inputs or mode change."""
         mx = 0
         if self.mode.get() == "frames":
             v1p, v2p = self.v1_path.get().strip(), self.v2_path.get().strip()
@@ -635,7 +620,6 @@ class App(tk.Tk):
             self._idx_scale.configure(to=mx)
         self.preview_index.set(min(int(self.preview_index.get()), mx))
 
-    # ---------- Start/Stop ----------
     def _start(self):
         mode = self.mode.get()
         v1, v2 = self.v1_path.get().strip(), self.v2_path.get().strip()
@@ -692,18 +676,13 @@ class App(tk.Tk):
             self.stop_evt.set()
             self._log("Stopping requested...")
 
-    # ---------- Preview ----------
     def _schedule_preview(self, delay_ms=200):
-        # debounce: cancel previous .after if any
         if self._preview_after is not None:
-            try:
-                self.after_cancel(self._preview_after)
-            except Exception:
-                pass
+            try: self.after_cancel(self._preview_after)
+            except Exception: pass
         self._preview_after = self.after(int(max(0, delay_ms)), self._preview_now)
 
     def _preview_now(self):
-        # spawn a short worker to compute one blended frame
         with self._preview_lock:
             if self._preview_thread and self._preview_thread.is_alive():
                 return
@@ -716,20 +695,15 @@ class App(tk.Tk):
             v1p, v2p = self.v1_path.get().strip(), self.v2_path.get().strip()
             if not v1p or not v2p:
                 return
-
             idx = int(self.preview_index.get())
-
             if mode == "frames":
-                # load selected pair by index
                 v1_files = sorted([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
                 v2_files = sorted([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
-                if not v1_files or not v2_files:
-                    return
+                if not v1_files or not v2_files: return
                 idx = max(0, min(idx, min(len(v1_files), len(v2_files)) - 1))
                 v1 = cv2.imread(os.path.join(v1p, v1_files[idx]), cv2.IMREAD_GRAYSCALE)
                 v2 = cv2.imread(os.path.join(v2p, v2_files[idx]), cv2.IMREAD_GRAYSCALE)
-                if v1 is None or v2 is None:
-                    return
+                if v1 is None or v2 is None: return
                 if v1.shape != v2.shape:
                     v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
             else:
@@ -742,8 +716,7 @@ class App(tk.Tk):
                 cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ok1, fr1 = cap1.read(); ok2, fr2 = cap2.read()
                 cap1.release(); cap2.release()
-                if not ok1 or not ok2:
-                    return
+                if not ok1 or not ok2: return
                 v1 = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
                 v2 = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
                 if v1.shape != v2.shape:
@@ -758,35 +731,18 @@ class App(tk.Tk):
                 "bf_sigmaColor": int(self.bf_sigmaColor.get()),
                 "bf_sigmaSpace": int(self.bf_sigmaSpace.get()),
             }
-            out = lighten_beta(
-                v1, v2,
-                clip_limit=params["clip_limit"],
-                tile_grid=(params["tile_grid"], params["tile_grid"]),
-                d=params["bf_d"],
-                sC=params["bf_sigmaColor"],
-                sS=params["bf_sigmaSpace"],
-                blur_k=params["blur_k"],
-                white_strength=params["white_strength"],
-                use_gpu=self.use_gpu.get()
-            )
-
-            # compose a small preview: [V2 | OUT]
+            out = lighten_beta(v1, v2, use_gpu=self.use_gpu.get(), **params)
             vis_v2 = cv2.cvtColor(v2, cv2.COLOR_GRAY2BGR)
             vis_out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
-            label = f"Blended Preview (idx {idx})"
-            panel = np.hstack([_put_label(vis_v2, "V2 Base"), _put_label(vis_out, label)])
-
-            # fit into preview area (max width ~ 840)
+            panel = np.hstack([_put_label(vis_v2, "V2 Base"), _put_label(vis_out, f"Blended Preview (idx {idx})")])
             panel = _resize_max(panel, max_w=840, max_h=520)
             im = Image.fromarray(cv2.cvtColor(panel, cv2.COLOR_BGR2RGB))
             imgtk = ImageTk.PhotoImage(im)
-            self._preview_imgtk = imgtk  # keep ref
+            self._preview_imgtk = imgtk
             self.preview_canvas.after(0, lambda: self._redraw_preview(imgtk))
         except Exception:
-            # best-effort: show nothing
             pass
 
-    # ---------- Utility ----------
     def _set_prog(self, done, total):
         self.prog["maximum"] = max(total, 1)
         self.prog["value"] = done
@@ -813,21 +769,6 @@ class App(tk.Tk):
         if self.worker and not self.worker.is_alive():
             self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
         self.after(100, self._poll)
-
-
-# ---- small helpers for preview visuals ----
-def _put_label(img_bgr, text):
-    out = img_bgr.copy()
-    cv2.rectangle(out, (0, 0), (out.shape[1], 36), (0, 0, 0), thickness=-1)
-    cv2.putText(out, text, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
-    return out
-
-def _resize_max(img, max_w=840, max_h=520):
-    h, w = img.shape[:2]
-    sc = min(max_w / max(w, 1), max_h / max(h, 1), 1.0)
-    if sc < 1.0:
-        img = cv2.resize(img, (int(w*sc), int(h*sc)), interpolation=cv2.INTER_AREA)
-    return img
 
 
 if __name__ == "__main__":

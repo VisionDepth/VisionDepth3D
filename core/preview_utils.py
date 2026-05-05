@@ -1,13 +1,10 @@
+# preview_utils.py
+
 import cv2
 import torch
 import torch.nn.functional as F
 import numpy as np
 import re
-from core.render_3d import(
-    pixel_shift_cuda,
-    frame_to_tensor, 
-    depth_to_tensor,
-)
 
 
 def grab_frame_from_video(video_path, frame_idx=0):
@@ -21,8 +18,23 @@ def grab_frame_from_video(video_path, frame_idx=0):
     return frame if ret else None
 
 def generate_preview_image(preview_type, left, right, shift_map, w, h):
-    # 🛡️ Always squeeze shift_map to [H, W] safely
-    shift_np = shift_map.detach().cpu().numpy()
+    shift_tensor = None
+
+    if isinstance(shift_map, dict):
+        shift_tensor = shift_map.get("shift_map", None)
+    else:
+        shift_tensor = shift_map
+
+    shift_np = None
+    if isinstance(shift_tensor, torch.Tensor):
+        shift_np = shift_tensor.detach().cpu().numpy()
+    elif isinstance(shift_tensor, np.ndarray):
+        shift_np = shift_tensor
+    elif shift_tensor is None:
+        shift_np = np.zeros((h, w), dtype=np.float32)
+    else:
+        raise TypeError(f"Unsupported shift_map type: {type(shift_tensor)}")
+
     if shift_np.ndim == 3 and shift_np.shape[0] == 1:
         shift_np = shift_np[0]
 

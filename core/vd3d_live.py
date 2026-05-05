@@ -32,6 +32,14 @@ try:
 except Exception:
     pass
 
+try:
+    from core import render_depth
+    HAVE_RENDER_DEPTH = True
+except Exception as e:
+    render_depth = None
+    HAVE_RENDER_DEPTH = False
+    print(f"⚠️ render_depth unavailable for live depth: {e}")
+
 # ---- Torch & transformers
 try:
     import torch
@@ -269,6 +277,105 @@ def start_latest_capture(cap):
     t.start()
     return q, stop
 
+def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
+    """
+    Uses the same model-loading path as the Depth Engine.
+    Returns mode='render_depth' when successful.
+    Falls back to old DA2 path if needed.
+    """
+    if HAVE_RENDER_DEPTH and render_depth is not None:
+        supported = render_depth.load_supported_models()
+
+        checkpoint_override = getattr(model_key_or_id, "model_checkpoint", None)
+        checkpoint = supported.get(model_key_or_id, model_key_or_id)
+
+        print(f"🧠 Live Depth Engine loading via render_depth: {model_key_or_id} -> {checkpoint}")
+
+        model_callable, meta = render_depth.ensure_model_downloaded(
+            checkpoint,
+            use_fp16=use_fp16,
+        )
+
+    if model_callable is not None:
+        # Set pipe_type so _run_pipe_or_tile behaves like the main depth script.
+        if isinstance(checkpoint, str) and checkpoint.startswith("vda:"):
+            render_depth.pipe = model_callable
+            render_depth.pipe_type = "vda"
+
+        elif isinstance(checkpoint, str) and checkpoint.startswith(("da3:", "dav3:")):
+            render_depth.pipe = model_callable
+            render_depth.pipe_type = "da3"
+
+        elif isinstance(checkpoint, str) and checkpoint.startswith("onnx:"):
+            render_depth.pipe = model_callable
+            render_depth.pipe_type = "onnx"
+
+        elif isinstance(checkpoint, str) and checkpoint.startswith("diffusers:"):
+            render_depth.pipe = model_callable
+            render_depth.pipe_type = "diffusers"
+
+        else:
+            # Normal Hugging Face depth model path.
+            # ensure_model_downloaded() returns raw model + processor,
+            # but _run_pipe_or_tile() expects a callable that accepts PIL images.
+            raw_model = model_callable
+            processor = meta
+
+            device = "cuda" if CUDA_AVAILABLE else "cpu"
+            raw_model = raw_model.to(device).eval()
+
+            def hf_live_pipe(images, inference_size=None, **kwargs):
+                if not isinstance(images, list):
+                    images = [images]
+
+                pil_images = []
+                for img in images:
+                    if inference_size:
+                        img = img.resize(
+                            (int(inference_size[0]), int(inference_size[1])),
+                            Image.BICUBIC,
+                        )
+                    pil_images.append(img.convert("RGB"))
+
+                inputs = processor(
+                    images=pil_images,
+                    return_tensors="pt",
+                )
+
+                inputs = {
+                    k: v.to(device, non_blocking=True)
+                    for k, v in inputs.items()
+                    if hasattr(v, "to")
+                }
+
+                with torch.inference_mode():
+                    if device == "cuda" and bool(use_fp16):
+                        with torch.autocast("cuda", dtype=torch.float16):
+                            out = raw_model(**inputs).predicted_depth
+                    else:
+                        out = raw_model(**inputs).predicted_depth
+
+                if out.ndim == 4:
+                    out = out[:, 0]
+
+                results = []
+                for i in range(out.shape[0]):
+                    results.append({"predicted_depth": out[i].detach()})
+
+                return results
+
+            render_depth.pipe = hf_live_pipe
+            render_depth.pipe_type = "hf"
+
+        print(f"✅ Live depth loaded through Depth Engine path: {render_depth.pipe_type}")
+        return ("render_depth", render_depth.pipe, meta)
+
+        print("⚠️ render_depth model load failed, falling back to old DA2 live loader.")
+
+    # fallback
+    model, norm, device = make_da2(model_key_or_id, use_fp16)
+    return ("legacy_da2", model, (norm, device))
+
 # -------------------- Depth model -------------------- #
 def make_da2(model_id: str, use_fp16: bool):
     if not TORCH_AVAILABLE:
@@ -356,6 +463,55 @@ def depth_from_frame_fast(model, norm, device: str,
 
     return depth01
 
+
+def depth_from_frame_depth_engine(
+    frame_bgr: np.ndarray,
+    inference_size: tuple[int, int],
+    invert_depth: bool = False,
+    bit_depth: int = 16,
+) -> torch.Tensor:
+    """
+    Match render_depth.py normalization:
+    - BGR to RGB PIL
+    - _run_pipe_or_tile()
+    - _pred_to_np()
+    - normalize_depth()
+    - torch float depth 0..1 on CUDA when available
+    """
+    if render_depth is None or render_depth.pipe is None:
+        raise RuntimeError("render_depth pipe is not loaded.")
+
+    h, w = frame_bgr.shape[:2]
+
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    image = Image.fromarray(frame_rgb)
+
+    predictions = render_depth._run_pipe_or_tile(
+        [image],
+        inference_size=inference_size,
+    )
+
+    if not (isinstance(predictions, list) and predictions and "predicted_depth" in predictions[0]):
+        raise ValueError("Unexpected prediction format from render_depth live path.")
+
+    depth_pred = predictions[0]["predicted_depth"]
+    depth_np = render_depth._pred_to_np(depth_pred).squeeze()
+
+    # Match Depth Engine normalization.
+    out_arr = render_depth.normalize_depth(
+        depth_np,
+        (w, h),
+        invert=invert_depth,
+        bit_depth=bit_depth,
+    )
+
+    if out_arr.dtype == np.uint16:
+        depth01 = out_arr.astype(np.float32) / 65535.0
+    else:
+        depth01 = out_arr.astype(np.float32) / 255.0
+
+    device = "cuda" if CUDA_AVAILABLE else "cpu"
+    return torch.from_numpy(depth01).to(device=device, dtype=torch.float32)
 
 # -------------------- Utilities -------------------- #
 def sbs_pack_gpu_rgb(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
@@ -451,7 +607,9 @@ def run_live(args, external_stop: threading.Event | None = None):
 
     print(f"🔥 CUDA available: {CUDA_AVAILABLE} | Using {'cuda' if CUDA_AVAILABLE else 'cpu'}")
 
-    model, proc, device = make_da2(args.model, args.fp16)
+    model_key = getattr(args, "model", "Depth Anything v2 Small")
+    model_checkpoint = getattr(args, "model_checkpoint", None) or model_key
+    depth_backend, model, proc = make_live_depth_engine(model_checkpoint, args.fp16)
 
     win = "VD3D Live"
     source_is_screen = isinstance(getattr(args, "source", "device"), str) and str(
@@ -553,6 +711,16 @@ def run_live(args, external_stop: threading.Event | None = None):
 
         if frame is None or frame.size == 0:
             continue
+            
+        # Downscale live processing resolution.
+        # Screen capture can arrive as full monitor resolution, which is too heavy for live 3D.
+        process_w = int(getattr(args, "process_w", 0) or 0)
+        process_h = int(getattr(args, "process_h", 0) or 0)
+
+        if process_w > 0 and process_h > 0:
+            fh, fw = frame.shape[:2]
+            if fw != process_w or fh != process_h:
+                frame = cv2.resize(frame, (process_w, process_h), interpolation=cv2.INTER_AREA)
 
         # Mask preview rectangle in screen-capture mode if requested
         if source_is_screen and getattr(args, "mask_preview", False) and hasattr(
@@ -573,9 +741,26 @@ def run_live(args, external_stop: threading.Event | None = None):
 
         # Depth update
         if (depth01_t is None) or (now - depth_last_t >= depth_period):
-            depth_new = depth_from_frame_fast(
-                model, proc, device, frame, (args.infer_w, args.infer_h)
-            )
+            if depth_backend == "render_depth":
+                depth_new = depth_from_frame_depth_engine(
+                    frame,
+                    (args.infer_w, args.infer_h),
+                    invert_depth=bool(getattr(args, "invert_depth", False)),
+                    bit_depth=int(getattr(args, "depth_bit_depth", 16)),
+                )
+            else:
+                norm, device = proc
+                depth_new = depth_from_frame_fast(
+                    model,
+                    norm,
+                    device,
+                    frame,
+                    (args.infer_w, args.infer_h),
+                )
+
+                if bool(getattr(args, "invert_depth", False)):
+                    depth_new = 1.0 - depth_new
+
             depth_last_t = now
 
             if args.smooth:
@@ -590,7 +775,7 @@ def run_live(args, external_stop: threading.Event | None = None):
 
         # View modes
         if view_mode == 0:
-            out_bgr = frame
+            out_bgr = np.ascontiguousarray(frame)
         elif view_mode == 1:
             d_cpu = (depth01_t * 255.0).clamp(0,255).byte().detach().cpu().numpy()
             out_bgr = cv2.applyColorMap(d_cpu, cv2.COLORMAP_VIRIDIS)
@@ -621,14 +806,43 @@ def run_live(args, external_stop: threading.Event | None = None):
                 # Depth tensor for pixel shift (already CUDA, already 0..1)
                 d_t = depth01_t.unsqueeze(0)                  # shape [1,H,W]
 
-                left, right = pixel_shift_cuda(
-                    frm_t, d_t, w, h,
-                    args.fg_shift, args.mg_shift, args.bg_shift,
-                    blur_ksize=9,
-                    feather_strength=12.0,
-                    return_shift_map=False,
-                    enable_feathering=True,
-                    enable_edge_masking=True,
+                left, right, shift_meta = pixel_shift_cuda(
+                    frm_t,
+                    d_t,
+                    w,
+                    h,
+                    float(getattr(args, "fg_shift", -12.0)),
+                    float(getattr(args, "mg_shift", -2.0)),
+                    float(getattr(args, "bg_shift", 4.0)),
+
+                    blur_ksize=int(getattr(args, "blur_ksize", 9)),
+                    feather_strength=float(getattr(args, "feather_strength", 12.0)),
+
+                    use_subject_tracking=bool(getattr(args, "use_subject_tracking", True)),
+                    enable_floating_window=bool(getattr(args, "enable_floating_window", False)),
+                    return_shift_map=True,
+                    return_tensors=True,
+
+                    max_pixel_shift_percent=float(getattr(args, "max_pixel_shift_percent", 0.035)),
+                    parallax_balance=float(getattr(args, "parallax_balance", 1.0)),
+                    zero_parallax_strength=float(getattr(args, "zero_parallax_strength", 0.0)),
+
+                    enable_edge_masking=bool(getattr(args, "enable_edge_masking", True)),
+                    enable_feathering=bool(getattr(args, "enable_feathering", True)),
+
+                    dof_strength=float(getattr(args, "dof_strength", 0.0)),
+                    convergence_strength=float(getattr(args, "convergence_strength", 0.0)),
+                    enable_dynamic_convergence=bool(getattr(args, "enable_dynamic_convergence", True)),
+
+                    depth_pop_gamma=float(getattr(args, "depth_pop_gamma", 0.85)),
+                    depth_pop_mid=float(getattr(args, "depth_pop_mid", 0.50)),
+                    depth_stretch_lo=float(getattr(args, "depth_stretch_lo", 0.04)),
+                    depth_stretch_hi=float(getattr(args, "depth_stretch_hi", 0.96)),
+                    fg_pop_multiplier=float(getattr(args, "fg_pop_multiplier", 1.20)),
+                    bg_push_multiplier=float(getattr(args, "bg_push_multiplier", 1.10)),
+                    subject_lock_strength=float(getattr(args, "subject_lock_strength", 0.35)),
+
+                    disable_shift_ema=bool(getattr(args, "disable_shift_ema", False)),
                 )
 
                 # ---- handle both torch and numpy returns ----
@@ -681,6 +895,23 @@ def run_live(args, external_stop: threading.Event | None = None):
                 fmt=pyvirtualcam.PixelFormat.BGR,
             )
             print(f"📡 Virtual camera started: {vcam.device}")
+
+        # OpenCV drawing functions require a contiguous writable uint8 image.
+        # Some paths like screen capture, mode switching, RGB/BGR slicing, or hstack
+        # can produce non-contiguous array views.
+        if out_bgr is None:
+            continue
+
+        if isinstance(out_bgr, torch.Tensor):
+            out_bgr = out_bgr.detach().cpu().numpy()
+
+        if out_bgr.dtype != np.uint8:
+            out_bgr = np.clip(out_bgr, 0, 255)
+            if out_bgr.max() <= 1.0:
+                out_bgr = out_bgr * 255.0
+            out_bgr = out_bgr.astype(np.uint8)
+
+        out_bgr = np.ascontiguousarray(out_bgr)
 
         # FPS overlay
         dt = now - t_last

@@ -4,14 +4,37 @@ import subprocess
 import re
 import os
 import json
+import platform
+
+
+def hidden_subprocess_kwargs():
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 
 def get_video_fps(input_path):
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", input_path],
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            **hidden_subprocess_kwargs(),
         )
         rate = result.stdout.strip()
         num, den = map(int, rate.split('/'))
@@ -48,7 +71,10 @@ def detect_black_white_frames(input_path, mode="black", duration_threshold=0.1, 
     if mode == "black":
         filter_cmd = f"blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
     elif mode == "white":
-        filter_cmd = r"lutrgb='r=max(val\,240):g=max(val\,240):b=max(val\,240)',blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
+        filter_cmd = (
+            f"lutrgb='r=max(val\\,240):g=max(val\\,240):b=max(val\\,240)',"
+            f"blackdetect=d={duration_threshold}:pix_th={pixel_threshold}"
+        )
     else:
         raise ValueError("mode must be 'black' or 'white'")
 
@@ -59,7 +85,13 @@ def detect_black_white_frames(input_path, mode="black", duration_threshold=0.1, 
     ]
 
     try:
-        result = subprocess.run(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run(
+            command,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            **hidden_subprocess_kwargs(),
+        )
         output = result.stderr
 
         matches = re.findall(r"black_start:(\d+\.\d+)", output)
