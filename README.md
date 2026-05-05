@@ -64,7 +64,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 <h3 align="center">3D Generator (Stereo Composer)</h3>
 
 <p align="center">
-  <img width="700" height="598" alt="3Dtab" src="https://github.com/user-attachments/assets/fc50c0b5-02b8-412d-9b50-5da100274966" />
+  <img width="700" height="400" alt="3Dtab" src="https://github.com/user-attachments/assets/e79384c3-d398-4db0-a6e3-434893549988" />
   <br>
   <em>(3D Generator Tab)</em>
 </p>
@@ -89,7 +89,7 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 # Depth Estimation (AI Depth Engine)
 
 <p align="center">
-  <img width="700" height="598" alt="Depthtab" src="https://github.com/user-attachments/assets/48453cbc-70a5-4813-9926-9ed77d3ee153" />
+  <img width="700" height="400" alt="Depthtab" src="https://github.com/user-attachments/assets/bdee3d2b-43f6-4a05-9558-90ed08400353" />
   <br>
   <em>(Depth Estimation Tab)</em>
 </p>
@@ -113,32 +113,10 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 
 ---
 
-# FPS / Upscale Enhancer (RIFE + Real-ESRGAN)
-
-<p align="center">
-  <img width="700" height="598" alt="frametools" src="https://github.com/user-attachments/assets/34040849-2ade-468c-81d7-f76e47d07a48" />
-  <br>
-  <em>(FPS / Upscale Enhancer Tab)</em>
-</p>
-
-- **RIFE interpolation (ONNX)**: 2× / 4× / 8× FPS generation with GPU acceleration
-- **Real-ESRGAN upscaling (ONNX)**: high-quality super-resolution with optional FP16
-- **Two processing pipelines**:
-  - **Merged** (stable, low memory)
-  - **Threaded** (higher throughput, better utilization)
-- **Full video workflow support**:
-  - Optional scene splitting for long videos
-  - Rebuild output with correct resolution, FPS, and encoding settings
-- **Render feedback**: progress, FPS, ETA, logs, and safe cancel handling
-
-**Result:** Turn low-res or low-FPS sources into clean, smooth outputs built for VR playback and high refresh displays.
-
----
-
 # Depth Blender (Multi-Source Depth Fusion)
 
 <p align="center">
-  <img width="700" height="598" alt="DepthBlendTab" src="https://github.com/user-attachments/assets/08ec64b0-301d-46ae-885a-e7fecd347f89" />
+  <img width="700" height="400" alt="DepthBlendTab" src="https://github.com/user-attachments/assets/44ac6910-6ea0-43fb-b3d7-a338638f33fb" />
   <br>
   <em>(Depth Blender Tab)</em>
 </p>
@@ -160,48 +138,79 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 
 ---
 
-# Audio Tool (Rip, Attach, Attach + Stitch)
+# FPS / Upscale Enhancer (RIFE + Real-ESRGAN)
 
 <p align="center">
-  <img width="558" height="587" alt="AudioTool" src="https://github.com/user-attachments/assets/bd7775a3-f625-4e77-be53-0f820a5f1b0b" />
+  <img width="700" height="400" alt="frametools" src="https://github.com/user-attachments/assets/7df0c7ee-c710-42a6-860b-5d2822936db1" />
   <br>
-  <em>(Audio Tool)</em>
+  <em>(FPS / Upscale Enhancer Tab)</em>
 </p>
 
-- **Rip**: extract audio tracks from videos (copy or re-encode)
-- **Attach**: mux audio back into processed clips (fast copy by default)
-- **Attach + Stitch**: batch attach audio per clip, then stitch into one final gapless export
-- **Smart matching**: auto-match audio to clips by filename patterns or use one audio track for all
-- **Audio offset control** for sync fixes
-- **Codec control** for both per-clip muxing and final output encoding
-- **Logging + progress** via FFmpeg runner
+- **RIFE interpolation (ONNX)**: 2× / 4× / 8× FPS generation with GPU acceleration
+- **Real-ESRGAN upscaling (ONNX)**: high-quality super-resolution with optional FP16
+- **Two processing pipelines**:
+  - **Merged** (stable, low memory)
+  - **Threaded** (higher throughput, better utilization)
+- **Full video workflow support**:
+  - Optional scene splitting for long videos
+  - Rebuild output with correct resolution, FPS, and encoding settings
+- **Render feedback**: progress, FPS, ETA, logs, and safe cancel handling
 
-**Result:** A practical post stage for restoring audio, correcting sync, and finishing multi-clip renders into one clean final movie.
+**Result:** Turn low-res or low-FPS sources into clean, smooth outputs built for VR playback and high refresh displays.
 
 ---
 
-# Preview + Format Testing
+# Live 3D / Realtime Stereo
 
 <p align="center">
-  <img width="700" height="587" alt="3Dpreview" src="https://github.com/user-attachments/assets/4ce33583-8db7-40c2-a35d-d5c78efd26d9" />
+  <img width="700" height="400" alt="live3d" src="https://github.com/user-attachments/assets/048e6313-ac57-4c2e-afba-a9d9a0711e3f" />
   <br>
-  <em>(Live 3D Preview)</em>
+  <em>(Live 3D Tab)</em>
 </p>
 
-- Real-time preview modes: **Anaglyph, SBS, Passive Interlaced, Depth and Shift Heatmaps**
-- On-frame tuning: convergence and parallax checks without committing to long renders
-- Save preview frames for quick comparisons and sharing
+The **Live 3D** tab brings realtime stereo conversion into VisionDepth3D. It allows users to capture a camera, capture card, or screen source, estimate depth live, and preview a stereoscopic 3D output without waiting for a full render.
+
+- **Realtime capture sources**:
+  - Camera / capture card input
+  - Screen 1 / Screen 2 desktop capture
+  - Configurable capture resolution and FPS
+
+- **Depth model selection**:
+  - Uses the same supported model list as the Depth Engine
+  - Lightweight model defaults for live performance
+  - Optional FP16 acceleration where supported
+
+- **Live VisionDepth3D stereo controls**:
+  - Foreground / midground / background shift
+  - Max pixel shift
+  - Parallax balance
+  - Depth pop gamma
+  - Subject tracking
+  - Dynamic convergence
+  - Edge masking
+  - Feathering
+  - Floating window support
+
+- **Preview and output controls**:
+  - Start directly in SBS mode
+  - Adjustable preview resolution
+  - Optional preview window disabling
+  - Optional HTTP stream field for future streaming workflows
+
+- **Designed for fast tuning**:
+  - Test stereo settings before rendering
+  - Check depth direction and pop-out behavior
+  - Compare depth models quickly
+  - Tune comfort settings before full video export
+
+**Result:** A realtime VisionDepth3D sandbox for testing depth models, stereo settings, screen capture, and live 2D-to-3D conversion before committing to final renders.
 
 ---
 
 # Smart GUI + Workflow
 
-<img width="89" height="97" alt="image" src="https://github.com/user-attachments/assets/cb7dc3e9-403a-4e54-af0d-ac44120d1a8c" />
-<img width="89" height="97" alt="HelpHotkeys" src="https://github.com/user-attachments/assets/9324a4e9-9f10-4de1-a1e9-0596711410c7" />
-<img width="89" height="97" alt="Hotkeys" src="https://github.com/user-attachments/assets/45592879-ec6c-4e59-b9d5-f50144db40d9" />
-
 - Multi-tab interface with persistent settings
-- Help menu + hotkeys
+- Help menu
 - Pause, resume, and cancel for long GPU jobs
 - Multi-language UI support (EN, FR, ES, DE, JA)
 - Hardware encoding options integrated into export workflow
@@ -215,80 +224,269 @@ Forking, redistributing, modifying, or creating derivative works is strictly pro
 - Containers: **MP4, MKV, AVI**
 - Encoders: CPU + FFmpeg hardware options (NVENC/AMF/QSV) when available
 
-
 ## Guide Sheet: Install
 
 ### 📌 System Requirements
-- ✔️ This program runs on python 3.13
-- ✔️ This program has been tested on cuda 12.8
-- ✔️ Conda (Optional, Recommended for Simplicity)
 
-### 📌 Step 1: Download the VisionDepth3D Program
-- 1️⃣ Download the VisionDepth3D zip file from the official download source. (green button)
-- 2️⃣ Extract the zip file to your desired folder (e.g., c:\user\VisionDepth3D).
+- ✔️ Python 3.13
+- ✔️ Git, if cloning the repository
+- ✔️ Conda, optional but recommended
+- ✔️ NVIDIA GPU recommended for best performance
+- ✔️ CUDA 12.8 tested
+- ✔️ AMD / Intel GPU support on Windows through DirectML
+- ✔️ CPU fallback available, but much slower
 
-### 📌 Step 2: Create Env and Install Required Dependencies 
+---
 
-### 🟢 Option 1: Install via pip (Standard CMD Method)
-- **1️. press (Win + R), type cmd, and hit Enter.**
-- **2. Clone the Repository (Skip the git clone if you downloaded the ZIP and start from cd)**
-  ```
-  git clone https://github.com/VisionDepth/VisionDepth3D.git
-  cd C:\VisionDepth3D-main
-  pip install -r requirements.txt
-  ```
-  - continue to step 3: installing pytorch with cuda
-  - Update 'Start_VD3D_Windows.bat' script file
-  - Double click the Script to launch VD3D
-  
-### 🔵 Option 2: Install via Conda (Recommended)
+## 📌 Step 1: Download or Clone VisionDepth3D
 
-(Automatically manages dependencies & isolates environment.)
+You can install VisionDepth3D in one of two ways:
 
-- **1. Clone the Repository (Skip the git clone if you downloaded the ZIP and start from cd)**
-- **2. Create the Conda Environment**
-	To create the environment, copy and past this in conda to run:
-   ```
-   git clone https://github.com/VisionDepth/VisionDepth3D.git
-   cd VisionDepth3D-main
-   conda create -n VD3D python=3.13
-   conda activate VD3D
-   pip install -r requirements.txt
-   ```
+### Option A: Download ZIP
 
-### 📌 Step 3: Check if CUDA is installed
-🔍 Find Your CUDA Version:
-Before installing PyTorch, check which CUDA version your GPU supports:
-- 1️⃣ Open Command Prompt (Win + R, type cmd, hit Enter)
-- 2️⃣ Run the following command:
+1. Go to the official VisionDepth3D GitHub page.
+2. Click the green **Code** button.
+3. Click **Download ZIP**.
+4. Extract the ZIP to a folder, for example:
+
+```text
+C:\VisionDepth3D-main
 ```
-nvcc --version
+
+### Option B: Clone with Git
+
+Open Command Prompt or Anaconda Prompt and run:
+
+```bash
+git clone https://github.com/VisionDepth/VisionDepth3D.git
+cd VisionDepth3D
 ```
-or 
+
+If you downloaded the ZIP instead, skip `git clone` and use `cd` to enter the extracted folder:
+
+```bash
+cd C:\VisionDepth3D-main
 ```
+
+---
+
+## 📌 Step 2: Create Environment and Install Dependencies
+
+### 🟢 Option 1: Standard pip Install
+
+Open Command Prompt:
+
+```bash
+cd C:\VisionDepth3D-main
+pip install -r requirements.txt
+```
+
+Then continue to **Step 3: Install PyTorch for Your GPU**.
+
+---
+
+### 🔵 Option 2: Conda Install, Recommended
+
+Conda is recommended because it keeps VisionDepth3D dependencies isolated from the rest of your system.
+
+Open **Anaconda Prompt** and run:
+
+```bash
+git clone https://github.com/VisionDepth/VisionDepth3D.git
+cd VisionDepth3D
+conda create -n VD3D python=3.13 -y
+conda activate VD3D
+pip install -r requirements.txt
+```
+
+If you downloaded the ZIP instead of cloning:
+
+```bash
+cd C:\VisionDepth3D-main
+conda create -n VD3D python=3.13 -y
+conda activate VD3D
+pip install -r requirements.txt
+```
+
+---
+
+## 📌 Step 3: Install PyTorch for Your GPU
+
+VisionDepth3D uses PyTorch for AI depth models and GPU processing.
+
+Different GPU types need different PyTorch installs.
+
+---
+
+## 🟩 NVIDIA GPU Users, CUDA Recommended
+
+If you have an NVIDIA GPU, install the CUDA build of PyTorch.
+
+First, check your NVIDIA driver/CUDA support:
+
+```bash
 nvidia-smi
 ```
-- 3️⃣ Look for the CUDA version (e.g., CUDA 11.8, 12.1, etc.)
-  
-### 📌 Install PyTorch with the Correct CUDA Version  
-Go to the official PyTorch website to find the best install command for your setup:
-🔗 [ https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-install Pytorch-Cuda 12.8 or which CUDA version you are running
+You can also check CUDA Toolkit if installed:
 
-if you are running AMD GPU select CPU build
-
-- Once all dependancies are installed update the batch script for system you are running and run the following command:
+```bash
+nvcc --version
 ```
+
+Then install PyTorch using the official PyTorch selector:
+
+🔗 https://pytorch.org/get-started/locally/
+
+Recommended selector options:
+
+```text
+OS: Windows or Linux
+Package: Pip
+Language: Python
+Compute Platform: CUDA
+```
+
+Example for CUDA 12.8:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+If your system uses a different CUDA version, use the command from the official PyTorch website instead. PyTorch’s install selector is the safest source for the correct command.
+
+---
+
+## 🟥 AMD / Intel GPU Users on Windows, DirectML
+
+If you have an AMD GPU or Intel GPU on Windows, install PyTorch DirectML.
+
+DirectML allows PyTorch acceleration on supported non-NVIDIA GPUs through Windows DirectX 12.
+
+Run this inside your VisionDepth3D environment:
+
+```bash
+pip install torch-directml
+```
+
+Use this option for:
+
+- AMD Radeon GPUs on Windows
+- Intel Arc / Intel integrated GPUs on Windows
+- Systems without NVIDIA CUDA support
+
+Important:
+
+- DirectML is usually slower than NVIDIA CUDA.
+- Some models or operations may fall back to CPU.
+- If DirectML gives issues, use CPU mode as a fallback.
+- Do not install CUDA PyTorch for AMD GPUs on Windows.
+
+---
+
+## ⬜ CPU-Only Users
+
+If you do not have a supported GPU, install the CPU version of PyTorch.
+
+Use the official PyTorch selector:
+
+🔗 https://pytorch.org/get-started/locally/
+
+Recommended selector options:
+
+```text
+OS: Windows / Linux / Mac
+Package: Pip
+Language: Python
+Compute Platform: CPU
+```
+
+CPU mode works, but depth generation, upscaling, interpolation, and 3D processing will be much slower.
+
+---
+
+## 📌 Step 4: Verify PyTorch Install
+
+After installing PyTorch, test it.
+
+### NVIDIA CUDA Test
+
+```bash
+python -c "import torch; print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No CUDA GPU found')"
+```
+
+### AMD / Intel DirectML Test
+
+```bash
+python -c "import torch_directml; d=torch_directml.device(); print('DirectML device:', d)"
+```
+
+### CPU Test
+
+```bash
+python -c "import torch; print('PyTorch installed:', torch.__version__)"
+```
+
+---
+
+## 📌 Step 5: Launch VisionDepth3D
+
+After all dependencies are installed, launch VisionDepth3D with the correct script for your setup.
+
+Windows Conda:
+
+```bash
 Start_VD3D_Conda.bat
-# or 
-Start_VD3D_Linux.bat
-# or 
-Start_VD3D_Windows.bat
-
 ```
-Congrats you have successfully downloaded VisionDepth3D! 
-This quick setup ensures you clone the repository, configure your environment, and launch the app — all in just a few simple steps.
+
+Windows standard install:
+
+```bash
+Start_VD3D_Windows.bat
+```
+
+Linux:
+
+```bash
+Start_VD3D_Linux.bat
+```
+
+Or run directly:
+
+```bash
+python app.py
+```
+
+---
+
+## 📌 Notes for Batch Scripts
+
+If you are using Conda, make sure your batch script activates the correct environment:
+
+```bat
+conda activate VD3D
+python app.py
+```
+
+If you are using standard pip without Conda, make sure Python is available in PATH:
+
+```bat
+python app.py
+```
+
+---
+
+## ✅ Install Complete
+
+Congrats, you have successfully installed VisionDepth3D.
+
+Recommended setup:
+
+- NVIDIA users: CUDA PyTorch
+- AMD / Intel Windows users: `torch-directml`
+- No GPU users: CPU PyTorch
+
+For the best performance, an NVIDIA CUDA GPU is recommended.
 
 ---
 ## 🛠️ Guide Sheet: **Updating VisionDepth3D**
