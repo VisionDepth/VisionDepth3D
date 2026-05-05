@@ -5,6 +5,14 @@ from dataclasses import asdict
 
 PRESET_DIR = Path("presets")
 
+# Presets should store render/settings profiles only.
+# Do not save project-specific file paths.
+PRESET_EXCLUDED_KEYS = {
+    "input_video_path",
+    "depth_map_path",
+    "output_path",
+}
+
 
 class PresetService:
     def __init__(self, preset_dir: str | Path = PRESET_DIR):
@@ -20,8 +28,14 @@ class PresetService:
 
         path = self.preset_dir / filename
 
+        config = {
+            key: value
+            for key, value in asdict(state).items()
+            if key not in PRESET_EXCLUDED_KEYS
+        }
+
         with path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(state), f, indent=4)
+            json.dump(config, f, indent=4)
 
         return path
 
@@ -42,6 +56,10 @@ class PresetService:
         ignored = []
 
         for key, value in config.items():
+            if key in PRESET_EXCLUDED_KEYS:
+                ignored.append(key)
+                continue
+
             if hasattr(state, key):
                 try:
                     setattr(state, key, value)
