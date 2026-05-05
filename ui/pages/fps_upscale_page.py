@@ -1237,7 +1237,7 @@ class FpsUpscalePage(QWidget):
 
         self.progress_updated.emit({
             "progress": 0,
-            "status_text": self.t("Starting threaded pipeline...")
+            "status_text": self._t("Starting threaded pipeline...")
         })
 
         def _run():
