@@ -18,7 +18,25 @@ from torchvision.transforms.functional import gaussian_blur as tv_gaussian_blur
 from core.ffmpeg_blackdetect import detect_black_white_frames
 import math
 from typing import Iterable, Optional
+import platform
 
+
+def hidden_subprocess_kwargs():
+    """
+    Prevents ffmpeg/ffprobe subprocess console windows from flashing
+    in PyInstaller windowed builds on Windows.
+    """
+    if platform.system().lower() != "windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 # Device setup
 def pick_torch_device():
     # NVIDIA CUDA
@@ -161,7 +179,13 @@ def get_video_info_safe(video_path):
                 "-of", "default=noprint_wrappers=1:nokey=0",
                 video_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                **hidden_subprocess_kwargs(),
+            )
             info = {}
 
             for line in result.stdout.splitlines():
@@ -223,7 +247,13 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
         output_with_audio
     ]
 
-    process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **hidden_subprocess_kwargs(),
+    )
 
     if process.returncode != 0:
         print(f"[AUDIO MERGE] ffmpeg failed (code {process.returncode}):")
@@ -282,7 +312,12 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
         "-"
     ]
 
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**7)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        bufsize=10**7,
+        **hidden_subprocess_kwargs(),
+    )
     frame_bytes = int(width) * int(height) * 3 * 2  # 3 channels * 16-bit
 
     try:
@@ -318,7 +353,11 @@ def ffmpeg_yuv10_reader(path, width, height):
         "-pix_fmt","p010le",   # 10-bit 4:2:0
         "-"
     ]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        **hidden_subprocess_kwargs(),
+    )
     stride = width * height * 2 * 3 // 2  # P010 size
     while True:
         buf = p.stdout.read(stride)
@@ -2640,7 +2679,13 @@ def render_sbs_3d(
               "out=", out_width, out_height,
               "equi_eye=", equi_eye_w, equi_eye_h,
               "flat_eye=", flat_eye_w, flat_eye_h)
-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+        ffmpeg_proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_subprocess_kwargs(),
+        )
 
 
     else:
