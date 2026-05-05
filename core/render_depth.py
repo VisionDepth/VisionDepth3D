@@ -22,8 +22,26 @@ import cv2
 import onnxruntime as ort
 import matplotlib.cm as cm
 from PIL import Image, ImageTk, ImageOps
+import platform, subprocess
 
+def hidden_subprocess_kwargs():
+    """
+    Prevents ffmpeg/ffprobe subprocess console windows from flashing
+    in PyInstaller windowed builds on Windows.
+    """
+    if platform.system().lower() != "windows":
+        return {}
 
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
+    
+# Device setup
 # =========================
 # Force Hugging Face caches into VD3D /weights
 # Must be set BEFORE importing transformers/diffusers
@@ -2723,7 +2741,12 @@ def process_video2(
         print("🎥 Marigold model detected — switching to frame-based 16-bit processing.")
         tmp_frame_dir = os.path.join(output_dir, f"{name}_tmp_frames")
         os.makedirs(tmp_frame_dir, exist_ok=True)
-        subprocess.run(["ffmpeg", "-y", "-i", file_path, os.path.join(tmp_frame_dir, "frame_%05d.png")])
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", file_path, os.path.join(tmp_frame_dir, "frame_%05d.png")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_subprocess_kwargs(),
+        )
         dummy_widget = tk.StringVar(value=str(batch_size))
         dummy_output_var = tk.StringVar(value=tmp_frame_dir)
         dummy_inference_res = tk.StringVar(value=inference_res_text)
@@ -2732,8 +2755,19 @@ def process_video2(
         process_images_in_folder(tmp_frame_dir, batch_size_widget=dummy_widget, output_dir_var=dummy_output_var,
                                  inference_res_var=dummy_inference_res, status_label=status_label,
                                  progress_bar=progress_bar, root=real_root, invert_var=dummy_invert_var)
-        subprocess.run(["ffmpeg", "-y", "-framerate", "24", "-i", os.path.join(tmp_frame_dir, "frame_%05d_depth.png"),
-                        "-c:v", "ffv1", "-pix_fmt", "gray16le", output_path])
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-framerate", "24",
+                "-i", os.path.join(tmp_frame_dir, "frame_%05d_depth.png"),
+                "-c:v", "ffv1",
+                "-pix_fmt", "gray16le",
+                output_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_subprocess_kwargs(),
+        )
         print(f"✅ Marigold 16-bit depth video saved: {output_path}")
         return len(os.listdir(tmp_frame_dir))
 
