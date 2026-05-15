@@ -24,8 +24,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QSizePolicy,
+    QSplitter,
 )
 
+from ui.styles.page_theme import apply_unified_page_theme
 
 class Live3DPage(QWidget):
     def __init__(self, controller):
@@ -126,6 +128,10 @@ class Live3DPage(QWidget):
                     widget.setTitle(self._t(key))
             except RuntimeError:
                 pass
+                
+    def apply_theme(self, theme: dict):
+        self._active_theme = theme or {}
+        apply_unified_page_theme(self, self._active_theme)
 
     def _build_ui(self):
         self.setObjectName("Live3DPage")
@@ -164,15 +170,12 @@ class Live3DPage(QWidget):
 
         # Left controls
         left_panel = QWidget()
-        left_panel.setMinimumWidth(360)
-        left_panel.setMaximumWidth(430)
-        left_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        left_panel.setMinimumWidth(300)
+        left_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         left = QVBoxLayout(left_panel)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-
-        layout.addWidget(left_panel)
 
         capture_group = self._group("Capture Source")
         capture_grid = QGridLayout(capture_group)
@@ -368,15 +371,12 @@ class Live3DPage(QWidget):
 
         # Right status/actions
         right_panel = QWidget()
-        right_panel.setMinimumWidth(260)
-        right_panel.setMaximumWidth(330)
-        right_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-
+        right_panel.setMinimumWidth(240)
+        right_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        
         right = QVBoxLayout(right_panel)
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(12)
-
-        layout.addWidget(right_panel)
 
         status_group = self._group("Live Status")
         status_layout = QVBoxLayout(status_group)
@@ -397,24 +397,28 @@ class Live3DPage(QWidget):
 
         right.addWidget(status_group)
         right.addStretch()
-        
+
+        # Resizable Live 3D layout:
+        # capture/depth settings | live stereo/preview settings | live status
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(center_panel)
+        self.main_splitter.addWidget(right_panel)
+
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+
+        self.main_splitter.setSizes([360, 760, 280])
+
+        layout.addWidget(self.main_splitter, 1)
+
         body_scroll.setWidget(body_widget)
         root.addWidget(body_scroll, 1)
 
-        self.setStyleSheet("""
-            QLabel#PageTitle {
-                font-size: 22px;
-                font-weight: 800;
-            }
-            QLabel#PageSubtitle {
-                color: #9aa8b8;
-            }
-            QGroupBox {
-                font-weight: 800;
-            }
-        """)
-        
-
+        self.apply_theme(getattr(self, "_active_theme", {}))
 
     def _bind_events(self):
         self.start_btn.clicked.connect(self._start_live)
