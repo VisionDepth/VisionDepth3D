@@ -1,0 +1,23 @@
+{
+  "name": "Crimson Depth",
+  "qss": "crimson_depth.qss",
+  "colors": {
+    "bg": "#10070a",
+    "topbar": "#190b10",
+    "panel": "#241016",
+    "panel_2": "#18090e",
+    "panel_3": "#33151f",
+    "border": "#642335",
+    "border_soft": "#8b2f49",
+    "text": "#ffe8ee",
+    "text_bright": "#ffffff",
+    "muted": "#d6a3b2",
+    "accent": "#f43f5e",
+    "accent_text": "#ffffff",
+    "danger": "#fb7185",
+    "danger_bg": "#2b1518",
+    "warning": "#fbbf24",
+    "success": "#34d399",
+    "preview_bg": "#15070c"
+  }
+}
