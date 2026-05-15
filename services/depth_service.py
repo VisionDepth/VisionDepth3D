@@ -1,5 +1,6 @@
 import threading
 import time
+import re
 from pathlib import Path
 
 from models.depth_state import DepthState
@@ -43,10 +44,9 @@ class VarAdapter:
 
 class DepthProgressProxy:
     def __init__(self, callback=None):
-        self.value = 0
         self.callback = callback
+        self.value = 0
         self._maximum = 100
-        self._mode = "determinate"
 
     def __setitem__(self, key, value):
         if key == "value":
@@ -54,24 +54,28 @@ class DepthProgressProxy:
             if self.callback:
                 self.callback(progress=value)
 
+        elif key == "maximum":
+            self._maximum = value
+            if self.callback:
+                self.callback(progress=self.value)
+
     def __getitem__(self, key):
         if key == "value":
             return self.value
         if key == "maximum":
             return self._maximum
-        raise KeyError(key)
+        return None
 
     def config(self, **kwargs):
-        changed = False
-        if "value" in kwargs:
-            self.value = kwargs["value"]
-            changed = True
         if "maximum" in kwargs:
             self._maximum = kwargs["maximum"]
-        if "mode" in kwargs:
-            self._mode = kwargs["mode"]
-        if changed and self.callback:
-            self.callback(progress=self.value)
+            if self.callback:
+                self.callback(progress=self.value)
+
+        if "value" in kwargs:
+            self.value = kwargs["value"]
+            if self.callback:
+                self.callback(progress=self.value)
 
     def configure(self, **kwargs):
         self.config(**kwargs)
@@ -136,33 +140,119 @@ class DepthService:
     def set_progress_callback(self, callback):
         self.progress_callback = callback
 
+    def _parse_hms(self, text):
+        try:
+            parts = str(text).strip().split(":")
+            if len(parts) == 3:
+                h, m, s = [int(float(p)) for p in parts]
+                return h * 3600 + m * 60 + s
+            if len(parts) == 2:
+                m, s = [int(float(p)) for p in parts]
+                return m * 60 + s
+        except Exception:
+            pass
+
+        return None
+
+
+    def _parse_depth_status_text(self, text):
+        """
+        Parses legacy depth status text like:
+        56/7188 | FPS: 1.2 | ETA: 01:43:18
+        """
+        result = {
+            "completed_units": None,
+            "total_units": None,
+            "fps_like": None,
+            "eta": None,
+        }
+
+        if not text:
+            return result
+
+        text = str(text)
+
+        match = re.search(r"(\d+)\s*/\s*(\d+)", text)
+        if match:
+            result["completed_units"] = float(match.group(1))
+            result["total_units"] = float(match.group(2))
+
+        fps_match = re.search(r"FPS\s*:\s*([0-9.]+)", text, re.IGNORECASE)
+        if fps_match:
+            try:
+                result["fps_like"] = float(fps_match.group(1))
+            except Exception:
+                pass
+
+        eta_match = re.search(r"ETA\s*:\s*([0-9:.]+)", text, re.IGNORECASE)
+        if eta_match:
+            result["eta"] = self._parse_hms(eta_match.group(1))
+
+        return result
+
     def _emit_progress_update(self, progress=None, status_text=None):
         if not self.progress_callback:
             return
 
         now = time.time()
         elapsed = 0.0
-        fps = 0.0
         eta = None
+        fps_like = None
 
         if self.start_time is not None:
-            elapsed = now - self.start_time
+            elapsed = max(0.0, now - self.start_time)
 
-        current_progress = self.progress.value if progress is None else progress
+        active_status_text = status_text if status_text is not None else self.progress_label.text
+        parsed = self._parse_depth_status_text(active_status_text)
 
-        if elapsed > 0 and current_progress > 0:
-            remaining = max(0.0, 100.0 - current_progress)
-            fps = current_progress / elapsed
-            eta = (remaining / current_progress) * elapsed if current_progress > 0 else None
+        raw_value = self.progress.value if progress is None else progress
+
+        try:
+            raw_value = float(raw_value or 0.0)
+        except Exception:
+            raw_value = 0.0
+
+        try:
+            maximum = float(getattr(self.progress, "_maximum", 100) or 100)
+        except Exception:
+            maximum = 100.0
+
+        completed_units = raw_value
+        total_units = maximum
+
+        # Prefer parsed frame count from legacy depth status text:
+        # "56/7188 | FPS: 1.2 | ETA: 01:43:18"
+        if parsed["completed_units"] is not None and parsed["total_units"]:
+            completed_units = parsed["completed_units"]
+            total_units = parsed["total_units"]
+            percent = (completed_units / max(total_units, 1.0)) * 100.0
+        elif maximum > 100 and raw_value <= maximum:
+            percent = (raw_value / max(maximum, 1.0)) * 100.0
+        else:
+            percent = raw_value
+
+        percent = max(0.0, min(100.0, float(percent)))
+
+        if parsed["fps_like"] is not None:
+            fps_like = parsed["fps_like"]
+        elif elapsed > 0 and completed_units > 0:
+            fps_like = completed_units / elapsed
+
+        if parsed["eta"] is not None:
+            eta = parsed["eta"]
+        elif elapsed > 0 and fps_like and fps_like > 0:
+            remaining_units = max(0.0, total_units - completed_units)
+            eta = remaining_units / fps_like
 
         self.progress_callback({
-            "progress": float(current_progress),
-            "status_text": status_text if status_text is not None else self.progress_label.text,
+            "progress": percent,
+            "status_text": active_status_text,
             "elapsed": elapsed,
             "eta": eta,
-            "fps_like": fps,
+            "fps_like": fps_like,
+            "rate_label": "FPS",
         })
-
+        
     def request_suspend(self):
         try:
             from core.render_depth import request_depth_pause
@@ -216,6 +306,9 @@ class DepthService:
         cap = cv2.VideoCapture(state.input_video_path)
         real_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 1
         cap.release()
+        
+        self.progress["maximum"] = max(1, real_total)
+        self.progress["value"] = 0
 
         batch_size_value = state.batch_size
         try:
