@@ -1,14 +1,18 @@
 import os
+import threading
+import tempfile
+import shutil
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtCore import Signal as QtSignal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QFileDialog, QComboBox, QCheckBox, QSpinBox, QMessageBox,
-    QFrame, QGroupBox, QLineEdit, QScrollArea,
+    QFrame, QGroupBox, QLineEdit, QScrollArea, QSplitter,
 )
 from ui.widgets.parameter_card import ParameterCard
+from ui.styles.page_theme import apply_unified_page_theme
 
 
 CODEC_OPTIONS = [
@@ -106,11 +110,19 @@ class PathRow(QWidget):
         return self.edit.text()
 
 class DepthGenerationPage(QWidget):
+    preview_samples_ready = QtSignal(list)
+    preview_samples_failed = QtSignal(str)
     def __init__(self, controller):
         super().__init__()
         self.controller = controller
         self._state = controller.depth_state
         self._translation_map = []
+        
+        self._preview_pairs = []
+        self._preview_index = 0
+        self._preview_running = False
+        self.preview_samples_ready.connect(self._on_depth_preview_samples_ready)
+        self.preview_samples_failed.connect(self._on_depth_preview_samples_failed)
 
         self._warmup_timer = QTimer()
         self._warmup_timer.timeout.connect(self._pulse_warmup)
@@ -238,11 +250,15 @@ class DepthGenerationPage(QWidget):
         left_scroll.setWidget(left_widget)
         left_scroll.setMinimumWidth(300)
         left_scroll.setMaximumWidth(340)
-        top_row.addWidget(left_scroll)
 
         # Right: Previews side-by-side
         preview_widget = QWidget()
-        preview_layout = QHBoxLayout(preview_widget)
+        preview_outer = QVBoxLayout(preview_widget)
+        preview_outer.setContentsMargins(0, 0, 0, 0)
+        preview_outer.setSpacing(10)
+
+        preview_row = QWidget()
+        preview_layout = QHBoxLayout(preview_row)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(12)
 
@@ -263,13 +279,47 @@ class DepthGenerationPage(QWidget):
         self._register_text(self.depth_preview, "Depth Output")
         self.depth_preview.setAlignment(Qt.AlignCenter)
         self.depth_preview.setMinimumSize(240, 160)
-        mode_group = QGroupBox()
-        self._register_title(mode_group, "Processing Mode")
         depth_inner.addWidget(self.depth_preview)
 
         preview_layout.addWidget(input_group, 1)
         preview_layout.addWidget(depth_group, 1)
-        top_row.addWidget(preview_widget, 1)
+        preview_controls = QWidget()
+        preview_controls_layout = QHBoxLayout(preview_controls)
+        preview_controls_layout.setContentsMargins(0, 0, 0, 0)
+        preview_controls_layout.setSpacing(10)
+
+        self.generate_preview_btn = QPushButton()
+        self._register_text(self.generate_preview_btn, "Generate Preview")
+
+        self.prev_preview_btn = QPushButton()
+        self._register_text(self.prev_preview_btn, "Previous")
+
+        self.next_preview_btn = QPushButton()
+        self._register_text(self.next_preview_btn, "Next")
+
+        self.preview_index_label = QLabel("Preview 0 / 0")
+        self.preview_index_label.setAlignment(Qt.AlignCenter)
+
+        preview_controls_layout.addWidget(self.generate_preview_btn, 2)
+        preview_controls_layout.addWidget(self.prev_preview_btn, 1)
+        preview_controls_layout.addWidget(self.preview_index_label, 1)
+        preview_controls_layout.addWidget(self.next_preview_btn, 1)
+
+        preview_outer.addWidget(preview_row, 1)
+        preview_outer.addWidget(preview_controls, 0)
+        
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+
+        self.main_splitter.addWidget(left_scroll)
+        self.main_splitter.addWidget(preview_widget)
+
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+
+        self.main_splitter.setSizes([330, 1200])
+
+        top_row.addWidget(self.main_splitter, 1)
 
         root.addLayout(top_row, 1)
 
@@ -322,6 +372,10 @@ class DepthGenerationPage(QWidget):
         self._bind_events()
         self._load_initial_state()
         self._set_idle_state()
+
+    def apply_theme(self, theme: dict):
+        self._active_theme = theme or {}
+        apply_unified_page_theme(self, self._active_theme)
 
     def _t(self, key: str) -> str:
         """
@@ -482,10 +536,63 @@ class DepthGenerationPage(QWidget):
 
         self._set_spin_prefixes()
         self._refresh_mode_combo()
+        self._apply_processing_mode_ui()
+
+    def _current_processing_mode(self):
+        if hasattr(self, "mode_combo"):
+            return self.mode_combo.currentData() or self.mode_combo.currentText()
+        return "Video"
+
+    def _on_processing_mode_changed(self, *_args):
+        mode = self._current_processing_mode()
+        setattr(self._state, "processing_mode", mode)
+        self._apply_processing_mode_ui()
+
+    def _apply_processing_mode_ui(self):
+        mode = self._current_processing_mode()
+
+        if mode == "Video":
+            self.input_row.set_label_text(self._t("Input Video"))
+            self.input_row.set_placeholder_text(self._t("Select source video..."))
+            self.output_dir_row.set_label_text(self._t("Output Dir"))
+            self.output_dir_row.set_placeholder_text(self._t("Select folder..."))
+
+        elif mode == "Video Folder":
+            self.input_row.set_label_text(self._t("Input Video Folder"))
+            self.input_row.set_placeholder_text(self._t("Select video folder..."))
+            self.output_dir_row.set_label_text(self._t("Output Dir"))
+            self.output_dir_row.set_placeholder_text(self._t("Select folder..."))
+
+        elif mode == "Image":
+            self.input_row.set_label_text(self._t("Input Image"))
+            self.input_row.set_placeholder_text(self._t("Select source image..."))
+            self.output_dir_row.set_label_text(self._t("Output Dir"))
+            self.output_dir_row.set_placeholder_text(self._t("Select folder..."))
+
+        elif mode == "Image Folder":
+            self.input_row.set_label_text(self._t("Input Image Folder"))
+            self.input_row.set_placeholder_text(self._t("Select image folder..."))
+            self.output_dir_row.set_label_text(self._t("Output Dir"))
+            self.output_dir_row.set_placeholder_text(self._t("Select folder..."))
+
+        self.input_row.set_browse_text(self._t("Browse"))
+        self.output_dir_row.set_browse_text(self._t("Browse"))
+        
+        is_video_mode = (mode == "Video")
+
+        if hasattr(self, "generate_preview_btn"):
+            self.generate_preview_btn.setEnabled(is_video_mode and not self._preview_running)
+
+        if hasattr(self, "prev_preview_btn"):
+            self.prev_preview_btn.setEnabled(is_video_mode and len(self._preview_pairs) > 1)
+
+        if hasattr(self, "next_preview_btn"):
+            self.next_preview_btn.setEnabled(is_video_mode and len(self._preview_pairs) > 1)
 
     # ── All the same methods from your existing file ──
     def _bind_events(self):
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        self.mode_combo.currentIndexChanged.connect(self._on_processing_mode_changed)
         self.resolution_combo.currentTextChanged.connect(lambda v: setattr(self._state, "inference_resolution", v))
         self.batch_spin.valueChanged.connect(lambda v: setattr(self._state, "batch_size", v))
         self.steps_spin.valueChanged.connect(lambda v: setattr(self._state, "inference_steps", v))
@@ -496,6 +603,9 @@ class DepthGenerationPage(QWidget):
         self.fp16_check.toggled.connect(lambda v: setattr(self._state, "use_fp16", v))
         self.offload_combo.currentTextChanged.connect(lambda v: setattr(self._state, "offload_mode", v))
         self.process_btn.clicked.connect(self._start_processing)
+        self.generate_preview_btn.clicked.connect(self._generate_depth_preview_samples)
+        self.prev_preview_btn.clicked.connect(self._show_previous_preview_pair)
+        self.next_preview_btn.clicked.connect(self._show_next_preview_pair)
         self.suspend_btn.clicked.connect(self._suspend)
         self.resume_btn.clicked.connect(self._resume)
         self.cancel_btn.clicked.connect(self._cancel)
@@ -504,6 +614,8 @@ class DepthGenerationPage(QWidget):
         self.controller.depth_finished.connect(self._on_depth_image_done)
         self.controller.depth_failed.connect(self._on_depth_failed)
         self.controller.depth_cancelled.connect(self._on_depth_cancelled)
+        self.controller.depth_suspended.connect(self._on_depth_suspended)
+        self.controller.depth_resumed.connect(self._on_depth_resumed)
 
     def _load_initial_state(self):
         try:
@@ -526,15 +638,39 @@ class DepthGenerationPage(QWidget):
         self.fp16_check.setChecked(self._state.use_fp16)
         self.offload_combo.setCurrentText(self._state.offload_mode)
         self.colormap_combo.setCurrentText(self._state.colormap)
+        self._apply_processing_mode_ui()
 
     def _browse_input_video(self):
-        mode = self.mode_combo.currentData() or self.mode_combo.currentText()
-        if mode in ("Image", "Image Folder"):
-            path, _ = QFileDialog.getOpenFileName(self, "Select Input Image", "",
-                "Image Files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*.*)")
+        mode = self._current_processing_mode()
+
+        if mode == "Image":
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Input Image",
+                "",
+                "Image Files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp);;All Files (*.*)"
+            )
+
+        elif mode == "Image Folder":
+            path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Input Image Folder"
+            )
+
+        elif mode == "Video Folder":
+            path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Input Video Folder"
+            )
+
         else:
-            path, _ = QFileDialog.getOpenFileName(self, "Select Input Video", "",
-                "Video Files (*.mp4 *.mkv *.avi *.mov);;All Files (*.*)")
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Input Video",
+                "",
+                "Video Files (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*.*)"
+            )
+
         if path:
             self.input_row.set_text(path)
             self._state.input_video_path = path
@@ -570,6 +706,8 @@ class DepthGenerationPage(QWidget):
 
     def _start_processing(self):
         mode = self.mode_combo.currentData() or self.mode_combo.currentText()
+        setattr(self._state, "processing_mode", mode)
+
         if not self._state.input_video_path:
             QMessageBox.warning(self, "Missing Input", "Please select an input source.")
             return
@@ -587,7 +725,17 @@ class DepthGenerationPage(QWidget):
     def _resume(self): self.controller.resume_depth()
     def _cancel(self): self.controller.cancel_depth()
 
-    def _on_depth_started(self): self._set_running_state()
+    def _on_depth_started(self):
+        self._set_running_state()
+        self.status_label.setText(self._t("Processing..."))
+
+    def _on_depth_suspended(self):
+        self._set_suspended_state()
+        self.status_label.setText(self._t("Paused."))
+
+    def _on_depth_resumed(self):
+        self._set_running_state()
+        self.status_label.setText(self._t("Resuming..."))
 
     def _on_depth_finished(self, output_path: str):
         self._set_idle_state()
@@ -618,6 +766,289 @@ class DepthGenerationPage(QWidget):
             return
         label.setPixmap(pixmap.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    def _get_preview_sample_indices(self, total_frames: int):
+        if total_frames <= 0:
+            return []
+
+        positions = [0.0, 0.25, 0.5, 0.75, 0.95]
+        indices = []
+
+        for p in positions:
+            idx = int(round((total_frames - 1) * p))
+            indices.append(max(0, min(total_frames - 1, idx)))
+
+        # remove duplicates while preserving order
+        unique = []
+        seen = set()
+        for idx in indices:
+            if idx not in seen:
+                unique.append(idx)
+                seen.add(idx)
+
+        return unique
+        
+    def _generate_depth_preview_samples(self):
+        mode = self._current_processing_mode()
+
+        if mode != "Video":
+            QMessageBox.information(self, "Preview", "Depth preview samples are only available in Video mode.")
+            return
+
+        if not self._state.input_video_path:
+            QMessageBox.warning(self, "Missing Input", "Please select an input video first.")
+            return
+
+        if not self._state.selected_model or self._state.selected_model == "  -- Select Model -- ":
+            QMessageBox.warning(self, "Missing Model", "Please select a depth model first.")
+            return
+
+        self._preview_running = True
+        self._preview_pairs = []
+        self._preview_index = 0
+
+        self.status_label.setText("Generating preview samples...")
+        self.generate_preview_btn.setEnabled(False)
+        self.prev_preview_btn.setEnabled(False)
+        self.next_preview_btn.setEnabled(False)
+        self.preview_index_label.setText("Preview 0 / 0")
+
+        # run worker here
+        self._run_depth_preview_worker()
+    
+    def _preview_var(self, value):
+        class PreviewVar:
+            def __init__(self, value):
+                self._value = value
+
+            def get(self):
+                return self._value
+
+            def set(self, value):
+                self._value = value
+
+            def after(self, *args, **kwargs):
+                pass
+
+            def config(self, *args, **kwargs):
+                pass
+
+            def configure(self, *args, **kwargs):
+                pass
+
+            def winfo_toplevel(self):
+                return self
+
+        return PreviewVar(value)
+
+
+    def _cv_to_pixmap(self, frame_bgr):
+        if frame_bgr is None:
+            return None
+
+        try:
+            import cv2
+
+            if len(frame_bgr.shape) == 2:
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_GRAY2RGB)
+            else:
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+            h, w, ch = frame_rgb.shape
+            bytes_per_line = ch * w
+
+            qimg = QImage(
+                frame_rgb.data,
+                w,
+                h,
+                bytes_per_line,
+                QImage.Format_RGB888,
+            )
+
+            return QPixmap.fromImage(qimg.copy())
+
+        except Exception as exc:
+            print(f"[Depth Preview] Failed to convert frame to pixmap: {exc}")
+            return None
+
+
+    def _set_preview_pair(self, pair_index: int):
+        if not self._preview_pairs:
+            self.preview_index_label.setText("Preview 0 / 0")
+            return
+
+        pair_index = max(0, min(pair_index, len(self._preview_pairs) - 1))
+        self._preview_index = pair_index
+
+        original_pixmap, depth_pixmap = self._preview_pairs[pair_index]
+
+        if original_pixmap is not None:
+            self.input_preview.setPixmap(
+                original_pixmap.scaled(
+                    self.input_preview.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
+        if depth_pixmap is not None:
+            self.depth_preview.setPixmap(
+                depth_pixmap.scaled(
+                    self.depth_preview.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
+        self.preview_index_label.setText(
+            f"Preview {pair_index + 1} / {len(self._preview_pairs)}"
+        )
+
+        self.prev_preview_btn.setEnabled(pair_index > 0)
+        self.next_preview_btn.setEnabled(pair_index < len(self._preview_pairs) - 1)
+
+
+    def _show_previous_preview_pair(self):
+        if not self._preview_pairs:
+            return
+
+        self._set_preview_pair(self._preview_index - 1)
+
+
+    def _show_next_preview_pair(self):
+        if not self._preview_pairs:
+            return
+
+        self._set_preview_pair(self._preview_index + 1)
+
+
+    def _on_depth_preview_samples_ready(self, pairs):
+        self._preview_running = False
+        self._preview_pairs = pairs or []
+        self._preview_index = 0
+
+        self.generate_preview_btn.setEnabled(True)
+
+        if not self._preview_pairs:
+            self.status_label.setText("No preview samples were generated.")
+            self.preview_index_label.setText("Preview 0 / 0")
+            return
+
+        self.status_label.setText("Depth preview samples ready.")
+        self._set_preview_pair(0)
+        self._apply_processing_mode_ui()
+
+
+    def _on_depth_preview_samples_failed(self, message):
+        self._preview_running = False
+        self.generate_preview_btn.setEnabled(True)
+        self.prev_preview_btn.setEnabled(False)
+        self.next_preview_btn.setEnabled(False)
+        self.status_label.setText(f"Preview failed: {message}")
+        self._apply_processing_mode_ui()
+
+        QMessageBox.critical(
+            self,
+            "Depth Preview Failed",
+            message,
+        )
+
+
+    def _run_depth_preview_worker(self):
+        def _run():
+            temp_root = None
+
+            try:
+                import cv2
+                from core.render_depth import process_image
+
+                video_path = self._state.input_video_path
+
+                cap = cv2.VideoCapture(video_path)
+
+                if not cap.isOpened():
+                    raise RuntimeError("Could not open input video for preview.")
+
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                sample_indices = self._get_preview_sample_indices(total_frames)
+
+                if not sample_indices:
+                    raise RuntimeError("Could not find preview sample frames.")
+
+                temp_root = tempfile.mkdtemp(prefix="vd3d_depth_preview_")
+                frame_dir = os.path.join(temp_root, "frames")
+                depth_dir = os.path.join(temp_root, "depth")
+                os.makedirs(frame_dir, exist_ok=True)
+                os.makedirs(depth_dir, exist_ok=True)
+
+                preview_pairs = []
+
+                for preview_num, frame_index in enumerate(sample_indices, start=1):
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                    ok, frame_bgr = cap.read()
+
+                    if not ok or frame_bgr is None:
+                        continue
+
+                    frame_path = os.path.join(frame_dir, f"preview_{preview_num:02d}.png")
+                    cv2.imwrite(frame_path, frame_bgr)
+
+                    process_image(
+                        file_path=frame_path,
+                        colormap_var=self._preview_var(self._state.colormap),
+                        invert_var=self._preview_var(self._state.invert_depth),
+                        output_dir_var=self._preview_var(depth_dir),
+                        inference_res_var=self._preview_var(self._state.inference_resolution),
+                        input_label=None,
+                        output_label=None,
+                        status_label=None,
+                        progress_bar=None,
+                        folder=True,
+                    )
+
+                    base = os.path.splitext(os.path.basename(frame_path))[0]
+                    expected_depth_path = os.path.join(depth_dir, f"{base}_depth.png")
+
+                    if not os.path.exists(expected_depth_path):
+                        # Fallback: find the newest image in the depth output folder.
+                        depth_candidates = [
+                            os.path.join(depth_dir, name)
+                            for name in os.listdir(depth_dir)
+                            if name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp"))
+                        ]
+
+                        if depth_candidates:
+                            expected_depth_path = max(depth_candidates, key=os.path.getmtime)
+
+                    if not os.path.exists(expected_depth_path):
+                        continue
+
+                    depth_bgr = cv2.imread(expected_depth_path, cv2.IMREAD_COLOR)
+
+                    original_pixmap = self._cv_to_pixmap(frame_bgr)
+                    depth_pixmap = self._cv_to_pixmap(depth_bgr)
+
+                    if original_pixmap is not None and depth_pixmap is not None:
+                        preview_pairs.append((original_pixmap, depth_pixmap))
+
+                cap.release()
+
+                if not preview_pairs:
+                    raise RuntimeError("No preview depth maps were created.")
+
+                self.preview_samples_ready.emit(preview_pairs)
+
+            except Exception as exc:
+                self.preview_samples_failed.emit(str(exc))
+
+            finally:
+                if temp_root and os.path.isdir(temp_root):
+                    try:
+                        shutil.rmtree(temp_root, ignore_errors=True)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_run, daemon=True).start()
+    
     def _set_idle_state(self):
         self.process_btn.setEnabled(True)
         self.suspend_btn.setEnabled(False)
@@ -628,6 +1059,12 @@ class DepthGenerationPage(QWidget):
         self.process_btn.setEnabled(False)
         self.suspend_btn.setEnabled(True)
         self.resume_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+
+    def _set_suspended_state(self):
+        self.process_btn.setEnabled(False)
+        self.suspend_btn.setEnabled(False)
+        self.resume_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
 
     def _pulse_warmup(self):
