@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 from ui.widgets.file_picker_row import FilePickerRow
 from ui.widgets.parameter_card import ParameterCard
 from ui.widgets.preview_panel import PreviewPanel
+from ui.styles.page_theme import apply_unified_page_theme
+
 import os
 
 
@@ -85,6 +87,12 @@ class StereoGeneratorPage(QWidget):
         left_col = QVBoxLayout(left_container)
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(12)
+        
+        self.render_mode_combo = QComboBox()
+        self.render_mode_combo.addItem(self._t("Single Video Render"), "video")
+        self.render_mode_combo.addItem(self._t("3D Image Render"), "image")
+        self.render_mode_combo.addItem(self._t("Batch Video Folder Render"), "video_folder")
+        self.render_mode_combo.addItem(self._t("Image Folder Render"), "image_folder")
 
         self.input_row = FilePickerRow("Input Video", "Select source video...")
         self.depth_row = FilePickerRow("Depth Map", "Select depth video...")
@@ -96,6 +104,8 @@ class StereoGeneratorPage(QWidget):
 
         io_card = ParameterCard("Sources")
         self._register_title(io_card, "Sources")
+        io_card.inner_layout.addWidget(self._label("Render Mode"))
+        io_card.inner_layout.addWidget(self.render_mode_combo)
         io_card.inner_layout.addWidget(self.input_row)
         io_card.inner_layout.addWidget(self.depth_row)
         io_card.inner_layout.addWidget(self.output_row)
@@ -324,15 +334,7 @@ class StereoGeneratorPage(QWidget):
         self.preview_meta_label = QLabel()
         self.preview_meta_label.setWordWrap(True)
         self.preview_meta_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.preview_meta_label.setStyleSheet("""
-            QLabel {
-                color: #d7dce2;
-                padding: 6px 8px;
-                border: 1px solid #243041;
-                border-radius: 8px;
-                background-color: #111826;
-            }
-        """)
+        self._apply_theme_styles()
 
         self.preview_panel = PreviewPanel()
 
@@ -502,6 +504,10 @@ class StereoGeneratorPage(QWidget):
         self.subject_lock_slider = QSlider(Qt.Horizontal)
         self.subject_lock_slider.setRange(0, 200)       # 0.00 to 2.00
         self.subject_lock_value = QLabel("1.00")
+        
+        self.foreground_curvature_slider = QSlider(Qt.Horizontal)
+        self.foreground_curvature_slider.setRange(0, 20)    # 0.00 to 0.20
+        self.foreground_curvature_value = QLabel("0.06")
 
         self.pop_mid_edit = QLineEdit()
         self.stretch_lo_edit = QLineEdit()
@@ -533,7 +539,11 @@ class StereoGeneratorPage(QWidget):
         pop_layout.addWidget(self.subject_lock_slider, 10, 0)
         pop_layout.addWidget(self.subject_lock_value, 10, 1)
 
-        pop_layout.addWidget(self.apply_pop_entries_btn, 11, 1)
+        pop_layout.addWidget(self._label("Foreground Curvature"), 11, 0)
+        pop_layout.addWidget(self.foreground_curvature_slider, 12, 0)
+        pop_layout.addWidget(self.foreground_curvature_value, 12, 1)
+
+        pop_layout.addWidget(self.apply_pop_entries_btn, 13, 1)
 
         pop_card.inner_layout.addLayout(pop_layout)
                 
@@ -597,9 +607,24 @@ class StereoGeneratorPage(QWidget):
 
         right_scroll.setWidget(right_container)
         
-        root.addWidget(left_scroll, 1)
-        root.addLayout(center_col, 4)
-        root.addWidget(right_scroll, 2)
+        # Resizable 3-column layout
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+
+        center_widget = QWidget()
+        center_widget.setLayout(center_col)
+
+        self.main_splitter.addWidget(left_scroll)
+        self.main_splitter.addWidget(center_widget)
+        self.main_splitter.addWidget(right_scroll)
+
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+
+        self.main_splitter.setSizes([320, 900, 360])
+
+        root.addWidget(self.main_splitter, 1)
         
         self.encoding_dialog = self._build_encoding_dialog()
         self.processing_dialog = self._create_card_dialog(self._t("Processing Options"), processing_card, min_width=500)
@@ -608,6 +633,7 @@ class StereoGeneratorPage(QWidget):
         self._load_initial_state()
         self._refresh_preset_list()
         self._set_render_idle_state()
+        self._apply_theme_styles()
 
     def _t(self, key: str) -> str:
         """
@@ -673,10 +699,29 @@ class StereoGeneratorPage(QWidget):
 
         return key
 
+    def _qt_text(self, text: str) -> str:
+        """
+        Escape literal ampersands for Qt widgets.
+
+        Qt uses & as a keyboard shortcut marker, so:
+        "Output & Encoding" displays wrong.
+
+        This converts it to:
+        "Output && Encoding"
+
+        which displays as:
+        "Output & Encoding"
+        """
+        text = str(text)
+        marker = "\u0000"
+        return text.replace("&&", marker).replace("&", "&&").replace(marker, "&&")
+
     def _set_title_text(self, widget, text: str):
         """
         Works with QGroupBox and ParameterCard-like widgets.
         """
+        text = self._qt_text(text)
+
         if hasattr(widget, "setTitle"):
             widget.setTitle(text)
             return
@@ -693,7 +738,7 @@ class StereoGeneratorPage(QWidget):
 
     def _register_text(self, widget, key: str):
         self._translation_map.append((widget, key, "text"))
-        widget.setText(self._t(key))
+        widget.setText(self._qt_text(self._t(key)))
 
     def _register_title(self, widget, key: str):
         self._translation_map.append((widget, key, "title"))
@@ -747,6 +792,134 @@ class StereoGeneratorPage(QWidget):
         elif hasattr(row, "button"):
             row.button.setText(browse_text)
 
+    def apply_theme(self, theme: dict):
+        self._active_theme = theme or {}
+        apply_unified_page_theme(self, self._active_theme)
+            
+    def _apply_theme_styles(self):
+        theme = getattr(self, "_active_theme", None) or {}
+        colors = theme.get("colors", {}) if isinstance(theme, dict) else {}
+
+        panel = colors.get("panel", "#111821")
+        panel_2 = colors.get("panel_2", "#0d131b")
+        panel_3 = colors.get("panel_3", "#151d29")
+        border = colors.get("border", "#263445")
+        border_soft = colors.get("border_soft", "#2d3b4f")
+        text = colors.get("text", "#e6edf3")
+        text_bright = colors.get("text_bright", "#f0f6fc")
+        muted = colors.get("muted", "#8b949e")
+        accent = colors.get("accent", "#2f81f7")
+        danger = colors.get("danger", "#ff7b72")
+
+        if hasattr(self, "preview_meta_label"):
+            self.preview_meta_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {text};
+                    padding: 6px 8px;
+                    border: 1px solid {border_soft};
+                    border-radius: 8px;
+                    background-color: {panel_3};
+                }}
+            """)
+
+        # Optional: theme this page's scrollbars/sliders/buttons a bit more too.
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {text};
+            }}
+
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+
+            QComboBox,
+            QLineEdit,
+            QSpinBox,
+            QDoubleSpinBox {{
+                background-color: {panel_2};
+                border: 1px solid {border_soft};
+                border-radius: 8px;
+                padding: 6px 8px;
+                color: {text};
+            }}
+
+            QComboBox:hover,
+            QLineEdit:hover,
+            QSpinBox:hover,
+            QDoubleSpinBox:hover {{
+                border: 1px solid {accent};
+            }}
+
+            QPushButton {{
+                background-color: {panel_3};
+                border: 1px solid {border_soft};
+                border-radius: 8px;
+                padding: 7px 12px;
+                color: {text_bright};
+                font-weight: 600;
+            }}
+
+            QPushButton:hover {{
+                background-color: {panel};
+                border: 1px solid {accent};
+            }}
+
+            QGroupBox {{
+                background-color: {panel};
+                border: 1px solid {border};
+                border-radius: 12px;
+                margin-top: 10px;
+                padding: 12px;
+                color: {text_bright};
+                font-weight: 700;
+            }}
+
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: {text_bright};
+            }}
+
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: {panel_2};
+                border: 1px solid {border_soft};
+                border-radius: 3px;
+            }}
+
+            QSlider::handle:horizontal {{
+                background: {accent};
+                border: 1px solid {accent};
+                width: 16px;
+                height: 16px;
+                margin: -6px 0;
+                border-radius: 8px;
+            }}
+
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 2px;
+            }}
+
+            QScrollBar::handle:vertical {{
+                background: {border};
+                border-radius: 5px;
+                min-height: 32px;
+            }}
+
+            QScrollBar::handle:vertical:hover {{
+                background: {border_soft};
+            }}
+
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+
     def refresh_labels(self):
         """
         Called by MainWindow when language changes.
@@ -754,7 +927,7 @@ class StereoGeneratorPage(QWidget):
         for widget, key, widget_type in self._translation_map:
             try:
                 if widget_type == "text":
-                    widget.setText(self._t(key))
+                    widget.setText(self._qt_text(self._t(key)))
 
                 elif widget_type == "title":
                     self._set_title_text(widget, self._t(key))
@@ -782,13 +955,72 @@ class StereoGeneratorPage(QWidget):
                 elif widget is self.output_row:
                     self._apply_file_row_translation(widget, "Output", "Choose output file...")
 
+        self._apply_render_mode_ui()
         self._update_frame_label()
         self._refresh_preview_meta()
+
+    def _current_render_mode(self) -> str:
+        if hasattr(self, "render_mode_combo"):
+            return self.render_mode_combo.currentData() or "video"
+        return getattr(self.controller.state, "render_mode", "video")
+
+    def _set_combo_by_data(self, combo, data):
+        for i in range(combo.count()):
+            if combo.itemData(i) == data:
+                combo.setCurrentIndex(i)
+                return
+
+    def _on_render_mode_changed(self, *_args):
+        mode = self._current_render_mode()
+        print(f"[UI RENDER MODE] {mode}")
+        self.controller.set_state("render_mode", mode)
+        self._apply_render_mode_ui()
+        self._refresh_preview_meta()
+
+    def _apply_render_mode_ui(self):
+        mode = self._current_render_mode()
+
+        if mode == "image":
+            self._apply_file_row_translation(self.input_row, "Input Image", "Select source image...")
+            self._apply_file_row_translation(self.depth_row, "Depth Map Image", "Select depth image...")
+            self._apply_file_row_translation(self.output_row, "Output Image", "Choose output image...")
+            self.render_btn.setText(self._t("Render 3D Image"))
+            self.preview_btn.setEnabled(False)
+
+        elif mode == "video_folder":
+            self._apply_file_row_translation(self.input_row, "Input Video Folder", "Select video folder...")
+            self._apply_file_row_translation(self.depth_row, "Depth Video Folder", "Select depth video folder...")
+            self._apply_file_row_translation(self.output_row, "Output Folder", "Select output folder...")
+            self.render_btn.setText(self._t("Start Batch Render"))
+            self.preview_btn.setEnabled(False)
+
+        elif mode == "image_folder":
+            self._apply_file_row_translation(self.input_row, "Input Image Folder", "Select image folder...")
+            self._apply_file_row_translation(self.depth_row, "Depth Image Folder", "Select depth image folder...")
+            self._apply_file_row_translation(self.output_row, "Output Folder", "Select output folder...")
+            self.render_btn.setText(self._t("Start Image Folder Render"))
+            self.preview_btn.setEnabled(False)
+
+        else:
+            self._apply_file_row_translation(self.input_row, "Input Video", "Select source video...")
+            self._apply_file_row_translation(self.depth_row, "Depth Map", "Select depth video...")
+            self._apply_file_row_translation(self.output_row, "Output", "Choose output file...")
+            self.render_btn.setText(self._t("Start Render"))
+            self.preview_btn.setEnabled(True)
+
+    def _start_render_clicked(self):
+        mode = self._current_render_mode()
+        print(f"[START CLICKED RENDER MODE] {mode}")
+        self.controller.set_state("render_mode", mode)
+        self.controller.start_render()
 
     def _bind_events(self):
         self.input_row.browse_clicked.connect(self._browse_input_video)
         self.depth_row.browse_clicked.connect(self._browse_depth_map)
         self.output_row.browse_clicked.connect(self._browse_output_path)
+        
+        self.render_mode_combo.currentIndexChanged.connect(self._on_render_mode_changed)
+        
         self.input_row.text_edited.connect(
             lambda text: self.controller.set_state("input_video_path", text)
         )
@@ -820,6 +1052,7 @@ class StereoGeneratorPage(QWidget):
         self.fg_pop_slider.valueChanged.connect(self._on_fg_pop_changed)
         self.bg_push_slider.valueChanged.connect(self._on_bg_push_changed)
         self.subject_lock_slider.valueChanged.connect(self._on_subject_lock_changed)
+        self.foreground_curvature_slider.valueChanged.connect(self._on_foreground_curvature_changed)
 
         self.apply_pop_entries_btn.clicked.connect(self._apply_pop_entries)
         self.pop_mid_edit.returnPressed.connect(self._apply_pop_entries)
@@ -901,7 +1134,7 @@ class StereoGeneratorPage(QWidget):
         self.preview_btn.clicked.connect(self._load_preview_sources)
         self.refresh_preview_btn.clicked.connect(self.controller.update_preview)
         self.save_preview_btn.clicked.connect(self._save_preview_image)
-        self.render_btn.clicked.connect(self.controller.start_render)
+        self.render_btn.clicked.connect(self._start_render_clicked)
 
         self.aspect_ratio_combo.currentTextChanged.connect(
             lambda value: self.controller.set_state("selected_aspect_ratio", value)
@@ -962,6 +1195,12 @@ class StereoGeneratorPage(QWidget):
         self.input_row.set_text(self.controller.state.input_video_path)
         self.depth_row.set_text(self.controller.state.depth_map_path)
         self.output_row.set_text(self.controller.state.output_path)
+        
+        self._set_combo_by_data(
+            self.render_mode_combo,
+            getattr(self.controller.state, "render_mode", "video"),
+        )
+        self._apply_render_mode_ui()
 
         self.output_format_combo.setCurrentText(self.controller.state.output_format)
         self.preview_mode_combo.setCurrentText(self.controller.state.preview_mode)
@@ -992,6 +1231,13 @@ class StereoGeneratorPage(QWidget):
 
         self.subject_lock_slider.setValue(int(self.controller.state.subject_lock_strength * 100))
         self.subject_lock_value.setText(f"{self.controller.state.subject_lock_strength:.2f}")
+
+        self.foreground_curvature_slider.setValue(
+            int(getattr(self.controller.state, "foreground_curvature_strength", 0.06) * 100)
+        )
+        self.foreground_curvature_value.setText(
+            f"{getattr(self.controller.state, 'foreground_curvature_strength', 0.06):.2f}"
+        )
 
         self.pop_mid_edit.setText(f"{self.controller.state.depth_pop_mid:.2f}")
         self.stretch_lo_edit.setText(f"{self.controller.state.depth_stretch_lo:.2f}")
@@ -1227,15 +1473,23 @@ class StereoGeneratorPage(QWidget):
         # Otherwise read the original source video directly.
         source_size = None
 
+        mode = self._current_render_mode()
+
         if (
-            self._last_preview_result is not None
+            mode == "video"
+            and self._last_preview_result is not None
             and self._last_preview_result.input_frame_bgr is not None
         ):
             h, w = self._last_preview_result.input_frame_bgr.shape[:2]
             source_size = (w, h)
-        else:
+
+        elif mode == "video":
             source_size = self._get_video_resolution(state.input_video_path)
 
+        elif mode == "image":
+            pixmap = QPixmap(state.input_video_path)
+            if not pixmap.isNull():
+                source_size = (pixmap.width(), pixmap.height())
         source_text = ""
         if source_size:
             w, h = source_size
@@ -1256,41 +1510,98 @@ class StereoGeneratorPage(QWidget):
             self.preview_panel.set_meta("")
 
     def _browse_input_video(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Input Video",
-            "",
-            "Video Files (*.mp4 *.mkv *.avi *.mov);;All Files (*.*)",
-        )
+        mode = self._current_render_mode()
+
+        if mode == "image":
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Input Image",
+                "",
+                "Image Files (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp);;All Files (*.*)",
+            )
+
+        elif mode in ("video_folder", "image_folder"):
+            title = "Select Input Video Folder" if mode == "video_folder" else "Select Input Image Folder"
+            path = QFileDialog.getExistingDirectory(self, title)
+
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Input Video",
+                "",
+                "Video Files (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*.*)",
+            )
+
         if path:
             self.input_row.set_text(path)
             self.controller.set_state("input_video_path", path)
-            self._try_auto_open_preview_sources()
+
+            if mode == "video":
+                self._try_auto_open_preview_sources()
 
     def _browse_depth_map(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Depth Map Video",
-            "",
-            "Video Files (*.mp4 *.mkv *.avi *.mov);;All Files (*.*)",
-        )
+        mode = self._current_render_mode()
+
+        if mode == "image":
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Depth Map Image",
+                "",
+                "Image Files (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp);;All Files (*.*)",
+            )
+
+        elif mode in ("video_folder", "image_folder"):
+            title = "Select Depth Video Folder" if mode == "video_folder" else "Select Depth Image Folder"
+            path = QFileDialog.getExistingDirectory(self, title)
+
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Depth Map Video",
+                "",
+                "Video Files (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*.*)",
+            )
+
         if path:
             self.depth_row.set_text(path)
             self.controller.set_state("depth_map_path", path)
-            self._try_auto_open_preview_sources()
+
+            if mode == "video":
+                self._try_auto_open_preview_sources()
 
     def _browse_output_path(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Choose Output File",
-            "",
-            "MP4 Video (*.mp4);;MKV Video (*.mkv);;All Files (*.*)",
-        )
+        mode = self._current_render_mode()
+
+        if mode == "image":
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Choose Output Image",
+                "",
+                "PNG Image (*.png);;JPEG Image (*.jpg);;All Files (*.*)",
+            )
+
+        elif mode in ("video_folder", "image_folder"):
+            path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Output Folder",
+            )
+
+        else:
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Choose Output File",
+                "",
+                "MP4 Video (*.mp4);;MKV Video (*.mkv);;All Files (*.*)",
+            )
+
         if path:
             self.output_row.set_text(path)
             self.controller.set_state("output_path", path)
 
     def _try_auto_open_preview_sources(self):
+        if self._current_render_mode() != "video":
+            return
+
         if self.controller.state.input_video_path and self.controller.state.depth_map_path:
             self._load_preview_sources()
 
@@ -1399,6 +1710,12 @@ class StereoGeneratorPage(QWidget):
         real_value = value / 100.0
         self.subject_lock_value.setText(f"{real_value:.2f}")
         self.controller.set_state("subject_lock_strength", real_value)
+        self._preview_debounce.start()
+        
+    def _on_foreground_curvature_changed(self, value):
+        real_value = value / 100.0
+        self.foreground_curvature_value.setText(f"{real_value:.2f}")
+        self.controller.set_state("foreground_curvature_strength", real_value)
         self._preview_debounce.start()
 
     def _apply_pop_entries(self):

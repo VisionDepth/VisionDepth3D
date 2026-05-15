@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QSlider, QMessageBox, QSplitter,
 )
 
+from ui.styles.page_theme import apply_unified_page_theme
+
 import cv2
 import numpy as np
 import threading
@@ -190,6 +192,10 @@ class DepthBlenderPage(QWidget):
                 f"{self._t('Frame')}: {self.frame_slider.value()} / {self.frame_slider.maximum()}"
             )
 
+    def apply_theme(self, theme: dict):
+        self._active_theme = theme or {}
+        apply_unified_page_theme(self, self._active_theme)
+
     def _build_ui(self):
         root = QHBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -205,9 +211,7 @@ class DepthBlenderPage(QWidget):
         self._register_text(self.preview_label, "Preview (scrubbable)")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(640, 360)
-        self.preview_label.setStyleSheet(
-            "background-color: #0d1117; border: 1px solid #28303a; border-radius: 8px; color: #484f58;"
-        )
+        self.preview_label.setObjectName("PreviewPanel")
 
         self.preview_controls_host = QWidget()
         self.preview_controls_layout = QVBoxLayout(self.preview_controls_host)
@@ -431,7 +435,7 @@ class DepthBlenderPage(QWidget):
         left_layout.addWidget(actions_group)
 
         left_layout.addStretch()
-
+        self.apply_theme(getattr(self, "_active_theme", {}))
 
 
     def _add_slider_row(self, parent, label, mn, mx, default, step):

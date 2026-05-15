@@ -395,10 +395,18 @@ def reset_render_state():
     for k in ("dfw_last_side", "dfw_last_width"):
         if k in globals():
             del globals()[k]
-
+            
     # reset depth percentile EMA so it learns per render
     global depth_ema_norm
     depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.82)
+
+
+    # reset convergence EMA so each render starts clean
+    global conv_ema
+    conv_ema = ConvergenceEMA(alpha=0.90)
+
+    if hasattr(pixel_shift_cuda, "_conv_dbg_count"):
+        pixel_shift_cuda._conv_dbg_count = 0
 
 def sculpt_depth_u8(base_depth_u8, mask_u8, *,
                     near=1.0, far=0.4,
@@ -659,7 +667,80 @@ def estimate_subject_depth(depth_tensor: torch.Tensor) -> torch.Tensor:
     idx = torch.clamp(idx, 0, vals_sorted.numel() - 1)
     return vals_sorted[idx]
 
+def enhance_foreground_curvature(
+    depth_tensor,
+    strength=0.06,
+    near_start=0.60,
+    feather_ksize=31,
+    shape_gamma=1.35,
+):
+    """
+    Adds rounded depth curvature only to near / foreground regions.
 
+    depth_tensor: [B, H, W] or [1, H, W], white/near = 1.0
+    strength: how much to push the center of the foreground nearer
+    near_start: depth threshold where foreground curvature starts
+    feather_ksize: smoothing kernel for the foreground mask
+    shape_gamma: >1.0 makes the bump more centered / rounded
+    """
+    d = depth_tensor.clamp(0.0, 1.0)
+
+    if d.dim() == 2:
+        d = d.unsqueeze(0)
+
+    B, H, W = d.shape
+    device = d.device
+
+    # Soft foreground mask from depth
+    fg_mask = torch.clamp((d - near_start) / max(1e-6, 1.0 - near_start), 0.0, 1.0)
+
+    # Smooth the mask so we do not create hard edges / halos
+    if feather_ksize > 1:
+        if feather_ksize % 2 == 0:
+            feather_ksize += 1
+        fg_mask = F.avg_pool2d(
+            fg_mask.unsqueeze(0),
+            kernel_size=feather_ksize,
+            stride=1,
+            padding=feather_ksize // 2
+        ).squeeze(0).clamp(0.0, 1.0)
+
+    yy, xx = torch.meshgrid(
+        torch.linspace(-1.0, 1.0, H, device=device),
+        torch.linspace(-1.0, 1.0, W, device=device),
+        indexing="ij"
+    )
+
+    out = d.clone()
+
+    for b in range(B):
+        w = fg_mask[b]
+        wsum = w.sum()
+
+        if wsum.item() < 1e-6:
+            continue
+
+        # Find weighted foreground center
+        cx = (w * xx).sum() / wsum
+        cy = (w * yy).sum() / wsum
+
+        # Estimate foreground spread so the curvature fits the subject area
+        sx = torch.sqrt((((xx - cx) ** 2) * w).sum() / wsum + 1e-6)
+        sy = torch.sqrt((((yy - cy) ** 2) * w).sum() / wsum + 1e-6)
+
+        # Widen a bit so the bump covers the person naturally
+        sx = torch.clamp(sx * 2.2, 0.25, 0.95)
+        sy = torch.clamp(sy * 2.2, 0.25, 0.95)
+
+        # Elliptical foreground bump centered on the subject
+        radial = 1.0 - (((xx - cx) / (sx + 1e-6)) ** 2 + ((yy - cy) / (sy + 1e-6)) ** 2)
+        radial = radial.clamp(0.0, 1.0)
+        bump = radial.pow(shape_gamma)
+
+        # Only push the interior of the foreground slightly nearer
+        out[b] = (d[b] + bump * w * strength).clamp(0.0, 1.0)
+
+    return out
 
 def enhance_curvature(depth_tensor, strength=0.15):
     """
@@ -1639,6 +1720,7 @@ def pixel_shift_cuda(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=0.35,
+    foreground_curvature_strength=0.06,
     return_tensors=False,
     disable_shift_ema=False
 ):
@@ -1649,9 +1731,16 @@ def pixel_shift_cuda(
     frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
     depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
 
-    if 'enhance_curvature' in globals():
-        depth_tensor = enhance_curvature(depth_tensor, strength=0.08)
-
+    if 'enhance_foreground_curvature' in globals():
+        curvature_strength = float(foreground_curvature_strength)
+        if curvature_strength > 1e-6:
+            depth_tensor = enhance_foreground_curvature(
+                depth_tensor,
+                strength=curvature_strength,
+                near_start=0.60,
+                feather_ksize=31,
+                shape_gamma=1.35,
+            )
     depth_tensor = depth_tensor.clamp(0.0, 1.0)
     
     # 🛡️ STRONGER depth refinement for cleaner edges
@@ -1756,19 +1845,60 @@ def pixel_shift_cuda(
     disparity_gain = 1.0
     total_shift = total_shift * disparity_gain
 
+    # ------------------------------------------------------------
+    # Dynamic Convergence
+    # ------------------------------------------------------------
+    # This is a render-time stereo placement trim.
+    # Positive convergence currently moves in the same broad direction
+    # as negative zero_parallax_strength in your sign convention.
+    #
+    # The old formula was:
+    #     total_shift -= conv_smooth / half_width
+    #
+    # That made normal UI values like 0.006 almost invisible.
+    # This backend gain gives convergence more usable strength while
+    # clamping it so it cannot wreck VR comfort.
+    # ------------------------------------------------------------
+    if convergence_strength != 0.0:
+        if enable_dynamic_convergence:
+            subj_for_conv = subject_depth_track.clamp(0.0, 1.0)
+            convergence_bias = subj_for_conv * float(convergence_strength)
+        else:
+            convergence_bias = torch.tensor(
+                float(convergence_strength),
+                device=device,
+                dtype=total_shift.dtype
+            )
+
+        conv_smooth = conv_ema.update(float(convergence_bias.item()))
+
+        convergence_backend_gain = 2.0 if enable_floating_window else 4.0
+
+        convergence_offset = (conv_smooth * convergence_backend_gain) / half_width
+
+        # Safety clamp in normalized shift units.
+        # 0.015 is noticeable but still controlled.
+        convergence_offset = max(min(convergence_offset, 0.015), -0.015)
+
+        total_shift -= convergence_offset
+        
+        if not hasattr(pixel_shift_cuda, "_conv_dbg_count"):
+            pixel_shift_cuda._conv_dbg_count = 0
+
+        pixel_shift_cuda._conv_dbg_count += 1
+
+        if pixel_shift_cuda._conv_dbg_count % 120 == 0:
+            print(
+                f"[CONVDBG] strength={float(convergence_strength):.5f} "
+                f"bias={float(convergence_bias.item()):.6f} "
+                f"smooth={float(conv_smooth):.6f} "
+                f"gain={convergence_backend_gain:.2f} "
+                f"offset={float(convergence_offset):.8f}"
+            )
+        
     max_shift_px = width * max_pixel_shift_percent
     max_shift_norm = max_shift_px / half_width
     total_shift = torch.clamp(total_shift, -max_shift_norm, max_shift_norm)
-
-    if convergence_strength != 0.0:
-        if enable_dynamic_convergence:
-            subj_for_conv = subject_depth_track
-            convergence_bias = subj_for_conv * convergence_strength
-        else:
-            convergence_bias = torch.tensor(convergence_strength, device=device)
-
-        conv_smooth = conv_ema.update(convergence_bias.item())
-        total_shift -= conv_smooth / half_width
 
     mask_strength = 0.0 if feather_strength <= 1e-6 else float(np.clip(feather_strength / 10.0, 0.05, 0.3))
 
@@ -2272,6 +2402,7 @@ def render_sbs_3d(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=0.35,
+    foreground_curvature_strength=0.06,
     color_saturation=1.0,
     color_contrast=1.0,
     color_brightness=0.0,
@@ -2585,10 +2716,25 @@ def render_sbs_3d(
     out = None
 
 
-    # Force single-eye output size for non-VR180 left/right renders
+    # Force single-eye output size for non-VR180 left/right renders.
+    # Left/right exports are mono-eye outputs, not packed SBS outputs.
+    # The internal eye size, output frame size, and FFmpeg size must all match.
     if single_eye and not vr180_enabled:
-        out_width = int(per_eye_w)
-        out_height = int(per_eye_h if preserve_original_aspect else eye_h)
+        mono_w = int(eye_w)
+        mono_h = int(eye_h)
+
+        if mono_w % 2 != 0:
+            mono_w += 1
+        if mono_h % 2 != 0:
+            mono_h += 1
+
+        per_eye_w = mono_w
+        per_eye_h = mono_h
+        eye_w = mono_w
+        eye_h = mono_h
+
+        out_width = mono_w
+        out_height = mono_h
 
     # --- FORCE final output size for VR180 so FFmpeg matches the frames we write ---
     if vr180_enabled:
@@ -2679,14 +2825,16 @@ def render_sbs_3d(
               "out=", out_width, out_height,
               "equi_eye=", equi_eye_w, equi_eye_h,
               "flat_eye=", flat_eye_w, flat_eye_h)
+        print("[FFMPEG CMD]", " ".join(str(x) for x in ffmpeg_cmd))
+
         ffmpeg_proc = subprocess.Popen(
             ffmpeg_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=False,
             **hidden_subprocess_kwargs(),
         )
-
 
     else:
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*selected_codec), fps, (out_width, out_height))
@@ -2884,6 +3032,7 @@ def render_sbs_3d(
                     fg_pop_multiplier=fg_pop_multiplier,
                     bg_push_multiplier=bg_push_multiplier,
                     subject_lock_strength=subject_lock_strength,
+                    foreground_curvature_strength=foreground_curvature_strength,
                     return_tensors=True,
                     disable_shift_ema=disable_shift_ema,
                 )
@@ -3139,19 +3288,36 @@ def render_sbs_3d(
             # write frame
             if use_ffmpeg:
                 try:
-                    if preserve_hdr10:
-                        # ✅ HDR10 path: write 16-bit RGB (rgb48le) to ffmpeg stdin
-                        # Expectation: you must be generating a float RGB tensor [3,H,W] in 0..1
-                        # (example name: final_tensor). If you only have `final` as uint8 BGR,
-                        # you are NOT preserving HDR10.
-                        ffmpeg_proc.stdin.write(tensor_to_rgb48_bytes(final_tensor))
-                    else:
-                        # SDR path: write 8-bit BGR
+                    if not preserve_hdr10:
+                        if final is None:
+                            raise RuntimeError("Final frame is None before FFmpeg write.")
+
+                        # Safety fallback only. This should not happen during normal rendering.
+                        if final.shape[1] != out_width or final.shape[0] != out_height:
+                            print(
+                                f"⚠️ Frame size mismatch before FFmpeg write: "
+                                f"{final.shape[1]}x{final.shape[0]} -> {out_width}x{out_height}"
+                            )
+                            final = cv2.resize(final, (out_width, out_height), interpolation=cv2.INTER_AREA)
+
                         ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
+
+                    else:
+                        ffmpeg_proc.stdin.write(tensor_to_rgb48_bytes(final_tensor))
 
                 except Exception as e:
                     print(f"❌ FFmpeg write error: {e}")
-                    break
+
+                    try:
+                        if ffmpeg_proc and ffmpeg_proc.stderr:
+                            err = ffmpeg_proc.stderr.read()
+                            if err:
+                                print("[FFMPEG STDERR]")
+                                print(err.decode(errors="replace")[-4000:])
+                    except Exception:
+                        pass
+
+                    raise RuntimeError(f"FFmpeg write failed: {e}")
             else:
                 out.write(final)
                 
@@ -3201,21 +3367,44 @@ def render_sbs_3d(
 
     except Exception as e:
         print(f"❌ Render crashed: {e}")
+        raise
 
     finally:
         cap.release(); dcap.release()
         if use_ffmpeg and ffmpeg_proc is not None:
             try:
-                ffmpeg_proc.stdin.close()
-            except:
+                if ffmpeg_proc.stdin:
+                    ffmpeg_proc.stdin.close()
+            except Exception:
                 pass
+
             try:
                 if cancel_flag.is_set():
                     ffmpeg_proc.kill()
                 else:
-                    ffmpeg_proc.wait(timeout=5)
-            except:
-                pass
+                    return_code = ffmpeg_proc.wait(timeout=10)
+
+                    if return_code != 0:
+                        err_text = ""
+                        try:
+                            if ffmpeg_proc.stderr:
+                                err = ffmpeg_proc.stderr.read()
+                                err_text = err.decode(errors="replace")[-4000:] if err else ""
+                        except Exception:
+                            pass
+
+                        print("[FFMPEG FAILED]")
+                        print(err_text)
+
+                        raise RuntimeError(
+                            f"FFmpeg exited with code {return_code}.\n{err_text}"
+                        )
+
+            except RuntimeError:
+                raise
+
+            except Exception as e:
+                print(f"⚠️ FFmpeg cleanup warning: {e}")
         elif out is not None:
             try:
                 out.release()
@@ -3241,6 +3430,7 @@ def render_sbs_3d_image(
     output_format: str,
     selected_aspect_ratio,
     aspect_ratios,
+    preserve_original_aspect: bool = True,
     feather_strength: float = 0.0,
     blur_ksize: int = 1,
     use_subject_tracking: bool = False,
@@ -3262,6 +3452,7 @@ def render_sbs_3d_image(
     fg_pop_multiplier: float = 1.20,
     bg_push_multiplier: float = 1.10,
     subject_lock_strength: float = 1.00,
+    foreground_curvature_strength: float = 0.06,
     color_saturation: float = 1.0,
     color_contrast: float = 1.0,
     color_brightness: float = 0.0,
@@ -3305,6 +3496,7 @@ def render_sbs_3d_image(
     fg_pop_multiplier      = float(_val(fg_pop_multiplier))
     bg_push_multiplier     = float(_val(bg_push_multiplier))
     subject_lock_strength  = float(_val(subject_lock_strength))
+    foreground_curvature_strength = float(_val(foreground_curvature_strength))
     color_saturation       = float(_val(color_saturation))
     color_contrast         = float(_val(color_contrast))
     color_brightness       = float(_val(color_brightness))
@@ -3315,6 +3507,7 @@ def render_sbs_3d_image(
         ar_key = selected_aspect_ratio.get()
     else:
         ar_key = selected_aspect_ratio
+
     target_ratio = aspect_ratios.get(ar_key, 16.0 / 9.0)
 
     # Load images
@@ -3331,7 +3524,7 @@ def render_sbs_3d_image(
     frame_tensor = frame_to_tensor(frame)
     depth_tensor = depth_to_tensor(depth)
 
-    # Optional black bar crop (same logic as video path)
+    # Optional black bar crop
     cached_crop = (0, 0)
     if auto_crop_black_bars:
         top_crop, bottom_crop = detect_black_bars(frame_tensor)
@@ -3339,23 +3532,25 @@ def render_sbs_3d_image(
         frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
         depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
 
+    # For still images, preserve original aspect by default.
+    # Only apply selected aspect ratio if preserve_original_aspect is False.
+    if not preserve_original_aspect:
+        _, h, w = frame_tensor.shape
+        current_ratio = w / h
 
-    # Crop to selected cinema aspect ratio
-    _, h, w = frame_tensor.shape
-    current_ratio = w / h
-    if abs(current_ratio - target_ratio) > 0.01:
-        if current_ratio > target_ratio:
-            # frame is wider than target, crop left/right
-            new_w = int(h * target_ratio)
-            start = (w - new_w) // 2
-            frame_tensor = frame_tensor[:, :, start:start + new_w]
-            depth_tensor = depth_tensor[:, :, start:start + new_w]
-        else:
-            # frame is taller than target, crop top/bottom
-            new_h = int(w / target_ratio)
-            start = (h - new_h) // 2
-            frame_tensor = frame_tensor[:, start:start + new_h, :]
-            depth_tensor = depth_tensor[:, start:start + new_h, :]
+        if abs(current_ratio - target_ratio) > 0.01:
+            if current_ratio > target_ratio:
+                # frame is wider than target, crop left/right
+                new_w = int(h * target_ratio)
+                start = (w - new_w) // 2
+                frame_tensor = frame_tensor[:, :, start:start + new_w]
+                depth_tensor = depth_tensor[:, :, start:start + new_w]
+            else:
+                # frame is taller than target, crop top/bottom
+                new_h = int(w / target_ratio)
+                start = (h - new_h) // 2
+                frame_tensor = frame_tensor[:, start:start + new_h, :]
+                depth_tensor = depth_tensor[:, start:start + new_h, :]
 
     resized_height = frame_tensor.shape[1]
     resized_width  = frame_tensor.shape[2]
@@ -3498,55 +3693,78 @@ def render_sbs_3d_image(
         fg_pop_multiplier=fg_pop_multiplier,
         bg_push_multiplier=bg_push_multiplier,
         subject_lock_strength=subject_lock_strength,
+        foreground_curvature_strength=foreground_curvature_strength,
         disable_shift_ema=disable_shift_ema,
     )
 
-    # Optional DOF and color grade, same order as video
-    if need_dof or need_color:
-        left_t = frame_to_tensor(left_frame)
-        right_t = frame_to_tensor(right_frame)
+    # Pixel shift returns tensors when return_tensors=True.
+    # Keep everything in tensor format for DoF/color, then convert back to BGR numpy.
+    def _ensure_chw_tensor(img):
+        if torch.is_tensor(img):
+            t = img.detach()
 
-        H, W = left_t.shape[1], left_t.shape[2]
-        depth_for_eye = F.interpolate(
-            depth_tensor.unsqueeze(0),
-            size=(H, W),
-            mode="bilinear",
-            align_corners=False
-        ).squeeze(0)
+            # Support [1, 3, H, W] or [3, H, W]
+            if t.ndim == 4:
+                t = t.squeeze(0)
 
-        if need_dof:
-            focal_depth = estimate_subject_depth(depth_tensor)
-            left_t = apply_dof_cuda(
-                left_t,
-                depth_for_eye,
-                focal_depth,
-                max_sigma=dof_strength,
-                focus_width=0.35,
-            )
-            right_t = apply_dof_cuda(
-                right_t,
-                depth_for_eye,
-                focal_depth,
-                max_sigma=dof_strength,
-                focus_width=0.35,
-            )
+            # Safety clamp
+            t = t.to(torch_device).float()
+            if t.max() > 2.0:
+                t = t / 255.0
 
-        if need_color:
-            left_t = apply_color_grade(
-                left_t,
-                saturation=color_saturation,
-                contrast=color_contrast,
-                brightness=color_brightness,
-            )
-            right_t = apply_color_grade(
-                right_t,
-                saturation=color_saturation,
-                contrast=color_contrast,
-                brightness=color_brightness,
-            )
+            return t.clamp(0.0, 1.0)
 
-        left_frame = tensor_to_frame(left_t)
-        right_frame = tensor_to_frame(right_t)
+        # NumPy BGR fallback
+        return frame_to_tensor(img)
+
+    left_t = _ensure_chw_tensor(left_frame)
+    right_t = _ensure_chw_tensor(right_frame)
+
+    H, W = left_t.shape[1], left_t.shape[2]
+    depth_for_eye = F.interpolate(
+        depth_tensor.unsqueeze(0),
+        size=(H, W),
+        mode="bilinear",
+        align_corners=False
+    ).squeeze(0)
+
+    if need_dof:
+        focal_depth = estimate_subject_depth(depth_tensor)
+
+        left_t = apply_dof_cuda(
+            left_t,
+            depth_for_eye,
+            focal_depth,
+            max_sigma=dof_strength,
+            focus_width=0.35,
+        )
+
+        right_t = apply_dof_cuda(
+            right_t,
+            depth_for_eye,
+            focal_depth,
+            max_sigma=dof_strength,
+            focus_width=0.35,
+        )
+
+    if need_color:
+        left_t = apply_color_grade(
+            left_t,
+            saturation=color_saturation,
+            contrast=color_contrast,
+            brightness=color_brightness,
+        )
+
+        right_t = apply_color_grade(
+            right_t,
+            saturation=color_saturation,
+            contrast=color_contrast,
+            brightness=color_brightness,
+        )
+
+    # Convert back to OpenCV BGR numpy before sharpening/output formatting.
+    left_frame = tensor_to_frame(left_t.clamp(0.0, 1.0))
+    right_frame = tensor_to_frame(right_t.clamp(0.0, 1.0))
 
     # Sharpen and size per eye
     left_sharp = apply_sharpening(left_frame, sharpness_factor)
@@ -3644,14 +3862,22 @@ def render_sbs_3d_image(
     # Pick eye mode and format
     if eye_mode == "left":
         final = left_out
+        target_w = left_out.shape[1]
+        target_h = left_out.shape[0]
+
     elif eye_mode == "right":
         final = right_out
+        target_w = right_out.shape[1]
+        target_h = right_out.shape[0]
+
     else:
         final = format_3d_output(left_out, right_out, output_format)
+        target_w = out_width
+        target_h = out_height
 
-    # Make sure final matches desired output size
-    if final.shape[1] != out_width or final.shape[0] != out_height:
-        final = cv2.resize(final, (out_width, out_height), interpolation=cv2.INTER_AREA)
+    # Make sure final matches desired output size without stretching the wrong mode
+    if final.shape[1] != target_w or final.shape[0] != target_h:
+        final = cv2.resize(final, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
     cv2.imwrite(output_image_path, final.astype(np.uint8))
     print(f"✅ Saved 3D image to {output_image_path}")
@@ -3783,6 +4009,7 @@ def process_video(
     fg_pop_multiplier,
     bg_push_multiplier,
     subject_lock_strength,
+    foreground_curvature_strength,
     color_saturation,
     color_contrast,
     color_brightness,
@@ -4002,6 +4229,7 @@ def process_video(
             fg_pop_multiplier=fg_pop_multiplier.get(),
             bg_push_multiplier=bg_push_multiplier.get(),
             subject_lock_strength=subject_lock_strength.get(),
+            foreground_curvature_strength=foreground_curvature_strength.get(),
             color_saturation=(color_saturation.get() if hasattr(color_saturation, 'get') else color_saturation),
             color_contrast=(color_contrast.get() if hasattr(color_contrast, 'get') else color_contrast),
             color_brightness=(color_brightness.get() if hasattr(color_brightness, 'get') else color_brightness),

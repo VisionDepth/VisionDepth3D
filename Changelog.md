@@ -1,487 +1,1430 @@
-# VisionDepth3D v4.0
+# VisionDepth3D v4.1
 
 ---
 
-## New PySide6 Interface — A Complete Visual Overhaul
+## VisionDepth3D v4.1 Changelog
 
-VisionDepth3D v4.0 leaves the old Tkinter UI behind and moves to a modern PySide6 (Qt) interface. Every panel, control, and preview surface has been rebuilt for a cleaner, more responsive desktop experience.
+VisionDepth3D v4.1 is a focused polish update built on top of the v4.0 PySide6 release.
 
----
-
-## What's New in VisionDepth3D v4.0
-
-**Complete PySide6 Interface Rewrite**  
-VisionDepth3D has been rebuilt with a modern PySide6 interface, replacing the older Tkinter-style layout with a cleaner desktop application design. Tabs, dialogs, controls, preview panels, and workflow sections now feel unified across the entire app.
-
-**Modern Dark Theme**  
-The full application now uses a cohesive dark theme with consistent styling across tabs, dialogs, controls, cards, buttons, sliders, and status panels. The interface is cleaner, more readable, and better suited for long editing sessions.
-
-**New VisionDepth3D Method**  
-The 3D Generator now uses the updated VisionDepth3D Method, featuring subject-aware depth normalization, pop-control depth shaping, structured near / mid / far disparity weighting, GPU stereo warping, dynamic convergence, edge-aware repair, and floating-window protection.
-
-**Updated Shift Convention**  
-The new stereo pipeline uses a revised shift direction model. Foreground shift is now typically negative, midground is slightly negative or near zero, and background is positive. This gives the new renderer a more structured near-to-far stereo field, but older presets may need to be rebuilt for the new method.
-
-**Live 3D Preview Tab**  
-A new Live 3D tab allows realtime 2D-to-3D testing from camera, capture card, or screen capture sources. Users can select depth models, tune stereo settings, preview SBS output, inspect depth behavior, and test pop/convergence before committing to a full render.
-
-**Depth Engine Model Integration**  
-Depth model loading is now tied more closely into the app workflow, with model selection, status feedback, and support for modern depth pipelines. The Depth Engine can provide depth maps for full renders, previews, blending, and Live 3D testing.
-
-**Depth Blender Workflow**  
-Depth Blender is integrated into the tabbed workflow for combining and refining depth sources. Users can blend different depth maps, adjust smoothing and contrast controls, preview results, and prepare cleaner depth videos for the 3D Generator.
-
-**FPS / Upscale Enhancer**  
-The FPS/Upscale tab adds RIFE interpolation and Real-ESRGAN upscaling workflows for preparing smoother, higher-resolution video sources. It supports merged and threaded pipelines, scene detection, codec options, and progress reporting.
-
-**Responsive Layout Improvements**  
-Panels, preview areas, file pickers, parameter cards, and scroll sections now behave better when the window is resized or maximized. Wide workflow pages use scroll-safe layouts so controls stay readable instead of crushing together.
-
-**Debounced Preview Controls**  
-Stereo shift, parallax, depth shaping, IPD, and color controls now use debounced preview updates. This prevents heavy preview renders from triggering on every slider tick, making parameter tuning smoother and less frustrating.
-
-**Unified Queue Dock and Progress System**  
-Long-running workflows now report through a shared queue/status dock at the bottom of the app. 3D rendering, depth estimation, depth blending, FPS upscaling, and Live 3D status updates are easier to track from one place.
-
-**Language System Integration**  
-VisionDepth3D now includes multi-language UI support across major tabs and shell controls. Language files are loaded from the resources folder, with support for English, French, Spanish, German, Japanese, Simplified Chinese, and Traditional Chinese.
-
-**GPU Detection and Acceleration Paths**  
-The app detects available acceleration backends and displays GPU/device information during startup and processing. CUDA remains the recommended path for NVIDIA users, with DirectML support available for AMD and Intel GPU users on Windows where supported.
-
-**Cleaner Preset Handling**  
-3D presets are now treated as reusable render profiles instead of project files. Presets save stereo, depth, processing, encoding, and color settings without overwriting the user’s current input video, depth map, or output path.
-
-### Result
-
-VisionDepth3D v4.0 is more than a visual refresh. It is a full workflow upgrade built around a modern desktop UI, a new stereo rendering method, realtime Live 3D testing, cleaner depth tools, better progress feedback, and a more professional end-to-end 2D-to-3D conversion pipeline.
+This update focuses on the changes added after v4.0, including improved stereo tuning, foreground subject curvature, preset support, convergence behavior, Windows light-mode compatibility, and missing dependency cleanup.
 
 ---
 
-## 3D Video Generator — New Stereo Pipeline
+## What's New in VisionDepth3D v4.1
 
-The stereo rendering pipeline has been rebuilt around the current VisionDepth3D Method.
+### Foreground Curvature Control
 
-Depth interpretation, subject placement, convergence, edge handling, and stereo repair now share a more unified mathematical model. The result is cleaner stereo structure, more predictable tuning, and a stronger connection between the depth map, shift field, preview output, and final render.
+Added a new **Foreground Curvature** control to the 3D Generator.
 
-### Key Improvements
+This adds rounded depth only to near/foreground regions using a soft foreground mask and subject-centered curvature shaping. It helps reduce the flat/cardboard look on people, faces, bodies, and hero subjects without globally warping the entire depth map.
 
-- Reworked depth interpretation and subject-lock flow for more consistent near/far structure
-- Depth layers now separate more predictably, with clearer foreground, midground, and background control compared to the older shift model
-- Updated zero-parallax subject anchoring so it follows the same depth-weighting logic as the main stereo shift field
-- Unified dynamic convergence around the tracked subject depth path
-- Reduced reliance on global disparity boosting in favor of cleaner structural depth separation
-- Edge tearing, split contours, and silhouette artifacts are reduced, especially on wide shots and fast motion
-- Upgraded floating-window behavior to respond to measured edge-risk instead of inferred offset alone
-- Added stereo debug telemetry and shift-EMA testing controls for direct pipeline validation
-- Added original source resolution and aspect ratio display in the preview metadata bar
-- Updated preset behavior so render presets no longer overwrite active video/depth/output paths
-
-### New Shift Direction
-
-The new renderer uses a revised shift convention:
+Recommended values:
 
 ```text
-Foreground Shift: usually negative
-Midground Shift: usually slightly negative or near zero
-Background Shift: usually positive
+0.00 = disabled
+0.04 = subtle curvature
+0.06 = recommended default
+0.08 = stronger subject volume
+0.10+ = can look inflated on some shots
 ```
 
-Older presets that used positive foreground values may not transfer directly. Users should start with the new defaults and rebuild older presets using the current convention.
+---
 
-Example natural starting point:
+### Foreground Curvature Preset Support
+
+Presets now support:
 
 ```text
-Foreground Shift: -6.0
-Midground Shift:  -0.8
-Background Shift: +2.2
+foreground_curvature_strength
 ```
 
-Example stronger showcase point:
+This allows the new Foreground Curvature value to be saved and restored with render presets.
+
+Older presets that do not include this value will fall back to a safe default.
+
+---
+
+### Improved Subject Pop-Out Tuning
+
+Updated the v4.0 stereo tuning around the current shift convention.
+
+In the current v4.0/v4.1 pipeline:
 
 ```text
-Foreground Shift: -8.5
-Midground Shift:  -1.2
-Background Shift: +3.5
+Negative Zero Parallax Strength = Pull subject forward / more pop-out
+Positive Zero Parallax Strength = Push subject back / sink into screen
 ```
 
-### Original Resolution Display
+This is important for stronger 3D results because negative zero-parallax values allow foreground subjects to sit farther forward instead of being pushed back into the scene.
 
-The 3D Generator preview metadata now displays the original source video resolution and aspect ratio when available.
+---
+
+### Dynamic Convergence Backend Adjustment
+
+Adjusted the backend behavior for Dynamic Convergence so the control has a more noticeable effect during final renders.
+
+Dynamic Convergence is treated as a render-time stereo placement trim rather than the main pop-out control.
+
+Recommended control relationship:
+
+```text
+FG/MG/BG Shifts        = actual stereo depth separation
+Zero Parallax Strength = subject forward/back placement
+Foreground Curvature   = subject/body/face roundness
+Convergence Strength   = final render-time convergence trim
+```
+
+Dynamic Convergence still affects the final render path and may not visibly update in the preview panel the same way Zero Parallax Strength does.
+
+---
+
+### Dynamic Floating Window Awareness
+
+Updated tuning behavior and guidance around Dynamic Convergence and Dynamic Floating Window interaction.
+
+When Dynamic Floating Window is enabled, convergence should generally stay lower because it interacts with the render-time comfort/windowing behavior.
+
+Suggested usage:
+
+```text
+Floating Window OFF:
+Convergence can be stronger for showcase-style stereo staging.
+
+Floating Window ON:
+Convergence should stay lower to avoid overcorrecting the window.
+```
+
+---
+
+### Cleaner Strong 3D Tuning
+
+Updated recommended v4.1 tuning around cleaner pop-out and edge-safe rendering.
+
+The strongest results so far come from balancing:
+
+```text
+negative zero parallax
+foreground curvature
+moderate subject lock
+strong FG/MG/BG separation
+controlled max pixel shift
+edge masking enabled
+feathering enabled
+floating window optional
+```
+
+This helps improve:
+
+- foreground pop-out
+- face/body volume
+- scene stability
+- edge safety
+- VR comfort
+- wide-shot structure
+- reduced warping
+- reduced edge tearing
+
+---
+
+## Updated Preset Direction
+
+v4.1 presets are being tuned around:
+
+- negative foreground shift
+- positive background shift
+- negative zero parallax for subject pop-out
+- foreground curvature
+- adjusted subject lock values
+- safer convergence values
+- controlled max pixel shift values
+
+Example strong cinema tuning direction:
+
+```json
+{
+  "fg_shift": -9.9,
+  "mg_shift": -3.0,
+  "bg_shift": 3.3,
+  "zero_parallax_strength": -0.012,
+  "max_pixel_shift": 0.071,
+  "parallax_balance": 1.0,
+  "depth_pop_gamma": 1.0,
+  "fg_pop_multiplier": 1.11,
+  "bg_push_multiplier": 1.05,
+  "subject_lock_strength": 0.85,
+  "foreground_curvature_strength": 0.06,
+  "convergence_strength": 0.006,
+  "enable_dynamic_convergence": true,
+  "use_floating_window": false
+}
+```
+
+---
+
+## Windows Light Mode Compatibility
+
+Fixed an issue where VisionDepth3D could inherit parts of the Windows light app theme when Windows personalization was set to:
+
+```text
+Windows Mode: Dark
+App Mode: Light
+```
+
+This could cause white panels, white scroll areas, or broken-looking UI sections inside the dark VisionDepth3D interface.
+
+v4.1 now applies a more consistent dark base across the main window, panels, scroll areas, group boxes, queue dock, and nested Qt containers so the interface stays visually consistent regardless of Windows app theme settings.
+
+The app still keeps some native/system accent behavior for controls such as sliders and progress indicators where possible, so users may see their Windows accent color reflected in parts of the UI.
+
+User-selectable themes have now been added through the new theme system and Theme Studio workflow.
+
+---
+
+## UI Styling Cleanup
+
+Adjusted the PySide6 stylesheet so the app keeps a consistent dark base while avoiding unnecessary over-styling of native controls.
+
+Changes include:
+
+- darker base styling for panels and nested Qt containers
+- improved scroll area dark-mode consistency
+- cleaner queue/debug area visibility
+- retained native/system accent behavior where possible
+- removed unnecessary separate menu-bar stylesheet duplication
+
+---
+
+## Depth Engine Queue Progress Fixes
+
+Improved Depth Engine progress reporting in the Job Queue dock.
+
+Depth processing now reports progress more consistently to the main queue progress bar, including better handling for legacy frame-based progress values from the depth pipeline.
+
+This fixes cases where depth generation was running correctly, but the bottom queue progress bar did not visually fill during processing.
+
+The Job Queue now better supports Depth Engine progress updates such as:
+
+```text
+progress percentage
+status text
+elapsed time
+estimated time remaining
+system usage telemetry
+```
+
+This helps make long depth map renders easier to monitor, especially for full movie depth generation.
+
+---
+
+## Depth Processing Status Labels
+
+Improved Depth Engine status labels during processing.
+
+The Depth Engine now updates the interface more clearly when processing starts, pauses, resumes, finishes, fails, or is cancelled.
+
+Updated status behavior includes:
+
+```text
+Processing...
+Paused.
+Resuming...
+Done
+Failed
+Cancelled
+```
+
+This makes the Depth Engine feel more responsive and helps users understand what state the current depth job is in.
+
+---
+
+## Depth Pause and Resume UI Fix
+
+Fixed an issue where the Depth Engine could successfully pause a depth process, but the Resume button did not become clickable afterward.
+
+The Depth Engine page now properly listens for pause and resume state changes from the controller and updates the action buttons correctly.
+
+Expected button behavior is now:
+
+```text
+Idle:
+Start enabled
+Suspend disabled
+Resume disabled
+Cancel disabled
+
+Processing:
+Start disabled
+Suspend enabled
+Resume disabled
+Cancel enabled
+
+Paused:
+Start disabled
+Suspend disabled
+Resume enabled
+Cancel enabled
+```
+
+This improves reliability when pausing and resuming long depth map generation jobs.
+
+---
+
+## Processing State Handling Improvements
+
+Improved internal processing state tracking for render and depth jobs.
+
+The controller now better tracks when a render or depth process is running or suspended, helping prevent incorrect button states and improving cancel behavior while paused.
+
+Cancel handling was also improved so a paused job can be resumed internally before cancellation, preventing the process from getting stuck in a paused state.
+
+---
+
+## 3D Debug Telemetry
+
+Expanded debug output for stereo validation.
+
+Debug logs can include:
+
+```text
+subject depth
+zero parallax offset
+edge violation left/right
+repair mask amount
+protect mask amount
+warp validity left/right
+convergence strength
+convergence bias
+convergence smoothing
+convergence offset
+```
 
 Example:
 
 ```text
-Original: 1920×1080 (1.78:1)
+[3DDBG] f=2520 subj=0.436 zpo=0.00897 evL=0.00000 evR=0.00809 rL=0.0008 rR=0.0005 pL=0.0009 pR=0.0017 vL01=1.0000 vR01=1.0000
+[CONVDBG] strength=0.03000 bias=0.013689 smooth=0.013968 gain=4.00 offset=0.00005820
 ```
 
-This helps users choose the correct output aspect ratio and avoid accidental stretching or cropping.
-
-### Preset Behavior Change
-
-3D presets now save render settings only.
-
-Presets no longer save:
-
-- input video path
-- depth map path
-- output path
-
-This means users can switch between stereo presets without losing their currently loaded movie, depth map, or output location.
-
-### Result
-
-The updated pipeline produces cleaner subject anchoring, better separation across depth layers, improved edge handling, and a more mathematically coherent stereo render overall.
+This helps validate that the stereo pipeline is producing stable eye warps with low repair/protection pressure and clean warp validity.
 
 ---
 
-## Live 3D Preview
 
-VisionDepth3D v4.0 introduces a new **Live 3D** tab for realtime stereo testing.
+## Latest v4.1 Development Updates
 
-Live 3D is designed as a realtime sandbox for testing depth models, stereo direction, pop-out behavior, screen capture, camera input, and convergence settings before committing to full offline renders.
+### 3D Generator Render Mode Restoration
 
-### Key Features
+Restored and expanded render mode support in the 3D Generator tab.
 
-- Realtime capture from camera, capture card, or screen source
-- Screen 1 / Screen 2 capture support for desktop testing
-- Depth model selection using the same supported model list as the Depth Engine
-- Lightweight defaults for realtime use
-- SBS preview mode for headset and 3D display testing
-- Passthrough and depth preview modes for debugging
-- Foreground, midground, background, parallax, max shift, and depth pop controls
-- Subject tracking, dynamic convergence, edge masking, feathering, and floating-window toggles
-- Optional preview masking to prevent screen-capture feedback loops
-- Live status reporting through the application status system
+The 3D Generator now supports clearer render modes:
 
-### Capture Sources
+```text
+Single Video Render
+3D Image Render
+Batch Video Folder Render
+Image Folder Render
+```
 
-Live 3D can be used with:
+The Sources panel now updates its labels and expected input/output paths depending on the selected render mode.
 
-- camera input
-- capture cards
-- desktop/screen capture
-- secondary monitor capture
+Examples:
 
-This makes it useful for testing source footage, games, desktop playback, capture devices, and live preview workflows.
+```text
+Single Video Render:
+Input Video
+Depth Map
+Output
 
-### Depth Model Integration
+3D Image Render:
+Input Image
+Depth Map Image
+Output Image
 
-Live 3D uses the Depth Engine model list instead of requiring users to manually type model IDs. This allows users to quickly switch between supported depth models while keeping Live 3D connected to the same model ecosystem as the main Depth Engine.
+Batch Video Folder Render:
+Input Video Folder
+Depth Video Folder
+Output Folder
 
-### Result
+Image Folder Render:
+Input Image Folder
+Depth Image Folder
+Output Folder
+```
 
-Live 3D acts as a realtime VisionDepth3D testing environment where users can evaluate depth models, stereo controls, capture behavior, and comfort settings before exporting a full video.
-
----
-
-## Depth Engine Updates
-
-VisionDepth3D v4.0 includes updates to the depth engine, model handling, inference resolution presets, and video-depth workflows.
-
-### Video Depth Anything Improvements
-
-- Improved Video Depth Anything handling for both native PyTorch and ONNX model paths
-- Added better runtime detection for Video Depth Anything ONNX models
-- Video Depth Anything ONNX is now treated as a sequence-based video model instead of a generic ONNX depth model
-- Added fixed temporal-size handling for exported VDA ONNX models
-- VDA ONNX now forces the batch size to match the model’s fixed exported frame count, usually `T=8`
-- Added safeguards to prevent fixed-T ONNX models from silently truncating larger frame batches
-- Added trimming for padded final batches so duplicated padding frames are not written as real output frames
-- Native Video Depth Anything keeps its own runtime options such as `target_fps` and `input_size`
-- VDA ONNX does not receive unnecessary native VDA extras because its frame count and resolution are already fixed in the exported model
-- Updated smoothness testing so `target_fps=-1` can be used to preserve the source video timing instead of forcing low-FPS depth sampling
-
-### Depth Model Resolution Presets
-
-The inference resolution list has been updated with clearer model-specific labels so users can better understand which presets are model-native, repo-default, or video-friendly.
-
-### Depth Flicker and Normalization
-
-Video depth workflows benefit from more stable normalization behavior. This helps reduce depth breathing and flicker in models that produce less stable frame-to-frame depth ranges.
-
-This is especially useful for models that create strong per-frame depth detail but may need temporal or percentile-based stabilization for smoother video output.
-
-### Result
-
-The depth engine is easier to understand, more accurate about model-specific defaults, and better prepared for both image-based and video-based depth models.
+The selected render mode is pushed into the app state before rendering starts, preventing cases where the UI shows one mode but the backend still renders using a previous mode.
 
 ---
 
-## Depth Blender — GPU Optimization & Single Image Mode
+### 3D Image Render Fixes
 
-The Depth Blender has been fully migrated to PySide6 and received significant performance and feature updates.
+Fixed the 3D image render path so still-image conversion works correctly.
 
-### GPU Path Rewrite
+This fixes an issue where image rendering could fail with an OpenCV error similar to:
 
-- The GPU blending path now keeps operations on the GPU where possible
-- Reduced redundant CPU round-trips for CLAHE, bilateral filtering, and normalization
-- Added `_median_blur_torch` and `_normalize_to_v2_torch_gpu` for GPU-resident processing
-- Cached white threshold detection to avoid duplicate percentile calculations
-- Improved per-frame blending performance on GPU
+```text
+OpenCV error in cvtColor
+src is not a numpy array
+```
 
-### New Single Image Mode
+The issue was caused by CUDA tensor output being passed into OpenCV image functions without being converted back into a proper NumPy/OpenCV image first.
 
-- Added **Image** mode alongside existing Frames and Videos modes
-- Blend two depth map images directly without extracting frame sequences
-- Live preview with scrubber for frame/video modes
-- Instant preview behavior for single images
-
-### Preset System
-
-Added built-in blend presets:
-
-- Default (Balanced)
-- Sharp Edges
-- Smooth Blend
-- Metric + Mono
-- High Contrast
-
-These presets allow quick application of common depth blending styles with debounced preview updates.
-
-### Layout and Language Updates
-
-- Depth Blender now supports the new PySide6 page structure
-- Labels, buttons, mode controls, presets, and actions are integrated into the language system
-- Input/output panels were adjusted for translated text and wider labels
-- The page uses the shared queue/progress system instead of redundant local status boxes
-
-### Result
-
-Depth Blender is faster, cleaner, easier to preview, and better integrated into the full VisionDepth3D v4.0 workflow.
+The image render path now handles tensor and NumPy frame formats more safely.
 
 ---
 
-## FPS / Upscale Enhancement
+### Correct Image Aspect and SBS Behavior
 
-The FPS/Upscale tab has been fully migrated to PySide6 with a modern card-based layout, live render plan summary, and shared progress integration.
+Improved still-image 3D output sizing so images are no longer forced into video-style aspect rules by default.
 
-RIFE frame interpolation and Real-ESRGAN upscaling run through the same unified job queue as the other pipelines.
+For image rendering, VisionDepth3D now preserves the source image shape unless the user explicitly chooses otherwise.
 
-### Key Features
+Correct behavior example:
 
-- RIFE interpolation through ONNX workflow
-- Real-ESRGAN / RealESR upscaling options
-- Merged and threaded processing paths
-- Scene detection and extraction workflow
-- Codec and output format settings
-- Render plan summary
-- Session info panel
-- Shared queue/progress integration
-- Scroll-safe responsive layout for smaller window sizes
+```text
+Square source 627x627:
 
-### Result
+Full-SBS:
+1254x627
 
-The FPS/Upscale Enhancer is now a first-class workflow tab for preparing smoother and higher-resolution video sources before 3D conversion or VR playback.
+Half-SBS:
+627x627
 
----
+Red-Cyan Anaglyph:
+627x627
+```
 
-## Multi-GPU, AMD, Intel, and CPU Support
+This prevents square, portrait, poster, microscope, AI-generated, or unusual-shaped images from being squeezed or cropped incorrectly.
 
-VisionDepth3D v4.0 improves hardware detection and fallback behavior across different GPU vendors.
-
-### Improvements
-
-- Added DirectML device detection for AMD and Intel GPUs on Windows
-- Added ROCm detection for AMD GPUs on Linux
-- ONNX providers now auto-detect available execution providers where supported
-- Added support paths for `DmlExecutionProvider` and `ROCMExecutionProvider`
-- FFmpeg encoder auto-fallback to AMF for AMD and QSV for Intel when NVENC is unavailable
-- PyTorch device guards were added throughout the app to prevent crashes on non-NVIDIA systems
-- CPU fallback remains available when GPU acceleration is not available
-
-### Install Documentation Update
-
-The install guide now separates PyTorch setup by backend:
-
-- NVIDIA users install CUDA PyTorch
-- AMD / Intel Windows users can use `torch-directml`
-- CPU-only users can install CPU PyTorch as a fallback
-
-### Result
-
-VisionDepth3D is still best on NVIDIA CUDA, but v4.0 is more flexible for AMD, Intel, DirectML, ROCm, and CPU users.
+The image render path now treats aspect ratio as an image/eye canvas concern rather than forcing the final packed SBS output into the selected video aspect ratio.
 
 ---
 
-## Language System & Localization
+### Image Folder Render Progress
 
-VisionDepth3D v4.0 adds multi-language UI support across the main application shell and major workflow tabs.
+Improved Image Folder Render progress reporting.
 
-### Included Language Files
+Image folder rendering now reports batch progress through the shared Job Queue format instead of only showing per-image status text.
 
-- English
-- French
-- Spanish
-- German
-- Japanese
-- Simplified Chinese
-- Traditional Chinese
+The queue now shows consistent batch progress such as:
 
-### Improvements
+```text
+41.78% | FPS: 3.12 | Elapsed: 00:02:04 | ETA: 00:02:53
+CPU: 0% | RAM: 54% | GPU: 13% | VRAM: 50%
+```
 
-- Main tab buttons now update when switching languages
-- File and Help menu entries now translate
-- Page labels, buttons, group titles, placeholders, and status labels refresh dynamically
-- Language files are loaded from `resources/languages`
-- Queue dock status text now refreshes correctly when switching languages
-- Added missing translation coverage for Depth Engine, Depth Blender, 3D Generator, FPS/Upscale, and Live 3D
-- Language refresh behavior now works more consistently across page widgets, shell controls, and dialogs
-
-### Result
-
-The UI is easier to localize and maintain as VisionDepth3D grows.
+This makes image sequence rendering easier to monitor and keeps progress behavior consistent with full video rendering and depth generation.
 
 ---
 
-## Application Shell
+### Left / Right Eye Export Debugging Improvements
 
-### Splash Screen
+Improved diagnostics for left-eye, right-eye, and split-eye render issues.
 
-- Added branded splash screen with loading progress during initialization
-- Supports PNG/JPG splash images in `resources/icons/`
-- Improves startup presentation and gives users feedback while the app initializes
+FFmpeg command output is now easier to inspect when frame writing fails, especially for broken pipe errors or output-size mismatches.
 
-### Native Menu Bar
+Additional safeguards were added around frame dimensions before FFmpeg writes, helping reveal when the generated frame size does not match the expected encoder size.
 
-- File menu with preset save/load and input shortcuts
-- Help menu with links to website, GitHub, documentation, and bug tracker
-- GPU diagnostics action in Help menu
-- Menu labels are integrated into the translation system
-
-### Debug Console
-
-- Toggle-able debug button in the top bar
-- When enabled, console output is captured and displayed in the shared queue dock
-- Useful for 3DDBG telemetry, model loading, FFmpeg output, and pipeline diagnostics
-- Powered by a stream emitter that redirects stdout/stderr into Qt signals
-
-### Queue Dock
-
-- Shared status area at the bottom of the app
-- Tracks workflow status across render, depth, blend, FPS/upscale, and Live 3D tasks
-- Status labels update correctly after language changes
-- Reduces redundant per-page progress/status boxes
-
-### VRAM Management
-
-- Automatic GPU cache clearing when switching between tabs
-- Helps prevent memory accumulation from preview textures and model usage across sessions
-- Useful for heavier depth models, preview testing, and long editing sessions
-
-### Result
-
-The application shell now feels closer to a complete professional desktop tool instead of a collection of separate scripts.
+This helped identify cases where single-eye output was being treated differently from the internal Full-SBS render frame size.
 
 ---
 
-## Responsive Layout & Scroll-Safe Workflow Pages
+### Safer Split-Eye Render Direction
 
-Several wide workflow tabs were updated so controls no longer crush together when the window is resized.
+Updated the left/right eye output direction so split-eye rendering can be handled more safely.
 
-### Updated Areas
+Instead of rendering the left eye and right eye as two completely separate 3D conversion passes, the improved direction is:
 
-- FPS / Upscale Enhancer
-- Live 3D
-- 3D Generator preview and dialog sections
-- Depth Blender input panels
-- Wide card-based workflow pages
+```text
+Render one SBS result
+Split the finished SBS into left and right eye outputs
+Delete the temporary SBS file
+Return the requested left/right outputs
+```
 
-### Improvements
-
-- Scroll-safe body layouts
-- Protected minimum panel widths
-- Better preview/card scaling
-- Cleaner behavior on smaller screens and resized windows
-- Less clipping for translated labels
-- More stable layout behavior when maximized, resized, or restored
-
-### Result
-
-Workflow pages stay usable and readable even when the application window is not maximized.
+This avoids duplicate GPU work and helps keep left and right eye outputs more consistent with each other.
 
 ---
 
-## Preset System Updates
+### Unified Job Queue Progress Format
 
-3D presets now behave as reusable render profiles.
+Standardized progress reporting across more VisionDepth3D processes.
 
-### Changed Behavior
+The Job Queue now uses a cleaner shared format:
 
-Presets no longer save:
+```text
+74.66% | FPS: 3.85 | Elapsed: 09:08:19 | ETA: 02:43:06
+CPU: 89% | RAM: 50% | GPU: 58% | VRAM: 97%
+```
 
-- input video path
-- depth map path
-- output path
+This format is now used more consistently across:
 
-This means users can:
+```text
+3D rendering
+Depth rendering
+Image folder rendering
+FPS/Upscale processing
+Frame extraction
+Scene detection and scene export
+Preview generation
+```
 
-- load a movie once
-- load a depth map once
-- switch between multiple stereo presets
-- keep their current source and output fields intact
-
-### Result
-
-Presets are now better suited for reusable looks, render styles, comfort profiles, and scene-specific stereo tuning.
+This makes long-running operations easier to compare and monitor.
 
 ---
 
-## Requirements and Repository Setup
+### Queue Dock Cleanup
 
-The project requirements and install documentation have been updated for the v4.0 workflow.
+Cleaned up the Job Queue dock behavior.
 
-### Requirements Notes
+The queue now separates:
 
-- `PySide6` is required for the new interface
-- PyTorch should be installed separately based on the user’s GPU backend
-- CUDA users should install CUDA PyTorch from the official PyTorch selector
-- AMD / Intel Windows users can install `torch-directml`
-- CPU users can install the CPU PyTorch build
-- Cache folders such as `__pycache__` should not be uploaded to GitHub
-- Core adapters should live inside the `core/adapters/` package structure
+```text
+progress/status
+system telemetry
+debug log output
+```
 
-### Result
+The debug log area can be hidden during normal use and shown only when Debug mode is enabled.
 
-Users cloning the repository get clearer setup instructions, and the source tree stays cleaner.
+This reduces duplicate-looking bottom panels and keeps the UI cleaner for regular users.
+
+---
+
+### Render Callback and Startup Crash Fixes
+
+Fixed startup issues caused by missing or duplicated render callback methods.
+
+Restored proper render callbacks for:
+
+```text
+render started
+render finished
+render failed
+render suspended
+render resumed
+render cancelled
+```
+
+Also fixed an issue where queue log visibility code was placed inside the wrong class, causing startup crashes related to:
+
+```text
+AttributeError: 'JobQueueDock' object has no attribute 'queue'
+```
+
+---
+
+### Depth Engine Processing Mode UI
+
+Improved Depth Engine source labeling based on processing mode.
+
+The Depth Engine now updates the input section depending on the selected mode:
+
+```text
+Process Video:
+Input Video
+
+Process Video Folder:
+Input Video Folder
+
+Process Image:
+Input Image
+
+Process Image Folder:
+Input Image Folder
+```
+
+The Browse button now opens the correct file or folder picker depending on the selected processing mode.
+
+This avoids confusion where Process Video mode still showed Input Image in the Sources panel.
+
+---
+
+### Depth Engine Browse Behavior
+
+Updated Depth Engine browsing so each processing mode opens the correct selector.
+
+Expected behavior:
+
+```text
+Process Video:
+video file picker
+
+Process Video Folder:
+folder picker
+
+Process Image:
+image file picker
+
+Process Image Folder:
+folder picker
+```
+
+This makes the Depth Engine workflow clearer for both video and image depth generation.
+
+---
+
+### FPS / Upscale Shared Queue Integration
+
+Updated the FPS/Upscale tab to use the shared Job Queue dock instead of relying on a separate local progress bar inside the Render Plan panel.
+
+Frame extraction, scene detection, scene export, RIFE/ESRGAN processing, and preview generation now report through the same queue system used by the rest of the app.
+
+This keeps progress behavior consistent across the application.
+
+---
+
+### Frame Extraction Progress and Completion Feedback
+
+Improved frame extraction from video.
+
+Frame extraction now reports progress to the Job Queue, including:
+
+```text
+percentage
+FPS
+elapsed time
+estimated time remaining
+system usage
+```
+
+A completion message now appears when extraction finishes, so users know where the extracted frames were saved.
+
+This fixes cases where frame extraction completed successfully but the UI did not clearly show anything had happened.
+
+---
+
+### PySceneDetect Progress Integration
+
+Improved PySceneDetect scene detection and scene splitting feedback.
+
+Scene detection now reports progress through the Job Queue.
+
+The process is split into clearer phases:
+
+```text
+Preparing scene detection
+Scanning video for scene changes
+Detected scenes
+Exporting scene clips
+Done
+```
+
+Scene export progress now shows the current scene number and total scene count.
+
+Example:
+
+```text
+Exporting scene 4/18
+43.00% | Scenes/s: 0.34 | Elapsed: 00:01:12 | ETA: 00:01:36
+```
+
+Users now receive a completion or failure message when scene detection/export finishes.
+
+---
+
+### FPS / Upscale Source Tools Layout
+
+Reorganized the FPS/Upscale tab so source preparation tools are easier to find.
+
+The top-left area now groups source tools together:
+
+```text
+Source Tools
+Extract Frames from Video
+Detect Scenes & Extract
+Scene Settings
+```
+
+Scene detection settings are placed under the Detect Scenes & Extract button so they feel connected to that workflow.
+
+This makes the tab flow more naturally:
+
+```text
+Source Tools
+Paths
+Processing Options
+Output Settings
+Models
+Render Plan
+Preview / Job Output
+```
+
+---
+
+### FPS / Upscale Render Plan Layout
+
+Updated the Render Plan panel to use a compact grid layout instead of a long vertical list.
+
+The Render Plan now summarizes:
+
+```text
+Resolution
+Frame Rate
+Codec
+Pipeline
+Models
+```
+
+in a wider grid so it uses less vertical space and leaves more room for the preview panel.
+
+---
+
+### FPS / Upscale Preview System
+
+Added a new preview generation system to the FPS/Upscale tab.
+
+Users can now generate sample previews before committing to a full render.
+
+The preview system samples frames from across the selected frame folder:
+
+```text
+beginning
+25%
+50%
+75%
+near the end
+```
+
+Each preview creates an Original vs Preview comparison image.
+
+This allows users to test output settings, upscale quality, blend amount, resolution, and model choice before running a full video process.
+
+---
+
+### Preview Navigation
+
+Added preview navigation controls.
+
+Users can move through generated preview samples using:
+
+```text
+Previous
+Next
+Preview counter
+```
+
+This makes it easy to compare different parts of the video without rendering the entire project.
+
+---
+
+### Preview Zoom and Inspection Tools
+
+Added interactive preview inspection tools for the FPS/Upscale preview panel.
+
+Users can now:
+
+```text
+hover over the Original or Preview side
+use the mouse wheel to zoom into that side
+click and drag to pan around the zoomed preview
+reset back to the normal view
+```
+
+This makes it easier to inspect sharpness, texture detail, pixel quality, and upscale artifacts up close.
+
+The preview inspection workflow is designed for comparing fine details between the original frame and processed preview output.
+
+---
+
+### Preview Panel Size Improvements
+
+Increased the preview panel size so generated previews are easier to inspect.
+
+The Render Plan panel was made more compact so the Preview / Job Output panel has more usable vertical space.
+
+---
+
+### System Accent Color Cleanup
+
+Updated slider and progress styling so controls use the system/application accent color instead of a hardcoded green value.
+
+This keeps the interface more consistent with the user’s Windows accent color and avoids faking a specific color theme.
+
+Also fixed stylesheet formatting issues caused by Python f-string handling of CSS braces.
+
+---
+
+### Qt Text Display Cleanup
+
+Fixed button text display issues caused by Qt treating ampersands as shortcut markers.
+
+This prevents labels like:
+
+```text
+Detect Scenes & Extract
+```
+
+from displaying incorrectly as:
+
+```text
+Detect Scenes_Extract
+```
+
+---
+
+### Output and Encoding Label Cleanup
+
+Improved the 3D Generator action labels so the Output & Encoding settings button displays correctly without Qt shortcut marker issues.
+
+This keeps settings labels more readable and avoids confusing button text in the Actions panel.
+
+---
+
+### FPS / Upscale Translation Additions
+
+Added new translation keys for the FPS/Upscale preview workflow, including:
+
+```text
+Generate Preview
+Previous
+Next
+Reset View
+Mouse wheel over Original or Preview to zoom.
+Could not load preview image.
+Generate sample previews from the beginning, middle, and end of the frame folder.
+```
+
+This keeps the new preview and inspection workflow ready for the existing multilingual UI system.
+
+---
+
+
+## Latest v4.1 Theme, Layout, and Usability Polish Updates
+
+### User-Selectable Theme System
+
+Added a user-selectable theme system to VisionDepth3D.
+
+Themes can now be loaded from two locations:
+
+```text
+resources/themes/
+```
+
+Used for official built-in themes shipped with VisionDepth3D.
+
+```text
+themes/
+```
+
+Used for user-created and user-installed custom themes beside the app.
+
+This keeps the app safe with bundled fallback themes while also allowing users to customize the interface without editing internal resources.
+
+The theme loader now supports:
+
+```text
+built-in fallback themes
+resource theme files
+user theme files
+theme reloading from the File menu
+user themes overriding bundled themes when IDs match
+```
+
+---
+
+### JSON and QSS Theme Support
+
+Themes now support both color palettes and optional stylesheet files.
+
+Supported theme layouts include:
+
+```text
+theme_name.json
+```
+
+Color-only theme using the default VisionDepth3D page styling.
+
+```text
+theme_name.json
+theme_name.qss
+```
+
+Full theme with custom colors and custom Qt stylesheet control.
+
+```text
+theme_name.qss
+```
+
+QSS-only theme using fallback default colors.
+
+This gives theme creators a simple path for color themes and a deeper path for advanced themes that customize boxes, sliders, buttons, checkboxes, panels, borders, and other widget styling.
+
+---
+
+### Theme Reload Menu
+
+Added a **Reload Themes** option under the File > Themes menu.
+
+Users can now add or edit files in the themes folder, then reload themes from inside the app without restarting VisionDepth3D.
+
+This makes testing and sharing custom theme packs much easier.
+
+---
+
+### Theme Studio / Create Theme Tool
+
+Added a new **Create Theme...** option under the File > Themes menu.
+
+This opens a built-in Theme Studio window where users can create custom themes visually.
+
+The Theme Studio includes:
+
+```text
+theme name entry
+live preview panel
+color swatch grid
+clickable color blocks
+native color picker support
+Save Theme action
+automatic save to the user themes folder
+automatic reload and apply after saving
+```
+
+The color grid is organized into sections:
+
+```text
+Core
+Borders
+Text
+Accents
+```
+
+This lets users customize important theme roles such as:
+
+```text
+Background
+Top Bar
+Panel
+Panel Dark
+Panel Raised
+Preview Area
+Border
+Soft Border
+Text
+Bright Text
+Muted Text
+Accent
+Accent Text
+Danger
+Warning
+Success
+```
+
+This makes theme creation approachable for users who do not want to manually edit JSON files.
+
+---
+
+### Theme Studio Current Theme Styling
+
+Updated Theme Studio so the dialog itself follows the currently selected theme.
+
+Previously, the Theme Studio window used its own hardcoded purple styling, which could look disconnected from the rest of the app.
+
+The Theme Studio now uses the active theme for:
+
+```text
+dialog background
+panel background
+labels
+input fields
+buttons
+section labels
+hover accents
+```
+
+The live preview still shows the theme being created, while the outer dialog follows the currently active app theme.
+
+This keeps the theme creator visually consistent with VisionDepth3D.
+
+---
+
+### Custom Theme Creation Workflow
+
+Users can now create custom themes entirely inside the app.
+
+Example workflow:
+
+```text
+File > Themes > Create Theme...
+enter a theme name
+click color swatches
+pick colors
+preview the theme live
+save the theme
+VisionDepth3D reloads and applies it
+```
+
+Themes created this way are saved as JSON files in the user themes folder.
+
+Example custom themes can include styles such as:
+
+```text
+Matrix Green
+Pinetree Green
+Neon Blue
+Cyber Purple
+Eagle Gold
+Crimson Depth
+Arctic Light
+```
+
+---
+
+### Official and User Theme Separation
+
+Improved the theme folder behavior so official themes and user themes have clear roles.
+
+Official bundled themes belong in:
+
+```text
+resources/themes/
+```
+
+User-created or downloaded themes belong in:
+
+```text
+themes/
+```
+
+This helps avoid confusion between shipped themes and user modifications.
+
+---
+
+### Theme Service Log Cleanup
+
+Removed noisy theme loading debug output from normal startup.
+
+The app no longer prints every loaded theme on launch or reload.
+
+Theme loading errors and broken theme warnings can still be kept visible when needed, but normal successful theme loading is no longer spammed into the console.
+
+---
+
+### Unified Page Styling Across Pipeline Tabs
+
+Updated the major pipeline tabs to use a shared page styling system.
+
+The goal was to make every tab feel like part of the same VisionDepth3D suite instead of separate tools with different visual styles.
+
+Pages now follow the same theme-aware styling approach across:
+
+```text
+3D Generator
+Depth Engine
+FPS / Upscale
+Depth Blender
+Live 3D
+```
+
+This improves visual consistency for:
+
+```text
+panels
+cards
+group boxes
+buttons
+inputs
+combo boxes
+spin boxes
+sliders
+checkboxes
+preview panels
+status labels
+scroll areas
+```
+
+---
+
+### FPS / Upscale Page Theme Cleanup
+
+Updated the FPS/Upscale page so it no longer uses an overly bright independent stylesheet.
+
+The page now follows the same unified theme system as the rest of the app while keeping its preview, render plan, source tools, and action areas functional.
+
+This makes the FPS/Upscale tab match the cleaner Depth Engine style more closely.
+
+---
+
+### 3D Generator Page Theme Cleanup
+
+Updated the 3D Generator page styling so it better matches the Depth Engine page.
+
+The 3D Generator now uses the shared theme-aware page styling instead of feeling visually separate from the rest of the application.
+
+This improves consistency across controls such as:
+
+```text
+Sources
+Presets
+Actions
+Output & Encoding
+Stereo Shift
+Depth & Parallax
+Pop & Subject Controls
+Color Grading
+Preview panel
+```
+
+---
+
+### Depth Blender Theme Support
+
+Updated the Depth Blender page to support the unified theme system.
+
+The hardcoded preview panel styling was removed and replaced with theme-aware preview panel styling.
+
+Depth Blender now follows the active theme for:
+
+```text
+mode controls
+preset controls
+input/output paths
+blend parameters
+preview frame controls
+action buttons
+preview panel
+```
+
+---
+
+### Live 3D Theme Support
+
+Updated the Live 3D page to support the unified theme system.
+
+The previous lightweight local stylesheet was replaced with the shared theme-aware page styling.
+
+Live 3D now follows the active theme for:
+
+```text
+capture source controls
+depth model controls
+live stereo controls
+preview/output settings
+status/actions panel
+```
+
+---
+
+### Adjustable Page Panels
+
+Added adjustable splitter layouts to more pipeline pages.
+
+Users can now resize page columns by dragging panel dividers.
+
+This improves flexibility for different monitors, resolutions, and workflows.
+
+Resizable areas include combinations such as:
+
+```text
+left settings panel
+center preview panel
+right actions/status panel
+```
+
+This was applied across more major pages, including:
+
+```text
+3D Generator
+Depth Engine
+FPS / Upscale
+Depth Blender
+Live 3D
+```
+
+This helps users give more room to previews, controls, or status panels depending on what they are working on.
+
+---
+
+### Adjustable Queue Dock Layout
+
+Improved the layout direction around the bottom Job Queue dock.
+
+The queue area can be resized vertically so users can make the queue/debug area taller when monitoring logs, or smaller when they want more preview space.
+
+This pairs with the new adjustable page columns to make the application layout feel more flexible and professional.
+
+---
+
+### Depth Engine Video Preview Samples
+
+Added a Depth Engine preview workflow for video mode.
+
+Users can now generate sample depth previews before committing to a full video depth render.
+
+The preview system samples frames from the selected video at positions such as:
+
+```text
+beginning
+25%
+50%
+75%
+near the end
+```
+
+The preview area shows:
+
+```text
+source frame
+generated depth map
+```
+
+Users can move through the generated preview samples with Previous and Next controls.
+
+This helps users test model choice, inversion, colormap, inference resolution, and depth settings before running a full video.
+
+---
+
+### Depth Engine Preview Controls
+
+Added preview controls to the Depth Engine preview area.
+
+The Depth Engine now includes:
+
+```text
+Generate Preview
+Previous
+Next
+Preview counter
+```
+
+This matches the direction of the FPS/Upscale preview workflow but keeps the Depth Engine preview simpler, without zoom and pan tools.
+
+The focus is quick validation of depth output quality.
+
+---
+
+### Depth Engine Queue Format Finalization
+
+Improved the Depth Engine queue integration so it now more closely matches the 3D Generator and FPS/Upscale queue format.
+
+Depth progress now reports in the shared format:
+
+```text
+82.87% | FPS: 1.13 | Elapsed: 00:11:00 | ETA: 00:02:16
+CPU: 21% | RAM: 57% | GPU: 41% | VRAM: 96%
+```
+
+Legacy depth status text such as:
+
+```text
+56/7188 | FPS: 1.2 | ETA: 01:43:18
+```
+
+is now normalized into the shared queue payload.
+
+This keeps Depth Engine progress consistent with the rest of the app.
+
+---
+
+### Help Menu User Guide Link
+
+Added a **User Guide** entry to the Help menu.
+
+The Help menu now provides a direct path to the online Markdown user guide on GitHub.
+
+This gives users a clearer way to find usage instructions without needing to search through GitHub manually.
+
+The Help menu now includes items such as:
+
+```text
+About VisionDepth3D
+User Guide
+Official Website
+GitHub Repository
+Documentation / Method
+Report a Bug
+GPU Diagnostics
+```
+
+A future update may add an in-app tutorial or guide panel, but for now the menu item provides a simple and reliable external documentation link.
+
+---
+
+### Theme Creator Translation Additions
+
+Added new translation keys for the Theme Studio and Help menu additions.
+
+New translatable labels include:
+
+```text
+Create Theme...
+Theme Created
+Theme created and applied successfully.
+Could not locate the user themes folder.
+User Guide
+```
+
+These additions keep the new theme creation workflow ready for multilingual UI files.
+
+---
+
+### Theme Creator Stability Fixes
+
+Fixed Theme Creator startup issues caused by method indentation and missing dialog methods during development.
+
+Corrected dialog methods include:
+
+```text
+_apply_dialog_style
+_slugify
+_pick_color
+_update_preview
+_save_theme
+```
+
+This ensures the Create Theme dialog opens, previews, saves, and applies themes reliably.
+
+---
+
+### Theme and Stylesheet Crash Fixes
+
+Fixed additional stylesheet startup crashes caused by Qt CSS being interpreted as Python f-string expressions.
+
+This affected areas where stylesheet blocks contained CSS braces inside f-strings.
+
+The updated styling direction avoids unsafe f-string stylesheet usage and uses safer string replacement or shared theme helpers instead.
+
+This prevents crashes such as:
+
+```text
+NameError: name 'background' is not defined
+IndentationError: unexpected indent
+```
+
+---
+
+### Custom Theme Packs
+
+Added and tested multiple custom theme directions for VisionDepth3D.
+
+Theme examples include:
+
+```text
+Neon Blue
+Cyber Purple
+Eagle Gold
+Crimson Depth
+Arctic Light
+Matrix Green
+Pinetree Green
+```
+
+These themes help demonstrate the new theme system and give users a starting point for building their own look.
+
+---
+
+## Known Notes
+
+### Wide Shot Edge Tearing
+
+Some wide shots may still show edge tearing if the depth map contains errors around silhouettes, hard object boundaries, thin structures, ships, or complex scene geometry.
+
+In these cases, the issue may come from the depth source rather than the stereo renderer.
+
+Recommended fixes:
+
+```text
+lower max_pixel_shift slightly
+lower zero_parallax_strength slightly
+enable floating window
+blend or repair the depth map
+use a different depth model
+lower foreground curvature if the subject looks inflated
+```
+
+### Convergence Preview Behavior
+
+Dynamic Convergence affects the final render path and may not visibly update the preview panel in the same way as Zero Parallax Strength.
+
+Use:
+
+```text
+Zero Parallax Strength
+```
+
+for preview-visible subject placement.
+
+Use:
+
+```text
+Dynamic Convergence
+```
+
+for final render-time convergence behavior and floating-window interaction.
 
 ---
 
 ## Upgrade Note
 
-Back up your important folders before replacing an older install:
+Users updating from v4.0 should back up:
 
 ```text
-weights/
 presets/
-outputs/
-custom models or downloaded assets
+weights/
 ```
-
-Older presets may still load, but because the v4.0 stereo method uses a new shift convention, users should rebuild or retune older presets using the new negative-foreground / positive-background model.
-
-Then run **VisionDepth3D_Setup_Downloader** to download the official VisionDepth3D v4.0 Windows installer and required `.bin` files.
 
 ---
 
 ## Final Result
 
-VisionDepth3D v4.0 is a major workflow update.
+VisionDepth3D v4.1 is a focused polish and workflow expansion update for the PySide6 rewrite.
 
-It combines:
+It improves:
 
-- a full PySide6 interface rewrite
-- the new VisionDepth3D stereo method
-- Live 3D realtime testing
-- Depth Engine model integration
-- Depth Blender improvements
-- FPS/Upscale workflow support
-- multi-language UI support
-- better GPU/backend detection
-- cleaner preset behavior
-- a shared queue/status system
-- improved documentation and install guidance
+- foreground subject volume
+- strong 3D pop-out tuning
+- edge-safe render behavior
+- VR comfort tuning
+- Dynamic Convergence behavior
+- Dynamic Floating Window awareness
+- preset support for foreground curvature
+- Windows light-mode compatibility
+- depth adapter dependency coverage
+- debug telemetry
+- UI dark-base consistency
+- system accent color support for sliders and progress indicators
+- Depth Engine queue progress bar reporting
+- Depth processing status label updates
+- Depth pause/resume button state fixes
+- Depth Engine processing mode labels
+- restored 3D Generator render modes
+- 3D image rendering
+- image folder rendering
+- image aspect/SBS output correctness
+- unified Job Queue progress formatting
+- cleaner queue/debug behavior
+- FPS/Upscale frame extraction progress
+- PySceneDetect queue progress and completion feedback
+- FPS/Upscale source tools layout
+- compact Render Plan layout
+- larger preview panel
+- sample preview generation
+- preview navigation
+- mouse wheel preview zoom
+- click-and-drag preview panning
+- improved processing state handling for long renders
+- user-selectable themes
+- JSON and QSS theme loading
+- official and custom user theme folders
+- Theme Studio / Create Theme workflow
+- theme reloading without restarting
+- unified theme styling across major pipeline tabs
+- Depth Blender theme support
+- Live 3D theme support
+- adjustable page columns and panels
+- adjustable queue dock layout
+- Depth Engine video preview samples
+- Depth Engine preview navigation
+- finalized Depth Engine queue progress formatting
+- Help menu User Guide link
+- Theme Creator translation additions
+- custom theme pack support
+- cleaner ThemeService startup logging
+- improved packaging and runtime folder handling
 
-VisionDepth3D v4.0 is built to feel like a unified desktop application for depth generation, depth blending, realtime testing, stereo rendering, and VR-ready video preparation.
+v4.0 was the major PySide6 rewrite.
+
+v4.1 is the first major polish, workflow, and usability pass for the new pipeline.
 
 ---

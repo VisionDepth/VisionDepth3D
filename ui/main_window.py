@@ -3,8 +3,8 @@ import sys
 import time
 import webbrowser
 
-from PySide6.QtCore import Qt, QObject, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QObject, Signal, QUrl
+from PySide6.QtGui import QIcon, QPalette, QActionGroup, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,6 +22,8 @@ from ui.pages.depth_generation_page import DepthGenerationPage
 from ui.pages.depth_blender_page import DepthBlenderPage
 from ui.pages.fps_upscale_page import FpsUpscalePage
 from ui.pages.live_3d_page import Live3DPage
+from services.theme_service import ThemeService
+from ui.dialogs.theme_creator_dialog import ThemeCreatorDialog
 
 import psutil
 
@@ -88,6 +90,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.controller = controller
         self.nav_buttons = {}
+
+        self.theme_service = ThemeService()
+        self.current_theme_id = getattr(self.controller.state, "selected_theme", "dark")
 
         # App/window icon
         icon_path = resource_path("resources/icons/logo.ico")
@@ -205,6 +210,7 @@ class MainWindow(QMainWindow):
         self._bind_events()
         self._switch_page("stereo")
         self._apply_styles()
+        self._apply_page_themes()
         self._detect_gpu()
         self.refresh_shell_labels()
 
@@ -225,17 +231,24 @@ class MainWindow(QMainWindow):
         self.controller.render_cancelled.connect(self._on_render_cancelled)
         self.controller.render_progress.connect(self._on_render_progress)
 
+        self.controller.depth_started.connect(self._on_depth_started)
+        self.controller.depth_finished.connect(self._on_depth_finished)
+        self.controller.depth_failed.connect(self._on_depth_failed)
+        self.controller.depth_cancelled.connect(self._on_depth_cancelled)
+        self.controller.depth_suspended.connect(self._on_depth_suspended)
+        self.controller.depth_resumed.connect(self._on_depth_resumed)
         self.controller.depth_progress_updated.connect(self._on_depth_progress)
 
     # ── Debug toggle ──
     def _toggle_debug(self, checked):
+        self._debug_active = checked
+        self.queue.set_log_visible(checked)
+
         if checked:
-            self._debug_active = True
             sys.stdout = self._debug_emitter
             sys.stderr = self._debug_emitter
             self.queue.add_message(self._t("Debug output enabled"))
         else:
-            self._debug_active = False
             sys.stdout = self._original_stdout
             sys.stderr = self._original_stderr
             self.queue.add_message(self._t("Debug output disabled"))
@@ -264,12 +277,13 @@ class MainWindow(QMainWindow):
     def _on_render_started(self):
         self.queue.reset_progress()
         self.queue.set_status(self._t("Render started..."))
-        self.queue.add_message(self._t("Render started..."))
+        self.queue.set_telemetry("")
 
     def _on_render_finished(self, outputs: list):
         self.queue.set_progress(100)
         self.queue.set_status(self._t("Render finished."))
         self.queue.add_message(self._t("Render finished."))
+
         QMessageBox.information(
             self,
             self._t("Render Complete"),
@@ -279,66 +293,124 @@ class MainWindow(QMainWindow):
     def _on_render_failed(self, error: str):
         self.queue.set_status(f"{self._t('Render failed:')} {error}")
         self.queue.add_message(f"{self._t('Render failed:')} {error}")
-        QMessageBox.critical(self, self._t("Render Failed"), error)
+
+        QMessageBox.critical(
+            self,
+            self._t("Render Failed"),
+            error,
+        )
 
     def _on_render_suspended(self):
         self.queue.set_status(self._t("Render suspended."))
-        self.queue.add_message(self._t("Render suspended."))
 
     def _on_render_resumed(self):
         self.queue.set_status(self._t("Render resumed."))
-        self.queue.add_message(self._t("Render resumed."))
 
     def _on_render_cancelled(self):
         self.queue.set_status(self._t("Render cancelled."))
         self.queue.add_message(self._t("Render cancelled."))
 
-    # ── Progress ──
-    def _on_blend_progress(self, payload):
-        progress = payload.get("progress", 0.0)
-        status_text = payload.get("status_text", "")
-        self.queue.set_progress(progress)
-        if status_text:
-            self.queue.set_status(status_text)
+    # ── Depth callbacks ──
+    def _on_depth_started(self):
+        self.queue.reset_progress()
+        self.queue.set_status(self._t("Depth processing started..."))
+        self.queue.set_telemetry("")
+        self.queue.add_message(self._t("Depth processing started..."))
 
-    def _on_render_progress(self, payload):
+    def _on_depth_finished(self, output_path: str):
+        self.queue.set_progress(100)
+        self.queue.set_status(self._t("Depth processing finished."))
+        self.queue.add_message(f"{self._t('Depth output:')} {output_path}")
+
+    def _on_depth_failed(self, error: str):
+        self.queue.set_status(f"{self._t('Depth failed:')} {error}")
+        self.queue.add_message(f"{self._t('Depth failed:')} {error}")
+
+    def _on_depth_cancelled(self):
+        self.queue.set_status(self._t("Depth cancelled."))
+        self.queue.add_message(self._t("Depth cancelled."))
+
+    def _on_depth_suspended(self):
+        self.queue.set_status(self._t("Depth suspended."))
+        self.queue.add_message(self._t("Depth suspended."))
+
+    def _on_depth_resumed(self):
+        self.queue.set_status(self._t("Depth resumed."))
+        self.queue.add_message(self._t("Depth resumed."))
+
+    def _get_system_stats_text(self):
+        now = time.monotonic()
+
+        if (
+            hasattr(self, "_last_queue_stat_poll")
+            and hasattr(self, "_last_queue_stats_text")
+            and (now - self._last_queue_stat_poll) <= 0.5
+        ):
+            return self._last_queue_stats_text
+
+        self._last_queue_stat_poll = now
+
         stats = self._get_system_stats()
-        progress = payload.get("progress", 0.0)
-        status_text = payload.get("status_text", "")
-
         gpu_text = f"{stats['gpu']:.0f}%" if stats["gpu"] is not None else "N/A"
         vram_text = f"{stats['vram']:.0f}%" if stats["vram"] is not None else "N/A"
-        telemetry = (
+
+        self._last_queue_stats_text = (
             f"CPU: {stats['cpu']:.0f}% | RAM: {stats['ram']:.0f}% | "
             f"GPU: {gpu_text} | VRAM: {vram_text}"
         )
 
+        return self._last_queue_stats_text
+
+
+    def _update_queue_progress_line(self, payload, default_rate_label="FPS"):
+        progress = float(payload.get("progress", 0.0) or 0.0)
+        progress = max(0.0, min(100.0, progress))
+
+        elapsed = payload.get("elapsed", None)
+        eta = payload.get("eta", None)
+        fps_like = payload.get("fps_like", None)
+        rate_label = payload.get("rate_label", default_rate_label)
+
+        line_parts = [f"{progress:.2f}%"]
+
+        if fps_like is not None:
+            try:
+                line_parts.append(f"{rate_label}: {float(fps_like):.2f}")
+            except Exception:
+                pass
+
+        if elapsed is not None:
+            line_parts.append(f"Elapsed: {self._format_seconds(elapsed)}")
+
+        if eta is not None:
+            line_parts.append(f"ETA: {self._format_seconds(eta)}")
+
         self.queue.set_progress(progress)
-        if status_text:
-            self.queue.set_status(status_text)
-        else:
-            self.queue.set_status(f"{self._t('Progress:')} {progress:.1f}%")
-        self.queue.set_telemetry(telemetry)
+        self.queue.set_status(" | ".join(line_parts))
+        self.queue.set_telemetry(self._get_system_stats_text())
+
+    # ── Progress ──
+    def _on_blend_progress(self, payload):
+        self._update_queue_progress_line(payload, default_rate_label="FPS")
+        
+    def _on_render_progress(self, payload):
+        self._update_queue_progress_line(payload, default_rate_label="FPS")
 
     def _on_depth_progress(self, payload):
-        progress = payload.get("progress", 0.0)
-        status_text = payload.get("status_text", "")
-        now = time.monotonic()
+        payload = dict(payload or {})
 
-        if not hasattr(self, '_last_stat_poll') or (now - self._last_stat_poll) > 0.5:
-            self._last_stat_poll = now
-            stats = self._get_system_stats()
-            gpu_text = f"{stats['gpu']:.0f}%" if stats["gpu"] is not None else "N/A"
-            vram_text = f"{stats['vram']:.0f}%" if stats["vram"] is not None else "N/A"
-            telemetry = (
-                f"CPU: {stats['cpu']:.0f}% | RAM: {stats['ram']:.0f}% | "
-                f"GPU: {gpu_text} | VRAM: {vram_text}"
-            )
-            self.queue.set_telemetry(telemetry)
+        # Make depth render use the same unified queue display as
+        # 3D render, FPS/Upscale, frame extraction, scene detection, etc.
+        payload.setdefault("rate_label", "FPS")
 
-        self.queue.set_progress(progress)
-        if status_text:
-            self.queue.set_status(status_text)
+        self._update_queue_progress_line(payload, default_rate_label="FPS")
+
+    def _format_seconds(self, seconds):
+        seconds = max(0, int(seconds or 0))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
 
     # ── System stats ──
     def _get_system_stats(self):
@@ -401,6 +473,8 @@ class MainWindow(QMainWindow):
         self.file_menu.setTitle(self._t("File"))
         self.help_menu.setTitle(self._t("Help"))
         self.lang_menu.setTitle(self._t("Language"))
+        if hasattr(self, "theme_menu"):
+            self.theme_menu.setTitle(self._t("Themes"))
 
         # File actions
         self._set_action_text(self.save_preset_action, "Save Preset As…")
@@ -411,6 +485,7 @@ class MainWindow(QMainWindow):
 
         # Help actions
         self._set_action_text(self.about_action, "About VisionDepth3D")
+        self._set_action_text(self.user_guide_action, "User Guide")
         self._set_action_text(self.website_action, "Official Website")
         self._set_action_text(self.github_action, "GitHub Repository")
         self._set_action_text(self.docs_action, "Documentation / Method")
@@ -421,43 +496,73 @@ class MainWindow(QMainWindow):
         if hasattr(self.queue, "refresh_labels"):
             self.queue.refresh_labels()
 
+    def _create_theme_dialog(self):
+        user_themes_dir = getattr(
+            self.theme_service,
+            "user_themes_dir",
+            getattr(self.theme_service, "themes_dir", None),
+        )
+
+        if not user_themes_dir:
+            QMessageBox.warning(
+                self,
+                self._t("Themes"),
+                self._t("Could not locate the user themes folder."),
+            )
+            return
+
+        dialog = ThemeCreatorDialog(
+            themes_dir=user_themes_dir,
+            parent=self,
+            base_theme=self._theme(),
+        )
+
+        if dialog.exec() != ThemeCreatorDialog.Accepted:
+            return
+
+        self.theme_service.reload()
+        self._rebuild_theme_menu()
+
+        theme_id = getattr(dialog, "saved_theme_id", None)
+
+        if theme_id:
+            self._set_theme(theme_id)
+
+        QMessageBox.information(
+            self,
+            self._t("Theme Created"),
+            self._t("Theme created and applied successfully."),
+        )
+
+    def _rebuild_theme_menu(self):
+        if not hasattr(self, "theme_menu"):
+            return
+
+        self.theme_menu.clear()
+        self.theme_service.reload()
+
+        self._theme_actions = {}
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+
+        for theme_id, theme in self.theme_service.available_themes().items():
+            action = self.theme_menu.addAction(theme.get("name", theme_id.title()))
+            action.setCheckable(True)
+            action.setChecked(theme_id == self.current_theme_id)
+            action.triggered.connect(lambda checked=False, tid=theme_id: self._set_theme(tid))
+            self._theme_group.addAction(action)
+            self._theme_actions[theme_id] = action
+
+        self.theme_menu.addSeparator()
+
+        reload_action = self.theme_menu.addAction(self._t("Reload Themes"))
+        reload_action.triggered.connect(self._rebuild_theme_menu)
+
+        create_action = self.theme_menu.addAction(self._t("Create Theme..."))
+        create_action.triggered.connect(self._create_theme_dialog)
+
     def _build_menu_bar(self):
         menubar = self.menuBar()
-        menubar.setStyleSheet("""
-            QMenuBar {
-                background: #0f141a;
-                color: #e8ecf1;
-                border-bottom: 1px solid #28303a;
-                padding: 2px 8px;
-            }
-            QMenuBar::item {
-                padding: 6px 12px;
-                border-radius: 6px;
-            }
-            QMenuBar::item:selected {
-                background: #1a2230;
-            }
-            QMenu {
-                background: #0f141a;
-                color: #e8ecf1;
-                border: 1px solid #28303a;
-                border-radius: 8px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 8px 32px 8px 16px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background: #1a2230;
-                color: #4dd0e1;
-            }
-            QMenu::separator {
-                height: 1px;
-                background: #28303a;
-                margin: 4px 8px;
-            }
-        """)
 
         # File menu
         self.file_menu = menubar.addMenu(self._t("File"))
@@ -471,6 +576,9 @@ class MainWindow(QMainWindow):
 
         self.load_preset_action = self.file_menu.addAction(self._t("Load Preset…"))
         self.load_preset_action.triggered.connect(lambda: None)
+
+        self.theme_menu = self.file_menu.addMenu(self._t("Themes"))
+        self._rebuild_theme_menu()
 
         self.file_menu.addSeparator()
 
@@ -493,6 +601,13 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self._show_about_dialog)
 
         self.help_menu.addSeparator()
+
+        self.user_guide_action = self.help_menu.addAction(self._t("User Guide"))
+        self.user_guide_action.triggered.connect(
+            lambda: webbrowser.open(
+                "https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/UserGuide.md"
+            )
+        )
 
         self.website_action = self.help_menu.addAction(self._t("Official Website"))
         self.website_action.triggered.connect(
@@ -584,37 +699,206 @@ class MainWindow(QMainWindow):
             if hasattr(page, 'refresh_labels'):
                 page.refresh_labels()
 
+    def _system_accent_hex(self) -> str:
+        app = QApplication.instance()
+
+        if app is not None:
+            color = app.palette().color(QPalette.ColorRole.Highlight)
+            if color.isValid():
+                return color.name()
+
+        return "#3b82f6"
+
+    def _theme(self):
+        return self.theme_service.get_theme(self.current_theme_id)
+
+    def _theme_colors(self):
+        return self._theme().get("colors", {})
+
+    def _set_theme(self, theme_id: str):
+        self.current_theme_id = theme_id
+
+        if hasattr(self.controller.state, "selected_theme"):
+            self.controller.state.selected_theme = theme_id
+            self.controller.save_settings()
+
+        for tid, action in getattr(self, "_theme_actions", {}).items():
+            action.setChecked(tid == theme_id)
+
+        self._apply_styles()
+        self._apply_page_themes()
+
+    def _apply_page_themes(self):
+        theme = self._theme()
+
+        if hasattr(self.queue, "apply_theme"):
+            self.queue.apply_theme(theme)
+
+        for page in getattr(self, "page_map", {}).values():
+            if hasattr(page, "apply_theme"):
+                page.apply_theme(theme)
+
     # ── Styles ──
     def _apply_styles(self):
-        self.setStyleSheet("""
-            QMainWindow { background: #111418; }
-            QWidget { color: #e8ecf1; font-family: Segoe UI; font-size: 10pt; }
-            #TopBar { background: #0f141a; border-bottom: 1px solid #28303a; }
-            #AppTitle { font-size: 12pt; font-weight: 600; padding-right: 8px; }
-            #GpuLabel { color: #4dd0e1; font-size: 9pt; padding-left: 4px; padding-right: 8px; }
-            QPushButton#TopNavButton {
-                background: #1a2230; border: 1px solid #2f3947;
-                border-radius: 10px; padding: 8px 14px;
-            }
-            QPushButton#TopNavButton:hover { background: #283142; }
-            QPushButton#TopNavButton:checked {
-                background: #243246; border: 1px solid #3b4d63;
-            }
-            #PreviewFrame {
-                background: #0d1117; border: 1px solid #28303a; border-radius: 14px;
-            }
-            QGroupBox {
-                background: #171c23; border: 1px solid #28303a;
-                border-radius: 14px; margin-top: 12px; padding-top: 10px; font-weight: 600;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
-            QPushButton {
-                background: #202734; border: 1px solid #2f3947;
-                border-radius: 10px; padding: 8px 12px;
-            }
-            QPushButton:hover { background: #283142; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
-                background: #0f141a; border: 1px solid #2a3440;
-                border-radius: 10px; padding: 8px;
-            }
-        """)
+        accent = self._system_accent_hex()
+
+        colors = self._theme_colors()
+
+        bg = colors.get("bg", "#0b0f14")
+        topbar = colors.get("topbar", "#0f141a")
+        panel = colors.get("panel", "#111821")
+        panel_2 = colors.get("panel_2", "#0d131b")
+        panel_3 = colors.get("panel_3", "#151d29")
+        border = colors.get("border", "#263445")
+        border_soft = colors.get("border_soft", "#2d3b4f")
+        text = colors.get("text", "#e6edf3")
+        text_bright = colors.get("text_bright", "#f0f6fc")
+        muted = colors.get("muted", "#8b949e")
+        accent = colors.get("accent", "#2f81f7")
+        accent_text = colors.get("accent_text", "#ffffff")
+        danger = colors.get("danger", "#ff7b72")
+        danger_bg = colors.get("danger_bg", "#2b1518")
+        preview_bg = colors.get("preview_bg", panel_2)
+
+        theme = self._theme()
+        stylesheet = theme.get("_qss_template", "")
+
+        if not stylesheet:
+            stylesheet = """
+                QWidget {
+                    background-color: __BG__;
+                    color: __TEXT__;
+                }
+
+                QMainWindow {
+                    background-color: __BG__;
+                }
+
+                QWidget#TopBar {
+                    background-color: __TOPBAR__;
+                    border-bottom: 1px solid __BORDER__;
+                }
+
+                QLabel#AppTitle {
+                    color: __TEXT_BRIGHT__;
+                    font-size: 15px;
+                    font-weight: 800;
+                }
+
+                QLabel#GpuLabel {
+                    color: __ACCENT__;
+                }
+
+                QPushButton#TopNavButton {
+                    background-color: __PANEL_3__;
+                    border: 1px solid __BORDER_SOFT__;
+                    border-radius: 9px;
+                    padding: 8px 14px;
+                    color: __TEXT_BRIGHT__;
+                    font-weight: 600;
+                }
+
+                QPushButton#TopNavButton:hover {
+                    border: 1px solid __ACCENT__;
+                    background-color: __PANEL__;
+                }
+
+                QPushButton#TopNavButton:checked {
+                    background-color: __ACCENT__;
+                    border: 1px solid __ACCENT__;
+                    color: __ACCENT_TEXT__;
+                }
+
+                QMenuBar {
+                    background: __TOPBAR__;
+                    color: __TEXT__;
+                    border-bottom: 1px solid __BORDER__;
+                    padding: 2px 8px;
+                }
+
+                QMenuBar::item {
+                    padding: 6px 12px;
+                    border-radius: 6px;
+                }
+
+                QMenuBar::item:selected {
+                    background: __PANEL_3__;
+                }
+
+                QMenu {
+                    background: __PANEL__;
+                    color: __TEXT__;
+                    border: 1px solid __BORDER__;
+                    border-radius: 8px;
+                    padding: 4px;
+                }
+
+                QMenu::item {
+                    padding: 8px 32px 8px 16px;
+                    border-radius: 4px;
+                }
+
+                QMenu::item:selected {
+                    background: __PANEL_3__;
+                    color: __ACCENT__;
+                }
+
+                QMenu::separator {
+                    height: 1px;
+                    background: __BORDER__;
+                    margin: 4px 8px;
+                }
+
+                QSplitter::handle {
+                    background: __BORDER__;
+                }
+
+                QScrollArea {
+                    background: __BG__;
+                    border: none;
+                }
+
+                QProgressBar {
+                    background: __PANEL_2__;
+                    color: __TEXT__;
+                    border: 1px solid __BORDER_SOFT__;
+                    border-radius: 8px;
+                    text-align: center;
+                    padding: 2px;
+                }
+
+                QProgressBar::chunk {
+                    background: __ACCENT__;
+                    border-radius: 6px;
+                }
+
+                QListWidget {
+                    background: __PANEL_2__;
+                    color: __TEXT__;
+                    border: 1px solid __BORDER__;
+                    border-radius: 8px;
+                }
+            """
+
+        replacements = {
+            "__BG__": bg,
+            "__TOPBAR__": topbar,
+            "__PANEL__": panel,
+            "__PANEL_2__": panel_2,
+            "__PANEL_3__": panel_3,
+            "__BORDER__": border,
+            "__BORDER_SOFT__": border_soft,
+            "__TEXT__": text,
+            "__TEXT_BRIGHT__": text_bright,
+            "__MUTED__": muted,
+            "__ACCENT__": accent,
+            "__ACCENT_TEXT__": accent_text,
+            "__DANGER__": danger,
+            "__DANGER_BG__": danger_bg,
+            "__PREVIEW_BG__": preview_bg,
+        }
+
+        for key, value in replacements.items():
+            stylesheet = stylesheet.replace(key, value)
+
+        self.setStyleSheet(stylesheet)

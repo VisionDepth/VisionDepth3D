@@ -1,0 +1,23 @@
+{
+  "name": "Cyber Purple",
+  "qss": "cyber_purple.qss",
+  "colors": {
+    "bg": "#090713",
+    "topbar": "#100b24",
+    "panel": "#17102f",
+    "panel_2": "#0f0a22",
+    "panel_3": "#24184a",
+    "border": "#3d2d78",
+    "border_soft": "#5b3fb5",
+    "text": "#efe9ff",
+    "text_bright": "#ffffff",
+    "muted": "#b5a7df",
+    "accent": "#a855f7",
+    "accent_text": "#ffffff",
+    "danger": "#fb7185",
+    "danger_bg": "#2a1018",
+    "warning": "#fbbf24",
+    "success": "#34d399",
+    "preview_bg": "#0c0820"
+  }
+}

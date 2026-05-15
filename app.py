@@ -1,17 +1,19 @@
 import sys
 import os
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QColor, QFont
+from PySide6.QtGui import QPixmap, QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from services.language_service import LanguageService
 from services.live_service import LiveService
 
 
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("VisionDepth3D")
     app.setOrganizationName("VisionDepth")
+    app.setStyle("Fusion")
 
     # ── Show splash BEFORE any heavy imports ──
     base_dir = os.path.dirname(__file__)

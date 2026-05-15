@@ -27,11 +27,12 @@ class JobQueueDock(QWidget):
         self.progress_bar.setFixedHeight(20)
 
         self.status_label = QLabel("Idle")
+
         self.telemetry_label = QLabel("")
         self.telemetry_label.setWordWrap(True)
 
         self.log_list = QListWidget()
-
+        self.log_list.setVisible(False)
         self.log_list.setMaximumHeight(72)
         self.log_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -43,6 +44,9 @@ class JobQueueDock(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.telemetry_label)
         layout.addWidget(self.log_list)
+
+    def set_log_visible(self, visible: bool):
+        self.log_list.setVisible(visible)
 
     def set_translator(self, translator):
         self._translator = translator

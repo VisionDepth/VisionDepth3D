@@ -462,7 +462,7 @@
   "Pipeline:": "流程：",
   "Models:": "模型：",
   "Preview / Job Output": "預覽 / 任務輸出",
-  "This space can be used for a preview frame, render logs, or diagnostics later.": "此區域稍後可用於預覽影格、渲染記錄或診斷資訊。",
+  "Generate sample previews from the beginning, middle, and end of the frame folder.": "從影格資料夾的開頭、中間和結尾產生範例預覽。",
   "No preview loaded yet": "尚未載入預覽",
   "Session Info": "工作階段資訊",
   "Select a frames folder and output file to begin.\n\n• RIFE interpolates new frames between existing ones\n• ESRGAN upscales each frame to a higher resolution\n• Threaded mode can process RIFE and ESRGAN in parallel": "請選擇影格資料夾與輸出檔案以開始。\n\n• RIFE 會在現有影格之間補出新影格\n• ESRGAN 會將每個影格提升到更高解析度\n• 執行緒模式可以平行處理 RIFE 與 ESRGAN",
@@ -514,5 +514,14 @@
   "scenes.": "個場景。",
   "Scene detection error:": "場景偵測錯誤：",
   "Error:": "錯誤：",
-  "Interpolate frames with RIFE, upscale with ESRGAN, detect scenes, and export final video.": "使用 RIFE 補幀，使用 ESRGAN 超解析度，偵測場景並匯出最終影片。"
+  "Interpolate frames with RIFE, upscale with ESRGAN, detect scenes, and export final video.": "使用 RIFE 補幀，使用 ESRGAN 超解析度，偵測場景並匯出最終影片。",
+  "Zoom Out": "縮小",
+  "Zoom In": "放大",
+  "Reset Zoom": "重設縮放",
+  "Could not load preview image.": "無法載入預覽影像。",
+  "Create Theme...": "建立主題...",
+  "Theme Created": "主題已建立",
+  "Theme created and applied successfully.": "主題已成功建立並套用。",
+  "Could not locate the user themes folder.": "找不到使用者主題資料夾。"  
+  
 }
