@@ -141,6 +141,12 @@ class AppController(QObject):
         self.depth_worker = None
         self._model_ready = False
 
+        # Processing state trackers
+        self._render_running = False
+        self._render_suspended = False
+        self._depth_running = False
+        self._depth_suspended = False
+
     # ── Generic state access ──
     def set_state(self, key: str, value):
         if not hasattr(self.state, key):
@@ -175,10 +181,12 @@ class AppController(QObject):
             self.render_failed.emit("A render is already running.")
             return
 
+        self._render_running = True
+        self._render_suspended = False
+
         self.render_service.set_progress_callback(
             lambda payload: self.render_progress.emit(payload)
         )
-
         self.render_started.emit()
 
         self.render_thread = QThread()
@@ -202,9 +210,14 @@ class AppController(QObject):
         self.render_thread.start()
 
     def _on_render_finished(self, outputs):
+        self._render_running = False
+        self._render_suspended = False
         self.render_finished.emit(outputs)
 
     def _on_render_failed(self, error):
+        self._render_running = False
+        self._render_suspended = False
+
         if error == "__CANCELLED__":
             self.render_cancelled.emit()
         else:
@@ -215,15 +228,27 @@ class AppController(QObject):
         self.render_worker = None
 
     def suspend_render(self):
+        if not self._render_running:
+            return
+
+        self._render_suspended = True
         self.render_service.request_suspend()
         self.render_suspended.emit()
 
     def resume_render(self):
+        if not self._render_running:
+            return
+
+        self._render_suspended = False
         self.render_service.request_resume()
         self.render_resumed.emit()
 
     def cancel_render(self):
         self.render_service.request_cancel()
+
+        # Important: if render is paused, wake it so cancel can finish.
+        if self._render_suspended:
+            self.render_service.request_resume()
 
     # ── Preview ──
     def request_preview(self):
@@ -267,6 +292,9 @@ class AppController(QObject):
             self.depth_failed.emit("Depth processing is already running.")
             return
 
+        self._depth_running = True
+        self._depth_suspended = False
+
         self.depth_service.set_progress_callback(
             lambda payload: self.depth_progress_updated.emit(payload)
         )
@@ -294,9 +322,14 @@ class AppController(QObject):
         self.depth_thread.start()
 
     def _on_depth_finished(self, output_path):
+        self._depth_running = False
+        self._depth_suspended = False
         self.depth_finished.emit(output_path)
 
     def _on_depth_failed(self, error):
+        self._depth_running = False
+        self._depth_suspended = False
+
         if error == "__CANCELLED__":
             self.depth_cancelled.emit()
         else:
@@ -307,16 +340,28 @@ class AppController(QObject):
         self.depth_worker = None
 
     def suspend_depth(self):
+        if not self._depth_running:
+            return
+
+        self._depth_suspended = True
         self.depth_service.request_suspend()
         self.depth_suspended.emit()
 
     def resume_depth(self):
+        if not self._depth_running:
+            return
+
+        self._depth_suspended = False
         self.depth_service.request_resume()
         self.depth_resumed.emit()
 
     def cancel_depth(self):
         self.depth_service.request_cancel()
 
+        # Important: if depth processing is paused, wake it so cancel can finish.
+        if self._depth_suspended:
+            self.depth_service.request_resume()
+            
     def start_depth_image(self):
         import threading
         import tkinter as tk
