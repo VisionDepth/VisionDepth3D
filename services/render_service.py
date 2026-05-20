@@ -2,7 +2,9 @@ import threading
 import time
 from pathlib import Path
 
+from core.ffmpeg_utils import require_tool
 from models.app_state import AppState
+
 import copy
 import os
 
@@ -313,8 +315,10 @@ class RenderService:
         crf = int(getattr(state, "crf_value", 18))
         nvenc_cq = int(getattr(state, "nvenc_cq_value", crf))
 
+        ffmpeg_exe = require_tool("ffmpeg")
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_exe,
             "-hide_banner",
             "-y",
             "-i", input_path,
