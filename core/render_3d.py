@@ -20,6 +20,59 @@ import math
 from typing import Iterable, Optional
 import platform
 
+from core.ffmpeg_utils import require_tool
+from core.debug_flags import debug_print, is_debug_enabled
+
+class RenderStageProfiler:
+    def __init__(self, report_every=120):
+        self.report_every = int(report_every)
+        self.count = 0
+        self.totals = {}
+        self.enabled = False
+
+    def begin_frame(self):
+        self.enabled = is_debug_enabled()
+        if not self.enabled:
+            return None
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        return time.perf_counter()
+
+    def tic(self):
+        if not self.enabled:
+            return None
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        return time.perf_counter()
+
+    def toc(self, name, start_time):
+        if not self.enabled or start_time is None:
+            return
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        self.totals[name] = self.totals.get(name, 0.0) + (time.perf_counter() - start_time)
+
+    def end_frame(self):
+        if not self.enabled:
+            return
+
+        self.count += 1
+
+        if self.count % self.report_every != 0:
+            return
+
+        parts = []
+        for name, total in sorted(self.totals.items(), key=lambda x: x[1], reverse=True):
+            ms = (total / max(1, self.count)) * 1000.0
+            parts.append(f"{name}={ms:.2f}ms")
+
+        debug_print("[3D PROFILE] avg/frame:", " | ".join(parts))
 
 def hidden_subprocess_kwargs():
     """
@@ -37,6 +90,40 @@ def hidden_subprocess_kwargs():
         "startupinfo": startupinfo,
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
+
+def start_stderr_drain_thread(proc, keep_last=4000):
+    """
+    Drains proc.stderr so FFmpeg cannot block on a full stderr pipe.
+    Keeps only the last chunk for error reporting.
+    """
+    chunks = []
+
+    def _reader():
+        try:
+            while True:
+                data = proc.stderr.readline()
+                if not data:
+                    break
+
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8", errors="replace")
+
+                chunks.append(data)
+
+                # Keep memory bounded.
+                joined = "".join(chunks)
+                if len(joined) > keep_last:
+                    chunks[:] = [joined[-keep_last:]]
+
+        except Exception:
+            pass
+
+    if proc is not None and proc.stderr is not None:
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+
+    return chunks
+
 # Device setup
 def pick_torch_device():
     # NVIDIA CUDA
@@ -151,6 +238,72 @@ VR180_FLAT_PRESETS = {
     "2560x1440 (Working)": (2560, 1440),
 }
 
+EDGE_REPAIR_PRESETS = {
+    "Off": {
+        "mode": "off",
+        "grad_threshold": 0.012,
+        "validity_soft_threshold": 0.990,
+        "expand_ksize": 3,
+        "fill_radius": 0,
+        "repair_strength": 0.0,
+        "protect_dilate_ksize": 0,
+        "blur_ksize": 1,
+    },
+
+    "Fast": {
+        "mode": "speed",
+        "grad_threshold": 0.011,
+        "validity_soft_threshold": 0.991,
+        "expand_ksize": 3,
+        "fill_radius": 4,
+        "repair_strength": 0.20,
+        "protect_dilate_ksize": 5,
+        "blur_ksize": 1,
+    },
+
+    "Balanced": {
+        "mode": "speed",
+        "grad_threshold": 0.010,
+        "validity_soft_threshold": 0.992,
+        "expand_ksize": 5,
+        "fill_radius": 8,
+        "repair_strength": 0.28,
+        "protect_dilate_ksize": 7,
+        "blur_ksize": 1,
+    },
+
+    "High": {
+        "mode": "full",
+        "grad_threshold": 0.009,
+        "validity_soft_threshold": 0.994,
+        "expand_ksize": 6,
+        "fill_radius": 10,
+        "repair_strength": 0.35,
+        "protect_dilate_ksize": 11,
+        "blur_ksize": 1,
+    },
+
+    "Showcase": {
+        "mode": "full",
+        "grad_threshold": 0.008,
+        "validity_soft_threshold": 0.995,
+        "expand_ksize": 7,
+        "fill_radius": 14,
+        "repair_strength": 0.42,
+        "protect_dilate_ksize": 13,
+        "blur_ksize": 3,
+    },
+}
+
+
+def get_edge_repair_preset(name):
+    name = str(name or "Balanced").strip()
+
+    if name not in EDGE_REPAIR_PRESETS:
+        name = "Balanced"
+
+    return EDGE_REPAIR_PRESETS[name]
+
 def get_video_info_safe(video_path):
     """
     Returns (width, height, fps) using OpenCV first, then ffprobe fallback.
@@ -171,8 +324,10 @@ def get_video_info_safe(video_path):
     # If OpenCV failed, fall back to ffprobe
     if width <= 0 or height <= 0 or fps <= 0:
         try:
+            ffprobe_exe = require_tool("ffprobe")
+
             cmd = [
-                "ffprobe",
+                ffprobe_exe,
                 "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
@@ -183,6 +338,8 @@ def get_video_info_safe(video_path):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
                 **hidden_subprocess_kwargs(),
             )
@@ -216,35 +373,91 @@ def get_video_info_safe(video_path):
 
     return width, height, fps
 
+def source_has_audio_stream(video_path):
+    """
+    Returns True if ffprobe can find at least one audio stream.
+    """
+    if not video_path or not os.path.exists(video_path):
+        return False
+
+    try:
+        ffprobe_exe = require_tool("ffprobe")
+
+        cmd = [
+            ffprobe_exe,
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            video_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
+        )
+
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    except Exception as e:
+        print(f"⚠️ Audio probe failed: {e}")
+        return False
+
+
 def merge_audio_from_source(final_video, original_video, output_with_audio, start_s=None):
     """
-    Muxes the original audio track into the final 3D render without re-encoding.
-    Uses two-pass seek to avoid frozen frames at the start.
+    Muxes the original audio track into the final 3D render.
+    MP4 output uses AAC for compatibility.
+    MKV/MOV output attempts audio stream copy.
     """
     if not os.path.exists(original_video) or not os.path.exists(final_video):
         return final_video
 
+    if not source_has_audio_stream(original_video):
+        print("⚠️ No audio stream detected in source video. Skipping audio merge.")
+        return final_video
+
+    ffmpeg_exe = require_tool("ffmpeg")
+
+    # Clean old failed output first.
+    if os.path.exists(output_with_audio):
+        try:
+            os.remove(output_with_audio)
+        except Exception:
+            pass
+
+    ext = os.path.splitext(output_with_audio)[1].lower()
+
+    # MP4 is picky with DTS/TrueHD/etc. AAC is safest.
+    if ext == ".mp4":
+        audio_args = ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        audio_args = ["-c:a", "copy"]
+
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_exe,
+        "-y",
         "-i", final_video,
     ]
 
-    # Two-pass seek on the original: fast keyframe seek then accurate decode seek
-    if start_s is not None and start_s > 0:
-        cmd += ["-ss", str(start_s)]  # fast seek before input
-        cmd += ["-i", original_video]
-        cmd += ["-ss", str(start_s)]  # accurate seek after input (on audio)
-    else:
-        cmd += ["-i", original_video]
+    # Rendered video starts at 0, but source audio may need to seek to clip start.
+    if start_s is not None and float(start_s) > 0:
+        cmd += ["-ss", str(float(start_s))]
 
     cmd += [
-        "-map", "0:v:0",      # video from rendered file
-        "-map", "1:a:0?",     # audio from original
+        "-i", original_video,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-c:v", "copy",
-        "-c:a", "copy",
+        *audio_args,
         "-shortest",
-        "-fflags", "+shortest",
-        output_with_audio
+        "-movflags", "+faststart",
+        output_with_audio,
     ]
 
     process = subprocess.run(
@@ -252,12 +465,21 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **hidden_subprocess_kwargs(),
     )
 
     if process.returncode != 0:
-        print(f"[AUDIO MERGE] ffmpeg failed (code {process.returncode}):")
-        print(process.stderr[:500])
+        print(f"[AUDIO MERGE] FFmpeg failed with code {process.returncode}:")
+        print(process.stderr[-4000:])
+
+        if os.path.exists(output_with_audio):
+            try:
+                os.remove(output_with_audio)
+            except Exception:
+                pass
+
         return final_video
 
     if os.path.exists(output_with_audio) and os.path.getsize(output_with_audio) > 1000:
@@ -265,11 +487,18 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
             os.remove(final_video)
         except Exception:
             pass
+
         return output_with_audio
 
+    print("⚠️ Audio merge produced an empty or invalid output file.")
+
+    if os.path.exists(output_with_audio):
+        try:
+            os.remove(output_with_audio)
+        except Exception:
+            pass
+
     return final_video
-
-
 
 def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
     """
@@ -278,7 +507,8 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
 
     Returns frames as float32 RGB in [0,1] (still PQ-encoded values, not tonemapped).
     """
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    ffmpeg_exe = require_tool("ffmpeg")
+    cmd = [ffmpeg_exe, "-hide_banner", "-loglevel", "error"]
 
     # Seek before input for speed (keyframe seek). If you need exact frame-accurate
     # seeking, do a second -ss after -i, but this is usually fine for rendering.
@@ -315,6 +545,8 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
     p = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=False,
         bufsize=10**7,
         **hidden_subprocess_kwargs(),
     )
@@ -335,9 +567,11 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
         except Exception:
             pass
         p.wait()
-        # Optional: surface decode errors
+
         if p.returncode not in (0, None):
-            raise RuntimeError(f"ffmpeg_rgb48_reader: ffmpeg exited with code {p.returncode}")
+            raise RuntimeError(
+                f"ffmpeg_rgb48_reader: ffmpeg exited with code {p.returncode}."
+            )
 
 
 
@@ -346,8 +580,10 @@ def ffmpeg_yuv10_reader(path, width, height):
     Yields P010LE frames as float32 RGB in [0,1] with simple 10-bit scaling.
     NOTE: stays in PQ/BT.2020 space; do *not* tone-map to SDR.
     """
+    ffmpeg_exe = require_tool("ffmpeg")
+
     cmd = [
-        "ffmpeg","-loglevel","error",
+        ffmpeg_exe, "-loglevel", "error",
         "-i", path,
         "-f","rawvideo",
         "-pix_fmt","p010le",   # 10-bit 4:2:0
@@ -356,6 +592,8 @@ def ffmpeg_yuv10_reader(path, width, height):
     p = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=False,
         **hidden_subprocess_kwargs(),
     )
     stride = width * height * 2 * 3 // 2  # P010 size
@@ -378,8 +616,18 @@ def ffmpeg_yuv10_reader(path, width, height):
         b = y + 1.8814*(u-0.5)
         rgb = np.stack([r,g,b], axis=2).clip(0,1).astype(np.float32)
         yield rgb
-    p.stdout.close(); p.wait()
+    try:
+        if p.stdout:
+            p.stdout.close()
+    except Exception:
+        pass
 
+    p.wait()
+
+    if p.returncode not in (0, None):
+        raise RuntimeError(
+            f"ffmpeg_yuv10_reader: ffmpeg exited with code {p.returncode}."
+        )
 
 def reset_render_state():
     # reset shift EMA
@@ -584,6 +832,31 @@ def parse_timecode(s: str | None) -> float | None:
         return None
 
 
+def get_base_grid_cached(H: int, W: int, device, dtype=torch.float32):
+    """
+    Cache the normalized base sampling grid for a given resolution/device.
+    Avoids rebuilding linspace + meshgrid every frame.
+    """
+    if not hasattr(get_base_grid_cached, "_cache"):
+        get_base_grid_cached._cache = {}
+
+    key = (int(H), int(W), str(device), str(dtype))
+
+    grid = get_base_grid_cached._cache.get(key)
+    if grid is not None:
+        return grid
+
+    x = torch.linspace(-1, 1, W, device=device, dtype=dtype)
+    y = torch.linspace(-1, 1, H, device=device, dtype=dtype)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+
+    grid = torch.stack((xx, yy), dim=-1).contiguous()
+    get_base_grid_cached._cache[key] = grid
+    return grid
+
+def clear_grid_cache():
+    if hasattr(get_base_grid_cached, "_cache"):
+        get_base_grid_cached._cache.clear()
 
 def pad_to_aspect_ratio(image, target_width, target_height, bg_color=(0, 0, 0)):
     """
@@ -759,8 +1032,15 @@ def enhance_curvature(depth_tensor, strength=0.15):
 
 # Bilateral smoothing for depth (preserves edges)
 def bilateral_smooth_depth(depth_tensor):
-    depth_np = depth_tensor.squeeze().cpu().numpy().astype(np.uint8)
+    depth_np = (
+        depth_tensor.squeeze()
+        .clamp(0, 1)
+        .cpu()
+        .numpy() * 255.0
+    ).astype(np.uint8)
+
     smoothed = cv2.bilateralFilter(depth_np, d=9, sigmaColor=75, sigmaSpace=75)
+
     smoothed_tensor = torch.from_numpy(smoothed).float().unsqueeze(0) / 255.0
     return smoothed_tensor.to(depth_tensor.device)
 
@@ -1424,6 +1704,118 @@ def directional_background_fill(
     return out.clamp(0.0, 1.0)
 
 
+
+def directional_background_fill_fast(
+    warped_tensor: torch.Tensor,
+    repair_mask: torch.Tensor,
+    direction: str = "right",
+    radius: int = 8,
+) -> torch.Tensor:
+    """
+    Fast one-sided background fill using one depthwise GPU convolution.
+
+    This avoids repeated full-frame clone/blend loops.
+    It pulls pixels horizontally from the background side and blends only
+    inside the repair mask.
+    """
+    assert warped_tensor.dim() == 3 and warped_tensor.shape[0] == 3
+    assert repair_mask.dim() == 2
+
+    radius = int(max(1, min(radius, 16)))
+    device = warped_tensor.device
+    dtype = warped_tensor.dtype
+
+    x = warped_tensor.unsqueeze(0)  # [1, 3, H, W]
+
+    # Near pixels get higher weight, farther pixels fade out.
+    weights = torch.linspace(
+        1.0,
+        0.15,
+        steps=radius,
+        device=device,
+        dtype=dtype,
+    )
+    weights = weights / (weights.sum() + 1e-6)
+
+    kernel = torch.zeros(
+        (3, 1, 1, radius + 1),
+        device=device,
+        dtype=dtype,
+    )
+
+    if direction == "right":
+        # Pull from left side into the repair zone.
+        # Window is [i-radius ... i], exclude current pixel at the end.
+        kernel[:, 0, 0, :radius] = weights.flip(0)
+        x_pad = F.pad(x, (radius, 0, 0, 0), mode="replicate")
+    else:
+        # Pull from right side into the repair zone.
+        # Window is [i ... i+radius], exclude current pixel at the start.
+        kernel[:, 0, 0, 1:] = weights
+        x_pad = F.pad(x, (0, radius, 0, 0), mode="replicate")
+
+    filled = F.conv2d(
+        x_pad,
+        kernel,
+        groups=3,
+    ).squeeze(0)
+
+    m = repair_mask.clamp(0.0, 1.0).unsqueeze(0)
+    return (warped_tensor * (1.0 - m) + filled * m).clamp(0.0, 1.0)
+
+def repair_disocclusion_regions_speed(
+    warped_tensor: torch.Tensor,
+    repair_mask: torch.Tensor,
+    protect_mask: torch.Tensor,
+    direction: str,
+    fill_radius: int = 6,
+    repair_strength: float = 0.25,
+    protect_dilate_ksize: int = 5,
+) -> torch.Tensor:
+    """
+    Fast disocclusion repair path.
+
+    Keeps the main safety idea:
+    - repair only exposed/invalid regions
+    - protect foreground silhouette
+    - pull nearby background sideways
+
+    Skips the expensive luma-edge barrier and multi-stage collision checks.
+    This is intended for faster video rendering.
+    """
+    repair_mask = repair_mask.clamp(0.0, 1.0)
+    protect_mask = protect_mask.clamp(0.0, 1.0)
+
+    # Smaller foreground safety barrier.
+    protect_barrier = dilate_mask(protect_mask, ksize=protect_dilate_ksize)
+
+    # Do not repair over/near protected foreground.
+    effective_repair = (repair_mask * (1.0 - protect_barrier)).clamp(0.0, 1.0)
+
+    # Light soften only. Much cheaper than the full repair function.
+    effective_repair = F.avg_pool2d(
+        effective_repair.unsqueeze(0).unsqueeze(0),
+        kernel_size=3,
+        stride=1,
+        padding=1,
+    ).squeeze(0).squeeze(0).clamp(0.0, 1.0)
+
+    filled = directional_background_fill_fast(
+        warped_tensor,
+        effective_repair,
+        direction=direction,
+        radius=fill_radius,
+    )
+
+    m = (effective_repair * float(repair_strength)).clamp(0.0, 1.0).unsqueeze(0)
+    out = warped_tensor * (1.0 - m) + filled * m
+
+    # Preserve protected contour.
+    p = protect_barrier.unsqueeze(0)
+    out = out * (1.0 - p) + warped_tensor * p
+
+    return out.clamp(0.0, 1.0)
+
 def repair_disocclusion_regions(
     warped_tensor: torch.Tensor,       # [3,H,W]
     repair_mask: torch.Tensor,         # [H,W]
@@ -1506,9 +1898,10 @@ def repair_disocclusion_regions(
     # ============================================================
 
     # 🔍 Diagnostic: verify no overlap between repair and protection
-    overlap = (effective_repair * combined_barrier).max().item()
-    if overlap > 0.002:
-        print(f"⚠️ WARNING: Repair/protect overlap detected: {overlap:.6f}")
+    if is_debug_enabled():
+        overlap = (effective_repair * combined_barrier).max().item()
+        if overlap > 0.002:
+            debug_print(f"⚠️ WARNING: Repair/protect overlap detected: {overlap:.6f}")
 
     # Keep the repair zone tight so it only touches the newly exposed strip.
     effective_repair = F.avg_pool2d(
@@ -1519,7 +1912,7 @@ def repair_disocclusion_regions(
     ).squeeze(0).squeeze(0)
     effective_repair = (effective_repair * 0.85).clamp(0.0, 1.0)
 
-    filled = directional_background_fill(
+    filled = directional_background_fill_fast(
         warped_tensor,
         effective_repair,
         direction=direction,
@@ -1710,6 +2103,7 @@ def pixel_shift_cuda(
     return_shift_map=True,
     enable_feathering=True,
     enable_edge_masking=True,
+    edge_repair_quality="Balanced",
     dof_strength=2.0,
     convergence_strength=0.0,
     enable_dynamic_convergence=True,
@@ -1887,8 +2281,8 @@ def pixel_shift_cuda(
 
         pixel_shift_cuda._conv_dbg_count += 1
 
-        if pixel_shift_cuda._conv_dbg_count % 120 == 0:
-            print(
+        if is_debug_enabled() and pixel_shift_cuda._conv_dbg_count % 120 == 0:
+            debug_print(
                 f"[CONVDBG] strength={float(convergence_strength):.5f} "
                 f"bias={float(convergence_bias.item()):.6f} "
                 f"smooth={float(conv_smooth):.6f} "
@@ -1933,23 +2327,29 @@ def pixel_shift_cuda(
     shift_vals = final_shift.squeeze(0)
     mask_shift_vals = final_shift.squeeze(0)
     
-    edge_violation_left, edge_violation_right = estimate_edge_window_violation(
-        shift_vals,
-        edge_band_px=max(16, width // 40)
-    )
-
+    if enable_floating_window or is_debug_enabled():
+        edge_violation_left, edge_violation_right = estimate_edge_window_violation(
+            shift_vals,
+            edge_band_px=max(16, width // 40)
+        )
+    else:
+        edge_violation_left = 0.0
+        edge_violation_right = 0.0
+        
     H, W = d_shaped.shape[1:]
-    xx, yy = torch.meshgrid(
-        torch.linspace(-1, 1, W, device=device),
-        torch.linspace(-1, 1, H, device=device),
-        indexing="xy"
+
+    grid = get_base_grid_cached(
+        H,
+        W,
+        device,
+        dtype=frame_tensor.dtype,
     )
-    grid = torch.stack((xx, yy), dim=-1)
 
     grid_left = grid.clone()
     grid_right = grid.clone()
-    grid_left[..., 0] += shift_vals
-    grid_right[..., 0] -= shift_vals
+
+    grid_left[..., 0].add_(shift_vals)
+    grid_right[..., 0].sub_(shift_vals)
 
     warped_left = F.grid_sample(
         frame_tensor.unsqueeze(0),
@@ -1986,67 +2386,103 @@ def pixel_shift_cuda(
     valid_left = compute_warp_validity_mask(grid_left, H, W, device)
     valid_right = compute_warp_validity_mask(grid_right, H, W, device)
 
+    repair_cfg = get_edge_repair_preset(edge_repair_quality)
+
     repair_mask_left, protect_mask_left = build_one_sided_repair_and_protect_masks(
         mask_shift_vals,
         valid_left,
         eye="left",
-        grad_threshold=0.008,            # ← Lower = more repair
-        validity_soft_threshold=0.995,   # ← Higher = more repair
-        expand_ksize=7,                  # ← Larger expansion
+        grad_threshold=repair_cfg["grad_threshold"],
+        validity_soft_threshold=repair_cfg["validity_soft_threshold"],
+        expand_ksize=repair_cfg["expand_ksize"],
     )
 
     repair_mask_right, protect_mask_right = build_one_sided_repair_and_protect_masks(
         mask_shift_vals,
         valid_right,
         eye="right",
-        grad_threshold=0.008,
-        validity_soft_threshold=0.995,
-        expand_ksize=7,
+        grad_threshold=repair_cfg["grad_threshold"],
+        validity_soft_threshold=repair_cfg["validity_soft_threshold"],
+        expand_ksize=repair_cfg["expand_ksize"],
     )
 
-    if enable_feathering:
-        # 🛡️ MAXIMUM EDGE REPAIR SETTINGS
-        left_blended = repair_disocclusion_regions(
+    if enable_feathering and repair_cfg["mode"] != "off":
+        if repair_cfg["mode"] == "speed":
+            repair_fn = repair_disocclusion_regions_speed
+        else:
+            repair_fn = repair_disocclusion_regions
+
+        left_blended = repair_fn(
             warped_left,
             repair_mask_left,
             protect_mask_left,
             direction="right",
-            blur_ksize=3,              # ← Light blur on repair
-            fill_radius=32,            # ← MUCH larger fill
-            repair_strength=0.55,      # ← Stronger repair
-            protect_dilate_ksize=17    # ← Wider protection
+            fill_radius=repair_cfg["fill_radius"],
+            repair_strength=repair_cfg["repair_strength"],
+            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+            blur_ksize=repair_cfg["blur_ksize"] if repair_cfg["mode"] == "full" else 1,
+        ) if repair_cfg["mode"] == "full" else repair_fn(
+            warped_left,
+            repair_mask_left,
+            protect_mask_left,
+            direction="right",
+            fill_radius=repair_cfg["fill_radius"],
+            repair_strength=repair_cfg["repair_strength"],
+            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
         )
 
-        right_blended = repair_disocclusion_regions(
+        right_blended = repair_fn(
             warped_right,
             repair_mask_right,
             protect_mask_right,
             direction="left",
-            blur_ksize=3,
-            fill_radius=32,
-            repair_strength=0.55,
-            protect_dilate_ksize=17
+            fill_radius=repair_cfg["fill_radius"],
+            repair_strength=repair_cfg["repair_strength"],
+            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+            blur_ksize=repair_cfg["blur_ksize"] if repair_cfg["mode"] == "full" else 1,
+        ) if repair_cfg["mode"] == "full" else repair_fn(
+            warped_right,
+            repair_mask_right,
+            protect_mask_right,
+            direction="left",
+            fill_radius=repair_cfg["fill_radius"],
+            repair_strength=repair_cfg["repair_strength"],
+            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
         )
     else:
         left_blended = warped_left
         right_blended = warped_right
 
     zero_meta = {
-        "shift_map": final_shift.detach().cpu(),
-        "subject_depth": float(subject_depth.item()) if torch.is_tensor(subject_depth) else float(subject_depth),
+        "subject_depth": float(subject_depth.detach().cpu()) if torch.is_tensor(subject_depth) else float(subject_depth),
         "zero_parallax_offset": float(zero_parallax_offset) if use_subject_tracking else 0.0,
         "edge_violation_left": float(edge_violation_left),
         "edge_violation_right": float(edge_violation_right),
-        "repair_mask_left_mean": float(repair_mask_left.mean().item()),
-        "repair_mask_right_mean": float(repair_mask_right.mean().item()),
-        "protect_mask_left_mean": float(protect_mask_left.mean().item()),
-        "protect_mask_right_mean": float(protect_mask_right.mean().item()),
-        "valid_left_min": float(valid_left.min().item()),
-        "valid_right_min": float(valid_right.min().item()),
-        "valid_left_p01": float(torch.quantile(valid_left, 0.01).item()),
-        "valid_right_p01": float(torch.quantile(valid_right, 0.01).item()),
+        "repair_mask_left_mean": 0.0,
+        "repair_mask_right_mean": 0.0,
+        "protect_mask_left_mean": 0.0,
+        "protect_mask_right_mean": 0.0,
+        "valid_left_p01": 1.0,
+        "valid_right_p01": 1.0,
     }
 
+    # Important:
+    # Preview modes such as Shift Heatmap need this even when Debug is OFF.
+    if return_shift_map:
+        zero_meta["shift_map"] = final_shift.detach().cpu()
+
+    # Only add expensive debug-only stats when Debug is enabled.
+    if is_debug_enabled():
+        zero_meta.update({
+            "repair_mask_left_mean": float(repair_mask_left.mean().item()),
+            "repair_mask_right_mean": float(repair_mask_right.mean().item()),
+            "protect_mask_left_mean": float(protect_mask_left.mean().item()),
+            "protect_mask_right_mean": float(protect_mask_right.mean().item()),
+            "valid_left_min": float(valid_left.min().item()),
+            "valid_right_min": float(valid_right.min().item()),
+            "valid_left_p01": float(torch.quantile(valid_left, 0.01).item()),
+            "valid_right_p01": float(torch.quantile(valid_right, 0.01).item()),
+        })
     if return_shift_map:
         if return_tensors:
             return left_blended, right_blended, zero_meta
@@ -2249,32 +2685,28 @@ def format_3d_output(left, right, fmt):
     return np.hstack((left, right))  # fallback
 
 def generate_anaglyph_3d(left_bgr, right_bgr, mode="dubois"):
-    """
-    Inputs are OpenCV BGR. 
-    mode="halfcolor" is a simple, high-impact check (Left→Red, Right→Cyan).
-    mode="dubois" applies a BGR-adapted Dubois matrix.
-    """
-    lb, lg, lr = cv2.split(left_bgr)   # B,G,R from LEFT
-    rb, rg, rr = cv2.split(right_bgr)  # B,G,R from RIGHT
+    left = left_bgr.astype(np.float32) / 255.0
+    right = right_bgr.astype(np.float32) / 255.0
+
+    lb, lg, lr = cv2.split(left)
+    rb, rg, rr = cv2.split(right)
 
     if mode == "halfcolor":
-        # Left supplies Red, Right supplies Green/Blue (Cyan)
-        return cv2.merge([rb, rg, lr])  # B from right, G from right, R from left
+        out = cv2.merge([rb, rg, lr])
+        return (out * 255.0).clip(0, 255).astype(np.uint8)
 
-    # ---- BGR-adapted Dubois (coefficients reordered for BGR) ----
-    # Red   channel is built from LEFT (R,G,B):
-    r = 0.1762*lb + 0.5005*lg + 0.4561*lr
-    # Green channel is built from RIGHT (R,G,B):
-    g = -0.1876*rr + 0.7616*rg + 0.3764*rb
-    # Blue  channel is built from RIGHT (R,G,B):
-    b =  1.2723*rb - 0.1126*rg - 0.0401*rr
+    # Dubois-style anaglyph matrix, BGR channel order
+    r = 0.1762 * lb + 0.5005 * lg + 0.4561 * lr
+    g = -0.1876 * rr + 0.7616 * rg + 0.3764 * rb
+    b = 1.2723 * rb - 0.1126 * rg - 0.0401 * rr
 
     out = cv2.merge([
-        np.clip(b, 0, 1),  # B
-        np.clip(g, 0, 1),  # G
-        np.clip(r, 0, 1),  # R
+        np.clip(b, 0.0, 1.0),
+        np.clip(g, 0.0, 1.0),
+        np.clip(r, 0.0, 1.0),
     ])
-    return (out * 255).astype(np.uint8)
+
+    return (out * 255.0).clip(0, 255).astype(np.uint8)
 
 
 def apply_side_mask(image, side="left", width=40, fade=False, solid_black=True):
@@ -2389,6 +2821,7 @@ def render_sbs_3d(
     zero_parallax_strength=0.0,
     enable_edge_masking=True,
     enable_feathering=True,
+    edge_repair_quality="Balanced",
     skip_blank_frames=False,
     original_video_width=None,
     original_video_height=None,
@@ -2481,6 +2914,8 @@ def render_sbs_3d(
     global global_session_start_time
     if global_session_start_time is None:
         global_session_start_time = time.time()
+        
+    profiler = RenderStageProfiler(report_every=30)
 
     # 🛡️ Validate and fallback selected_ffmpeg_codec BEFORE it's used
     if use_ffmpeg:
@@ -2750,8 +3185,10 @@ def render_sbs_3d(
                 out_height = int(equi_eye_h)
 
     if use_ffmpeg:
+        ffmpeg_exe = require_tool("ffmpeg")
+
         ffmpeg_cmd = [
-            "ffmpeg","-y",
+            ffmpeg_exe, "-y",
             "-f","rawvideo","-vcodec","rawvideo",
             "-pix_fmt", "rgb48le" if preserve_hdr10 else "bgr24",
             "-s", f"{out_width}x{out_height}",
@@ -2821,11 +3258,11 @@ def render_sbs_3d(
                 ]
 
         ffmpeg_cmd.append(output_path)
-        print("[OUT]", "format=", output_format, "eye_mode=", eye_mode,
-              "out=", out_width, out_height,
-              "equi_eye=", equi_eye_w, equi_eye_h,
-              "flat_eye=", flat_eye_w, flat_eye_h)
-        print("[FFMPEG CMD]", " ".join(str(x) for x in ffmpeg_cmd))
+        debug_print("[OUT]", "format=", output_format, "eye_mode=", eye_mode,
+                    "out=", out_width, out_height,
+                    "equi_eye=", equi_eye_w, equi_eye_h,
+                    "flat_eye=", flat_eye_w, flat_eye_h)
+        debug_print("[FFMPEG CMD]", " ".join(str(x) for x in ffmpeg_cmd))
 
         ffmpeg_proc = subprocess.Popen(
             ffmpeg_cmd,
@@ -2835,6 +3272,8 @@ def render_sbs_3d(
             text=False,
             **hidden_subprocess_kwargs(),
         )
+
+        ffmpeg_stderr_chunks = start_stderr_drain_thread(ffmpeg_proc)
 
     else:
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*selected_codec), fps, (out_width, out_height))
@@ -2869,17 +3308,26 @@ def render_sbs_3d(
             src_hfov_deg=float(vr180_hfov_deg),
         )
     
+    last_ui_update = 0.0
+    
     try:
         for idx in range(total_frames):
+            profiler.begin_frame()
+
             if cancel_flag.is_set():
                 break
 
             if idx > 0:
+                t0 = profiler.tic()
+
                 ret1, frame_tensor, frame = read_next_frame()
                 ret2, depth = dcap.read()
+
+                profiler.toc("read_frames", t0)
+
                 if not ret1 or not ret2:
                     break
-
+                    
             # ⏸ pause handling (must be inside the loop so idx is defined)
             while suspend_flag.is_set():
                 if cancel_flag.is_set():
@@ -2904,16 +3352,17 @@ def render_sbs_3d(
             if cancel_flag.is_set():
                 break
 
+            t0 = profiler.tic()
+
             depth_tensor = depth_to_tensor(depth, invert_depth=True)
 
             if auto_crop_black_bars:
-                # Reuse the first-frame crop for the entire clip so frame and depth
-                # stay perfectly aligned and do not jitter.
                 frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
                 depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
 
             _, h, w = frame_tensor.shape
             current_ratio = w / h
+            
             if abs(current_ratio - target_ratio) > 0.01:
                 if current_ratio > target_ratio:
                     new_w = int(h * target_ratio)
@@ -2933,43 +3382,58 @@ def render_sbs_3d(
             depth_tensor = F.interpolate(depth_tensor.unsqueeze(0),
                                          size=(eye_h, eye_w),
                                          mode='bilinear', align_corners=False).squeeze(0)
+            profiler.toc("preprocess_resize", t0)
 
             # --- Depth-Roto Assist (optional) BEFORE temporal filters ---
-            if ENABLE_DEPTH_ROTO:
-                # convert current depth to u8
-                depth_u8 = (depth_tensor.squeeze(0).clamp(0,1).cpu().numpy() * 255.0).astype(np.uint8)
-
-                # load or generate matte for this frame index
+            # Important: do NOT copy depth_tensor to CPU unless a matte file actually exists.
+            if ENABLE_DEPTH_ROTO and ROTO_MASK_DIR is not None:
                 mask_u8 = None
-                if ROTO_MASK_DIR is not None:
-                    # build filename from absolute frame index (clip start offset + idx)
-                    abs_idx = start_frame_idx + idx
-                    mask_path = os.path.join(ROTO_MASK_DIR, f"frame_{abs_idx:06d}.png")
-                    if os.path.exists(mask_path):
-                        m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                        if m is not None:
-                            # ensure matte matches current tensor size (after crop/resize)
-                            m = cv2.resize(m, (eye_w, eye_h), interpolation=cv2.INTER_NEAREST)
-                            mask_u8 = m
-                            
-                # (Optional) if you don’t have external mattes yet, you could auto-seg here.
-                # e.g., mask_u8 = my_autoseg(frame_tensor)  # expect 0/255 uint8
+
+                abs_idx = start_frame_idx + idx
+                mask_path = os.path.join(ROTO_MASK_DIR, f"frame_{abs_idx:06d}.png")
+
+                if os.path.exists(mask_path):
+                    m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                    if m is not None:
+                        m = cv2.resize(m, (eye_w, eye_h), interpolation=cv2.INTER_NEAREST)
+                        mask_u8 = m
 
                 if mask_u8 is not None:
-                    mask_u8 = matte_ema.step(mask_u8)  # temporal stabilize matte
+                    # Only now do the expensive GPU -> CPU transfer.
+                    depth_u8 = (
+                        depth_tensor.squeeze(0)
+                        .clamp(0, 1)
+                        .detach()
+                        .cpu()
+                        .numpy() * 255.0
+                    ).astype(np.uint8)
+
+                    mask_u8 = matte_ema.step(mask_u8)
 
                     depth_u8 = sculpt_depth_u8(
-                        depth_u8, mask_u8,
-                        near=ROTO_NEAR, far=ROTO_FAR,
-                        feather_px=ROTO_FEATHER_PX, round_gamma=ROTO_ROUND_GAMMA
+                        depth_u8,
+                        mask_u8,
+                        near=ROTO_NEAR,
+                        far=ROTO_FAR,
+                        feather_px=ROTO_FEATHER_PX,
+                        round_gamma=ROTO_ROUND_GAMMA,
                     )
-                    # back to tensor [1,H,W] in 0..1
-                    depth_tensor = torch.from_numpy(depth_u8).to(frame_tensor.device).float().unsqueeze(0) / 255.0
+
+                    depth_tensor = (
+                        torch.from_numpy(depth_u8)
+                        .to(frame_tensor.device)
+                        .float()
+                        .unsqueeze(0) / 255.0
+                    )
+
+            t0 = profiler.tic()
 
             # Continue with your existing temporal/percentile normalization
             depth_tensor = temporal_depth_filter.smooth(depth_tensor)
             depth_tensor = depth_ema_norm.normalize(depth_tensor)
-            
+
+            profiler.toc("depth_temporal_norm", t0)
+
             fg, mg, bg = smoother.smooth(fg_shift, mg_shift, bg_shift)
 
             # dynamic IPD scale
@@ -3005,6 +3469,8 @@ def render_sbs_3d(
                     mg_run *= ipd_factor
                     bg_run *= ipd_factor
 
+                t0 = profiler.tic()
+
                 left_frame, right_frame, shift_meta = pixel_shift_cuda(
                     frame_tensor,
                     depth_tensor,
@@ -3022,6 +3488,7 @@ def render_sbs_3d(
                     zero_parallax_strength=zero_parallax_strength,
                     enable_edge_masking=enable_edge_masking,
                     enable_feathering=enable_feathering,
+                    edge_repair_quality=edge_repair_quality,
                     dof_strength=dof_strength,
                     convergence_strength=convergence_strength,
                     enable_dynamic_convergence=enable_dynamic_convergence,
@@ -3036,9 +3503,11 @@ def render_sbs_3d(
                     return_tensors=True,
                     disable_shift_ema=disable_shift_ema,
                 )
+
+                profiler.toc("pixel_shift_cuda", t0)
                 
-                if idx % 24 == 0:
-                    print(
+                if is_debug_enabled() and idx % 24 == 0:
+                    debug_print(
                         f"[3DDBG] f={idx} "
                         f"subj={shift_meta.get('subject_depth', 0.0):.3f} "
                         f"zpo={shift_meta.get('zero_parallax_offset', 0.0):.5f} "
@@ -3051,11 +3520,17 @@ def render_sbs_3d(
                         f"vL01={shift_meta.get('valid_left_p01', 1.0):.4f} "
                         f"vR01={shift_meta.get('valid_right_p01', 1.0):.4f}"
                     )
-                
+                    
+                t0 = profiler.tic()
+
                 candidate_focal = estimate_subject_depth(depth_tensor)  # 0..1
                 motion_metric   = compute_motion_metric(prev_depth_tensor, depth_tensor)
                 focal_tracker.set_scene_motion(motion_metric)
                 focal_depth     = focal_tracker.update(candidate_focal)
+
+                profiler.toc("subject_motion_tracking", t0)
+
+                t0 = profiler.tic()
 
                 if need_dof or need_color:
                     # 1) to tensors once
@@ -3096,6 +3571,7 @@ def render_sbs_3d(
                         left_frame  = tensor_to_frame(left_t)
                         right_frame = tensor_to_frame(right_t)
 
+            subject_depth_val = float(shift_meta.get("subject_depth", 0.5))
 
             subject_depth_val = float(shift_meta.get("subject_depth", 0.5))
             zero_parallax_offset = float(shift_meta.get("zero_parallax_offset", 0.0))
@@ -3159,6 +3635,8 @@ def render_sbs_3d(
                 if torch.is_tensor(right_frame):
                     right_frame = tensor_to_frame(right_frame)
                     
+                    
+            t0 = profiler.tic()
             # sharpen & pack
             if preserve_hdr10:
                 # left_frame/right_frame are torch tensors [3,H,W] RGB float 0..1
@@ -3285,6 +3763,11 @@ def render_sbs_3d(
                     else:
                         final = format_3d_output(left_out, right_out, output_format)
 
+            profiler.toc("pack_resize_format", t0)
+
+            # write frame
+            t0 = profiler.tic()
+
             # write frame
             if use_ffmpeg:
                 try:
@@ -3320,12 +3803,15 @@ def render_sbs_3d(
                     raise RuntimeError(f"FFmpeg write failed: {e}")
             else:
                 out.write(final)
+                profiler.toc("video_write", t0)
                 
             if end_s is not None:
                 cur_abs_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 if cur_abs_idx >= end_frame_idx:
                     break
-               
+
+            t0 = profiler.tic()
+            
             # progress / fps
             percent = ((idx + 1) / max(total_frames, 1)) * 100.0
             elapsed = time.time() - global_session_start_time
@@ -3339,20 +3825,31 @@ def render_sbs_3d(
                     fps_values.pop(0)
             avg_fps = sum(fps_values) / len(fps_values) if fps_values else 0
 
-            if progress:
-                progress["value"] = percent
-                progress.update()
-            remaining_frames = total_frames - (idx + 1)
-            eta = remaining_frames / avg_fps if avg_fps > 0 else 0
-            eta_str = time.strftime('%H:%M:%S', time.gmtime(eta))
+            # Throttle UI/progress updates so rendering is not slowed by Qt callbacks.
+            now_ui = time.time()
+            should_update_ui = (now_ui - last_ui_update) >= 0.50 or idx == total_frames - 1
 
-            if progress_label:
-                progress_label.config(
-                    text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
-                )
+            if should_update_ui:
+                last_ui_update = now_ui
+
+                if progress:
+                    progress["value"] = percent
+                    progress.update()
+
+                remaining_frames = total_frames - (idx + 1)
+                eta = remaining_frames / avg_fps if avg_fps > 0 else 0
+                eta_str = time.strftime("%H:%M:%S", time.gmtime(eta))
+
+                if progress_label:
+                    progress_label.config(
+                        text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
+                    )
                 
             prev_depth_tensor = depth_tensor.detach()
             prev_time = curr_time
+
+            profiler.toc("ui_progress", t0)
+            profiler.end_frame()
 
         # ✅ final progress update (inside try)
         if progress:
@@ -3410,8 +3907,10 @@ def render_sbs_3d(
                 out.release()
             except:
                 pass
-
-        torch.cuda.empty_cache()
+                
+        clear_grid_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         if global_session_start_time is not None:
             total_time = time.time() - global_session_start_time
             print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
@@ -4254,9 +4753,19 @@ def process_video(
         base, ext = os.path.splitext(final_render_path)
         merged_output = base + "_audio" + ext  # keep .mkv/.mp4/.mov etc
 
-        final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output, start_s=start_s)
-        print("🎧 Audio merge done!")
+        before_audio_merge = final_render_path
+        final_render_path = merge_audio_from_source(
+            final_render_path,
+            input_path,
+            merged_output,
+            start_s=start_s,
+        )
 
+        if final_render_path != before_audio_merge:
+            print("🎧 Audio merge done!")
+        else:
+            print("⚠️ Audio merge skipped or failed. Keeping silent rendered video.")
+            
     return final_render_path
 
 
@@ -4296,8 +4805,10 @@ def render_with_ffmpeg(
     """
 
     # Base command (reading raw BGR24 frames from stdin)
+    ffmpeg_exe = require_tool("ffmpeg")
+
     ffmpeg_cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_exe, "-y",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-pix_fmt", "bgr24",
@@ -4323,10 +4834,17 @@ def render_with_ffmpeg(
         ix = ffmpeg_cmd.index("-pix_fmt")
         ffmpeg_cmd[ix:ix] = ["-quality", "quality", "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
 
-    print(f"🚀 Launching FFmpeg render: {codec_name} | CRF: {crf} | NVENC CQ: {nvenc_cq} ➜ {output_path}")
+    debug_print(f"🚀 Launching FFmpeg render: {codec_name} | CRF: {crf} | NVENC CQ: {nvenc_cq} ➜ {output_path}")
 
     try:
-        with subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE) as proc:
+        with subprocess.Popen(
+            ffmpeg_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=False,
+            **hidden_subprocess_kwargs(),
+        ) as proc:
             assert proc.stdin is not None, "FFmpeg stdin not available."
 
             for idx, frame in enumerate(frame_generator):
@@ -4343,16 +4861,47 @@ def render_with_ffmpeg(
                 if frame.dtype != np.uint8:
                     frame = frame.astype(np.uint8, copy=False)
 
-                proc.stdin.write(frame.tobytes())
+                try:
+                    proc.stdin.write(frame.tobytes())
+                except BrokenPipeError:
+                    stderr_text = ""
+
+                    try:
+                        if proc.stderr:
+                            raw_err = proc.stderr.read()
+                            stderr_text = raw_err.decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+
+                    if stderr_text.strip():
+                        raise RuntimeError(
+                            f"FFmpeg pipe closed early.\n\n{stderr_text[-4000:]}"
+                        )
+
+                    raise RuntimeError("FFmpeg pipe closed early.")
 
             # Close stdin so ffmpeg can finalize/flush
             proc.stdin.close()
             proc.wait()
 
+            stderr_text = ""
+            try:
+                if proc.stderr:
+                    raw_err = proc.stderr.read()
+                    stderr_text = raw_err.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
             if proc.returncode == 0:
                 print("✅ FFmpeg render complete.")
             else:
-                print(f"⚠️ FFmpeg exited with code {proc.returncode}. Check logs above.")
+                if stderr_text.strip():
+                    raise RuntimeError(
+                        f"FFmpeg exited with code {proc.returncode}.\n\n"
+                        f"{stderr_text[-4000:]}"
+                    )
+
+                raise RuntimeError(f"FFmpeg exited with code {proc.returncode}.")
 
     except Exception as e:
         print(f"❌ FFmpeg render failed: {e}")

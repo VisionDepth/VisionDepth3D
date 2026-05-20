@@ -1,40 +1,28 @@
-# ui/pages/fps_upscale_page.py
+# merged_pipeline.py
+
 import os
-import threading
-import traceback
+import re
+import sys
 import time
-import json
-
-from PySide6.QtCore import Qt, Signal, QEvent
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-    QFileDialog,
-    QComboBox,
-    QCheckBox,
-    QSpinBox,
-    QScrollArea,
-    QGroupBox,
-    QLineEdit,
-    QSlider,
-    QMessageBox,
-    QInputDialog,
-    QFrame,
-    QGridLayout,
-    QProgressBar,
-    QSizePolicy,
-    QSplitter,
-)
-
-from ui.styles.page_theme import apply_unified_page_theme
+import threading
+import numpy as np
+import cv2
+import onnxruntime as ort
+from tkinter import messagebox, filedialog
+from tqdm import tqdm
+import subprocess
+from queue import Queue
+from tkinter.simpledialog import askstring
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+import queue
+import gc
 
 import platform
-import subprocess
-
+from core.ffmpeg_utils import require_tool
+from core.debug_flags import debug_print, is_debug_enabled
 
 def hidden_subprocess_kwargs():
     if platform.system().lower() != "windows":
@@ -49,2275 +37,1622 @@ def hidden_subprocess_kwargs():
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
 
-COMMON_FPS = [
-    23.976, 24.0, 25.0, 29.97, 29.976, 30.0, 48.0, 50.0,
-    59.94, 60.0, 72.0, 90.0, 100.0, 119.88, 120.0,
-    144.0, 165.0, 239.76, 239.808, 240.0,
-]
-
-FPS_MULTIPLIERS = [2, 4, 8]
-
-FFMPEG_CODEC_MAP = {
-    "H.264 / AVC (libx264 - CPU)": "libx264",
-    "H.265 / HEVC (libx265 - CPU)": "libx265",
-    "AV1 (libaom - CPU)": "libaom-av1",
-    "AV1 (SVT - CPU, faster)": "libsvtav1",
-    "MPEG-4 (mp4v - CPU)": "mp4v",
-    "XviD (AVI - CPU)": "XVID",
-    "DivX (AVI - CPU)": "DIVX",
-    "H.264 / AVC (NVENC - NVIDIA GPU)": "h264_nvenc",
-    "H.265 / HEVC (NVENC - NVIDIA GPU)": "hevc_nvenc",
-    "AV1 (NVENC - NVIDIA RTX 40+ GPU)": "av1_nvenc",
-    "H.264 / AVC (AMF - AMD GPU)": "h264_amf",
-    "H.265 / HEVC (AMF - AMD GPU)": "hevc_amf",
-    "AV1 (AMF - AMD RDNA3+)": "av1_amf",
-    "H.264 / AVC (QSV - Intel GPU)": "h264_qsv",
-    "H.265 / HEVC (QSV - Intel GPU)": "hevc_qsv",
-    "VP9 (QSV - Intel GPU)": "vp9_qsv",
-    "AV1 (QSV - Intel ARC / Gen11+)": "av1_qsv",
-}
+suspend_flag = threading.Event()
+cancel_flag = threading.Event()
+progress_bar = None
+status_label = None
 
 
-def _load_upscaler_models():
-    return {
-        "RealESR (Balanced)": "upscale:FuryTMP/RealESR_Gx4_fp16",
-        "RealESRGAN (Sharp)": "upscale:FuryTMP/RealESRGANx4_fp16",
-        "RealESR Anime": "upscale:FuryTMP/RealESR_Animex4_fp16",
-        "BSRGAN x2": "upscale:FuryTMP/BSRGANx2_fp16",
-        "BSRGAN x4": "upscale:FuryTMP/BSRGANx4_fp16",
-    }
+def app_root():
+    """
+    Folder beside the EXE when frozen, or current script folder in dev.
+    This is where user/runtime weights should live.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(".")
 
 
-def _load_rife_models():
-    return {
-        "RIFE FP32": "rife:FuryTMP/RIFE_fp32",
-        "RIFE v4.9": "rife:FuryTMP/RIFE_v4.9"
-    }
+def bundle_root():
+    """
+    PyInstaller temporary bundle folder when frozen.
+    Falls back to app_root() in normal dev runs.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return app_root()
 
 
-class SectionHeader(QWidget):
-    def __init__(self, title: str):
+def resolve_model_path(*parts):
+    """
+    Prefer the real app folder first:
+        VisionDepth3D/weights/...
+    Then fall back to bundled PyInstaller data:
+        VisionDepth3D/_internal/weights/...
+    """
+    rel = os.path.join(*parts)
+
+    app_path = os.path.join(app_root(), rel)
+    if os.path.exists(app_path):
+        return app_path
+
+    bundled_path = os.path.join(bundle_root(), rel)
+    if os.path.exists(bundled_path):
+        return bundled_path
+
+    # Return the app-side path by default so logs show the expected runtime location
+    return app_path
+
+
+# ✅ Get absolute path to resource (for PyInstaller compatibility)
+#def resource_path(relative_path):
+#    try:
+#        base_path = sys._MEIPASS  # ✅ Corrected for PyInstaller
+#    except AttributeError:
+#        base_path = os.path.abspath(".")
+
+#    return os.path.join(base_path, relative_path)
+
+# =========================
+# Force Hugging Face caches into VD3D /weights
+# =========================
+_VD3D_WEIGHTS = os.path.join(app_root(), "weights")
+os.makedirs(_VD3D_WEIGHTS, exist_ok=True)
+
+os.environ.setdefault("HF_HOME", _VD3D_WEIGHTS)
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(_VD3D_WEIGHTS, "hub"))
+os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(_VD3D_WEIGHTS, "datasets"))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+# ✅ ONNX session options with graph optimization
+session_options = ort.SessionOptions()
+session_options.log_severity_level = 3
+session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+session_options.intra_op_num_threads = max(1, os.cpu_count() // 2)
+session_options.inter_op_num_threads = 1
+
+# ✅ ONNX Execution Provider fallback logic
+available_providers = ort.get_available_providers()
+debug_print(f"Available ONNX providers: {available_providers}")
+
+if "CUDAExecutionProvider" in available_providers:
+    device = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "CUDA (NVIDIA)"
+elif "ROCMExecutionProvider" in available_providers:
+    device = ["ROCMExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "ROCm (AMD)"
+elif "DmlExecutionProvider" in available_providers:
+    device = ["DmlExecutionProvider", "CPUExecutionProvider"]
+    provider_txt = "DirectML (AMD/Intel)"
+else:
+    device = ["CPUExecutionProvider"]
+    provider_txt = "CPU-only"
+
+debug_print(f"Frametool Upscaler ONNX: {provider_txt}")
+
+# ✅ Load RIFE
+rife_session = None
+rife_model_path = None
+rife_model_id = None
+
+esrgan_session = None  # ONNX ESRGAN / other ONNX SR
+srresnet_model = None  # PyTorch SRResNet
+if torch.cuda.is_available():
+    srresnet_device = torch.device("cuda")
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    srresnet_device = torch.device("mps")
+else:
+    srresnet_device = torch.device("cpu")
+
+# which backend is currently active: "onnx", "srresnet", or "none"
+UPSCALE_BACKEND = "none"
+
+# =========================
+#  SRResNet Upscaler (PyTorch, .pth)
+# =========================
+
+class SRResBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return residual + out
+
+
+class SRResNet(nn.Module):
+    def __init__(self, num_blocks: int = 16, upscale_factor: int = 4):
         super().__init__()
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 8, 2, 2)
-        layout.setSpacing(8)
+        self.upscale_factor = upscale_factor
 
-        self.label = QLabel(title)
-        self.label.setObjectName("SectionHeaderLabel")
+        # Initial feature extraction
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, padding=4)
+        self.relu = nn.ReLU(inplace=True)
 
-        layout.addWidget(self.label)
-        layout.addStretch()
+        # Residual blocks
+        self.res_blocks = nn.Sequential(*[SRResBlock(64) for _ in range(num_blocks)])
 
-    def set_text(self, text: str):
-        self.label.setText(text)
-        
-class ModernCard(QFrame):
-    def __init__(self, title: str = "", subtitle: str = ""):
-        super().__init__()
-        self.setObjectName("ModernCard")
+        # Conv after residuals
+        self.conv_res = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn_res = nn.BatchNorm2d(64)
 
-        self.title_label = None
-        self.subtitle_label = None
+        # Upsampling (PixelShuffle)
+        up_layers = []
+        for _ in range(int(math.log2(upscale_factor))):
+            up_layers += [
+                nn.Conv2d(64, 256, 3, padding=1),
+                nn.PixelShuffle(2),
+                nn.ReLU(inplace=True),
+            ]
+        self.upsample = nn.Sequential(*up_layers)
 
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(16, 14, 16, 16)
-        self.layout.setSpacing(10)
+        # Final output
+        self.conv_out = nn.Conv2d(64, 3, kernel_size=9, padding=4)
 
-        if title:
-            self.title_label = QLabel(title)
-            self.title_label.setObjectName("CardTitle")
-            self.layout.addWidget(self.title_label)
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        residual = x
+        x = self.res_blocks(x)
+        x = self.bn_res(self.conv_res(x))
+        x = x + residual
+        x = self.upsample(x)
+        x = self.conv_out(x)
+        return x
 
-        if subtitle:
-            self.subtitle_label = QLabel(subtitle)
-            self.subtitle_label.setObjectName("CardSubtitle")
-            self.subtitle_label.setWordWrap(True)
-            self.layout.addWidget(self.subtitle_label)
 
-    def set_title_text(self, text: str):
-        if self.title_label is not None:
-            self.title_label.setText(text)
+def normalize_frame(img, target_size=None):
+    """
+    Return uint8 BGR frame.
+    If target_size is given, resize to (w,h).
+    Handles None, grayscale, BGRA, float.
+    """
+    if img is None:
+        raise ValueError("normalize_frame: got None image")
 
-    def set_subtitle_text(self, text: str):
-        if self.subtitle_label is not None:
-            self.subtitle_label.setText(text)
+    # Channels
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-class _TkProgressProxy:
-    """Mimics Tkinter progress/status widgets for merged_pipeline compatibility."""
-    def __init__(self, callback=None):
-        self._callback = callback
-        self._value = 0.0
-        self._maximum = 100.0
-        self._status_text = ""
-        self._start_time = time.time()
-        self._fps_like = None
-        self._eta = None
+    # Type/range
+    if img.dtype != np.uint8:
+        img = np.clip(img, 0, 255)
+        if img.max() <= 1.0:
+            img = img * 255.0
+        img = img.astype(np.uint8)
 
-    def _parse_hms(self, text):
+    if target_size is not None:
+        w, h = target_size
+        if img.shape[1] != w or img.shape[0] != h:
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+    return img
+
+def ui_set_status(widget, text):
+    try:
+        widget.after(0, lambda: widget.configure(text=text))
+    except Exception:
+        pass
+
+def ui_set_progress(progressbar, value, maximum=100.0):
+    def _apply():
         try:
-            parts = str(text).strip().split(":")
-            if len(parts) == 3:
-                h, m, s = [int(float(p)) for p in parts]
-                return h * 3600 + m * 60 + s
-            if len(parts) == 2:
-                m, s = [int(float(p)) for p in parts]
-                return m * 60 + s
+            # ok for ttk.Progressbar (and Scale ignores unknown kwargs)
+            try:
+                progressbar.configure(mode="determinate", maximum=maximum)
+            except Exception:
+                pass
+            progressbar.configure(value=value)
         except Exception:
             pass
-
-        return None
-
-    def _parse_status_metrics(self, text):
-        """
-        Parses merged_pipeline status strings like:
-        Progress: 123/500 | FPS: 3.85 | ETA: 00:02:31
-        """
-        self._fps_like = None
-        self._eta = None
-
-        if not text:
-            return
-
-        parts = [p.strip() for p in str(text).split("|")]
-
-        for part in parts:
-            lower = part.lower()
-
-            if lower.startswith("fps:"):
-                try:
-                    self._fps_like = float(part.split(":", 1)[1].strip())
-                except Exception:
-                    pass
-
-            elif lower.startswith("eta:"):
-                eta_text = part.split(":", 1)[1].strip()
-                self._eta = self._parse_hms(eta_text)
-
-    def _progress_percent(self):
-        maximum = max(1e-6, float(self._maximum or 100.0))
-        return max(0.0, min(100.0, (float(self._value) / maximum) * 100.0))
-
-    def _emit(self):
-        if not self._callback:
-            return
-
-        elapsed = max(0.0, time.time() - self._start_time)
-        progress = self._progress_percent()
-
-        fps_like = self._fps_like
-        eta = self._eta
-
-        # Fallback if merged_pipeline did not provide FPS/ETA text yet.
-        if fps_like is None and elapsed > 0 and progress > 0:
-            fps_like = progress / elapsed
-
-        if eta is None and elapsed > 0 and progress > 0:
-            remaining = max(0.0, 100.0 - progress)
-            eta = (remaining / progress) * elapsed
-
-        self._callback({
-            "progress": progress,
-            "status_text": self._status_text,
-            "elapsed": elapsed,
-            "eta": eta,
-            "fps_like": fps_like,
-            "rate_label": "FPS",
-        })
-
-    def config(self, **kw):
-        if "maximum" in kw:
-            try:
-                self._maximum = float(kw["maximum"])
-            except Exception:
-                self._maximum = 100.0
-
-        if "value" in kw:
-            try:
-                self._value = float(kw["value"])
-            except Exception:
-                self._value = 0.0
-
-        if "text" in kw:
-            self._status_text = str(kw["text"])
-            self._parse_status_metrics(self._status_text)
-
-        self._emit()
-
-    def configure(self, **kw):
-        self.config(**kw)
-
-    def after(self, ms, fn):
-        import threading as _th
-        t = _th.Timer(ms / 1000.0, fn)
-        t.daemon = True
-        t.start()
-
-    def __setitem__(self, key, value):
-        if key == "value":
-            try:
-                self._value = float(value)
-            except Exception:
-                self._value = 0.0
-            self._emit()
-
-        elif key == "maximum":
-            try:
-                self._maximum = float(value)
-            except Exception:
-                self._maximum = 100.0
-            self._emit()
-
-    def __getitem__(self, key):
-        if key == "maximum":
-            return self._maximum
-        if key == "value":
-            return self._value
-        return 0
-
-    def start(self, interval=None):
+    try:
+        progressbar.after(0, _apply)
+    except Exception:
         pass
 
-    def stop(self):
-        pass
+# put this near your other globals
+_last_ui_push = {"t": 0.0}
 
-    def update_idletasks(self):
-        pass
+def update_progress(done, total, start):
+    global _last_ui_push
+    if not progress_bar or not status_label:
+        return
 
-    def update(self):
-        pass
+    # math
+    now = time.monotonic()
+    elapsed = max(1e-6, now - start)
+    fps = done / elapsed
+    remaining = max(0, total - done)
+    eta_secs = (remaining / fps) if fps > 0 else None
+    pct = 0.0 if not total else (done / total) * 100.0
+    pct = max(0.0, min(100.0, pct))  # clamp
 
-    def winfo_toplevel(self):
-        return self
-        
-class FpsUpscalePage(QWidget):
-    progress_updated = Signal(dict)
-    preview_ready = Signal(list)
+    # debounce UI updates: 50 ms, always allow the final tick
+    if pct < 100.0 and (now - _last_ui_push["t"] < 0.05):
+        return
+    _last_ui_push["t"] = now
 
-    def __init__(self, controller):
-        super().__init__()
-        self.controller = controller
-        self._translation_map = []
+    eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_secs)) if eta_secs is not None else "--:--"
 
-        self.input_video_file = ""
-        self.frames_folder = ""
-        self.output_file = ""
-        self.keep_original_audio = True
-
-        self.out_width = 1920
-        self.out_height = 1080
-        self.fps = 23.976
-        self.fps_multiplier = 2
-        self.codec = "H.264 / AVC (NVENC - NVIDIA GPU)"
-        self.enable_rife = True
-        self.enable_upscale = False
-        self.blend_mode = "OFF"
-        self.input_res_pct = 100
-        self.upscale_model = "RealESR (Balanced)"
-        self.rife_model = "RIFE FP32"
-        self.scene_threshold = 30
-        self.scene_format = "mkv"
-
-        # FPS/Upscale preview state
-        self.preview_images = []
-        self.preview_index = 0
-        self.preview_zoom = 1.0
-        self.preview_focus_side = "sbs"  # sbs, original, preview
-
-        # Preview pan/drag state
-        self.preview_dragging = False
-        self.preview_drag_start = None
-        self.preview_drag_h_start = 0
-        self.preview_drag_v_start = 0
-
-        self._build_ui()
-        self.progress_updated.connect(self._on_progress_updated)
-        self.preview_ready.connect(self._on_preview_ready)
-
-    def _t(self, key: str) -> str:
-        translator = getattr(self.controller, "t", None)
-        if not callable(translator):
-            return key
-
-        translations = getattr(self.controller, "translations", None)
-        if translations is None:
-            language_service = getattr(self.controller, "language_service", None)
-            translations = getattr(language_service, "translations", None)
-
-        aliases = {
-            "FPS / Upscale Enhancer": "FPS/Upscale Enhancement",
-            "📂 Extract Frames from Video": "Extract Frames from Video",
-            "Enable RIFE Frame Interpolation": "Enable RIFE Interpolation",
-            "Upscale Model:": "Model Selection:",
-            "Blend:": "AI Blending:",
-            "Input %:": "Input Resolution %:",
-            "Threshold:": "Sensitivity Threshold (lower = more cuts):",
-            "🔍 Detect Scenes & Extract": "Detect Scenes & Extract",
-            "▶ Start Processing": "▶ Start Processing",
-            "⚡ Threaded RIFE + ESRGAN": "Threaded RIFE + ESRGAN",
-            "Processing Options": "Processing Options",
-            "Output Settings": "Output Settings",
-            "Codec:": "FFmpeg Output Codec:",
-            "Frames:": "Frames Folder:",
-            "Output:": "Output Video File:",
-        }
-
-        if isinstance(translations, dict):
-            if key in translations:
-                return translations[key]
-
-            old_key = aliases.get(key)
-            if old_key and old_key in translations:
-                return translations[old_key]
-
-            return key
-
-        value = translator(key)
-        if value != key:
-            return value
-
-        old_key = aliases.get(key)
-        if old_key:
-            old_value = translator(old_key)
-            if old_value != old_key:
-                return old_value
-
-        return key
-
-    def _qt_text(self, text: str) -> str:
-        text = str(text)
-        marker = "\u0000"
-        return text.replace("&&", marker).replace("&", "&&").replace(marker, "&&")
-
-    def _register_text(self, widget, key: str):
-        self._translation_map.append((widget, key, "text"))
-        widget.setText(self._qt_text(self._t(key)))
-        
-    def _register_title(self, widget, key: str):
-        self._translation_map.append((widget, key, "title"))
-        if hasattr(widget, "setTitle"):
-            widget.setTitle(self._t(key))
-        elif hasattr(widget, "set_title_text"):
-            widget.set_title_text(self._t(key))
-        elif hasattr(widget, "set_text"):
-            widget.set_text(self._t(key))
-
-    def _register_subtitle(self, widget, key: str):
-        self._translation_map.append((widget, key, "subtitle"))
-        if hasattr(widget, "set_subtitle_text"):
-            widget.set_subtitle_text(self._t(key))
-
-    def _register_placeholder(self, widget, key: str):
-        self._translation_map.append((widget, key, "placeholder"))
-        widget.setPlaceholderText(self._t(key))
-
-    def _register_tooltip(self, widget, key: str):
-        self._translation_map.append((widget, key, "tooltip"))
-        widget.setToolTip(self._t(key))
-
-    def _label(self, key: str) -> QLabel:
-        label = QLabel()
-        self._register_text(label, key)
-        return label
-
-    def _button(self, key: str) -> QPushButton:
-        button = QPushButton()
-        self._register_text(button, key)
-        return button
-
-    def _checkbox(self, key: str) -> QCheckBox:
-        checkbox = QCheckBox()
-        self._register_text(checkbox, key)
-        return checkbox
-
-    def _group(self, key: str) -> QGroupBox:
-        group = QGroupBox()
-        self._register_title(group, key)
-        return group
-
-    def _section(self, key: str) -> SectionHeader:
-        section = SectionHeader(self._t(key))
-        self._register_title(section, key)
-        return section
-
-    def _card(self, title_key: str, subtitle_key: str = "") -> ModernCard:
-        card = ModernCard(self._t(title_key), self._t(subtitle_key) if subtitle_key else "")
-        self._register_title(card, title_key)
-        if subtitle_key:
-            self._register_subtitle(card, subtitle_key)
-        return card
-
-    def _set_spin_prefixes(self):
-        if hasattr(self, "w_spin"):
-            self.w_spin.setPrefix(f"{self._t('W:')} ")
-        if hasattr(self, "h_spin"):
-            self.h_spin.setPrefix(f"{self._t('H:')} ")
-
-    def refresh_labels(self):
-        for widget, key, widget_type in self._translation_map:
+    def _apply():
+        try:
+            # ttk.Progressbar supports maximum/mode/value
             try:
-                if widget_type == "text":
-                    widget.setText(self._qt_text(self._t(key)))
-                elif widget_type == "title":
-                    if hasattr(widget, "setTitle"):
-                        widget.setTitle(self._t(key))
-                    elif hasattr(widget, "set_title_text"):
-                        widget.set_title_text(self._t(key))
-                    elif hasattr(widget, "set_text"):
-                        widget.set_text(self._t(key))
-                elif widget_type == "subtitle":
-                    if hasattr(widget, "set_subtitle_text"):
-                        widget.set_subtitle_text(self._t(key))
-                elif widget_type == "placeholder":
-                    widget.setPlaceholderText(self._t(key))
-                elif widget_type == "tooltip":
-                    widget.setToolTip(self._t(key))
-            except RuntimeError:
+                progress_bar.configure(mode="determinate", maximum=100.0)
+            except Exception:
+                # if it's not ttk.Progressbar (e.g., a Scale), ignore
                 pass
 
-        self._set_spin_prefixes()
-        self._refresh_summary()
-
-    def _apply_modern_style(self):
-        theme = getattr(self, "_active_theme", None) or {}
-        apply_unified_page_theme(self, theme)
-
-
-    def _build_ui(self):
-        self._apply_modern_style()
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(16)
-
-        header = QHBoxLayout()
-        header.setSpacing(12)
-
-        title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-
-        title = QLabel()
-        self._register_text(title, "FPS / Upscale Enhancer")
-        title.setObjectName("PageTitle")
-
-        subtitle = QLabel()
-        self._register_text(
-            subtitle,
-            "Interpolate frames with RIFE, upscale with ESRGAN, detect scenes, and export final video."
-        )
-        subtitle.setObjectName("PageSubtitle")
-
-        title_col.addWidget(title)
-        title_col.addWidget(subtitle)
-
-        self.state_badge = QLabel()
-        self._register_text(self.state_badge, "READY")
-        self.state_badge.setObjectName("StatusPill")
-        self.state_badge.setAlignment(Qt.AlignCenter)
-
-        header.addLayout(title_col)
-        header.addStretch()
-        header.addWidget(self.state_badge)
-
-        root.addLayout(header)
-
-        body_scroll = QScrollArea()
-        body_scroll.setWidgetResizable(True)
-        body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        body_scroll.setFrameShape(QFrame.NoFrame)
-
-        body_widget = QWidget()
-        body_widget.setMinimumWidth(1180)
-
-        top_row = QHBoxLayout(body_widget)
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(16)
-
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        left_scroll.setFrameShape(QFrame.NoFrame)
-        left_scroll.setMinimumWidth(300)
-
-        left_widget = QWidget()
-        left_widget.setMinimumWidth(360)
-
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-
-        left_layout.addWidget(self._section("Input / Output"))
-
-        # Source preparation tools
-        source_tools_group = self._group("Source Tools")
-        source_tools_layout = QVBoxLayout(source_tools_group)
-        source_tools_layout.setSpacing(10)
-
-        self.extract_btn = self._button("📂 Extract Frames from Video")
-        self.extract_btn.setMinimumHeight(38)
-        self.extract_btn.clicked.connect(self._extract_frames)
-        source_tools_layout.addWidget(self.extract_btn)
-
-        self.detect_scenes_btn = self._button("🔍 Detect Scenes & Extract")
-        self.detect_scenes_btn.setMinimumHeight(38)
-        self.detect_scenes_btn.clicked.connect(self._detect_scenes)
-        source_tools_layout.addWidget(self.detect_scenes_btn)
-
-        scene_settings_group = self._group("Scene Settings")
-        scene_settings_layout = QVBoxLayout(scene_settings_group)
-        scene_settings_layout.setSpacing(10)
-
-        scene_thresh_row = QHBoxLayout()
-        scene_thresh_row.setSpacing(8)
-
-        scene_thresh_row.addWidget(self._label("Threshold:"))
-
-        self.scene_slider = QSlider(Qt.Horizontal)
-        self.scene_slider.setRange(10, 80)
-        self.scene_slider.setValue(30)
-
-        self.scene_thresh_label = QLabel("30")
-        self.scene_thresh_label.setMinimumWidth(28)
-        self.scene_thresh_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        self.scene_slider.valueChanged.connect(
-            lambda v: self.scene_thresh_label.setText(str(v))
-        )
-
-        scene_thresh_row.addWidget(self.scene_slider, 1)
-        scene_thresh_row.addWidget(self.scene_thresh_label)
-
-        scene_fmt_row = QHBoxLayout()
-        scene_fmt_row.setSpacing(8)
-
-        scene_fmt_row.addWidget(self._label("Format:"))
-
-        self.scene_fmt_combo = QComboBox()
-        self.scene_fmt_combo.addItems(["mp4", "mov", "avi", "mkv"])
-        self.scene_fmt_combo.setCurrentText("mkv")
-
-        scene_fmt_row.addWidget(self.scene_fmt_combo, 1)
-
-        scene_settings_layout.addLayout(scene_thresh_row)
-        scene_settings_layout.addLayout(scene_fmt_row)
-
-        source_tools_layout.addWidget(scene_settings_group)
-        left_layout.addWidget(source_tools_group)
-        
-        io_group = self._group("Paths")
-        io_layout = QVBoxLayout(io_group)
-        io_layout.setSpacing(10)
-
-        input_video_row = QHBoxLayout()
-        input_video_row.setSpacing(8)
-
-        input_video_label = self._label("Input Video:")
-        input_video_label.setMinimumWidth(76)
-
-        self.input_video_edit = QLineEdit()
-        self.input_video_edit.setReadOnly(True)
-        self._register_placeholder(self.input_video_edit, "Optional source video for audio...")
-
-        input_video_browse = self._button("Browse")
-        input_video_browse.setFixedWidth(78)
-        input_video_browse.clicked.connect(self._browse_input_video)
-
-        input_video_row.addWidget(input_video_label)
-        input_video_row.addWidget(self.input_video_edit, 1)
-        input_video_row.addWidget(input_video_browse)
-
-        frames_row = QHBoxLayout()
-        frames_row.setSpacing(8)
-
-        frames_label = self._label("Frames:")
-        frames_label.setMinimumWidth(54)
-
-        self.frames_edit = QLineEdit()
-        self.frames_edit.setReadOnly(True)
-        self._register_placeholder(self.frames_edit, "Select frames folder...")
-
-        frames_browse = self._button("Browse")
-        frames_browse.setFixedWidth(78)
-        frames_browse.clicked.connect(self._browse_frames)
-
-        frames_row.addWidget(frames_label)
-        frames_row.addWidget(self.frames_edit, 1)
-        frames_row.addWidget(frames_browse)
-
-        out_row = QHBoxLayout()
-        out_row.setSpacing(8)
-
-        output_label = self._label("Output:")
-        output_label.setMinimumWidth(54)
-
-        self.output_edit = QLineEdit()
-        self.output_edit.setReadOnly(True)
-        self._register_placeholder(self.output_edit, "Select output file...")
-
-        out_browse = self._button("Save As")
-        out_browse.setFixedWidth(78)
-        out_browse.clicked.connect(self._browse_output)
-
-        out_row.addWidget(output_label)
-        out_row.addWidget(self.output_edit, 1)
-        out_row.addWidget(out_browse)
-
-        self.keep_audio_check = self._checkbox("Keep Original Audio")
-        self.keep_audio_check.setChecked(True)
-
-        io_layout.addLayout(input_video_row)
-        io_layout.addLayout(frames_row)
-        io_layout.addLayout(out_row)
-        io_layout.addWidget(self.keep_audio_check)
-        
-        left_layout.addWidget(io_group)
-
-        toggle_group = self._group("Processing Options")
-        toggle_layout = QVBoxLayout(toggle_group)
-        toggle_layout.setSpacing(10)
-
-        self.rife_check = self._checkbox("Enable RIFE Frame Interpolation")
-        self.rife_check.setChecked(True)
-
-        self.upscale_check = self._checkbox("Enable Real-ESRGAN Upscale")
-
-        toggle_layout.addWidget(self.rife_check)
-        toggle_layout.addWidget(self.upscale_check)
-
-        left_layout.addWidget(toggle_group)
-
-        out_group = self._group("Output Settings")
-        out_layout = QVBoxLayout(out_group)
-        out_layout.setSpacing(10)
-
-        res_row = QHBoxLayout()
-        res_row.setSpacing(8)
-
-        res_label = self._label("Resolution:")
-        res_label.setMinimumWidth(76)
-
-        self.w_spin = QSpinBox()
-        self.w_spin.setRange(256, 7680)
-        self.w_spin.setValue(1920)
-        self.w_spin.setPrefix(f"{self._t('W:')} ")
-
-        self.h_spin = QSpinBox()
-        self.h_spin.setRange(256, 7680)
-        self.h_spin.setValue(1080)
-        self.h_spin.setPrefix(f"{self._t('H:')} ")
-
-        res_row.addWidget(res_label)
-        res_row.addWidget(self.w_spin)
-        res_row.addWidget(self.h_spin)
-
-        settings_row = QHBoxLayout()
-        settings_row.setSpacing(8)
-
-        fps_label = self._label("FPS:")
-        fps_label.setMinimumWidth(76)
-
-        self.fps_combo = QComboBox()
-        for f in COMMON_FPS:
-            self.fps_combo.addItem(str(f), f)
-        self.fps_combo.setCurrentText("23.976")
-
-        self.mult_combo = QComboBox()
-        for m in FPS_MULTIPLIERS:
-            self.mult_combo.addItem(f"{m}x", m)
-        self.mult_combo.setCurrentText("2x")
-
-        settings_row.addWidget(fps_label)
-        settings_row.addWidget(self.fps_combo, 1)
-        settings_row.addWidget(QLabel("×"))
-        settings_row.addWidget(self.mult_combo, 1)
-
-        self.codec_combo = QComboBox()
-        self.codec_combo.addItems(list(FFMPEG_CODEC_MAP.keys()))
-        self.codec_combo.setCurrentText(self.codec)
-
-        out_layout.addLayout(res_row)
-        out_layout.addLayout(settings_row)
-        out_layout.addWidget(self._label("Codec:"))
-        out_layout.addWidget(self.codec_combo)
-
-        left_layout.addWidget(out_group)
-
-        model_group = self._group("ESRGAN / RIFE Models")
-        model_layout = QVBoxLayout(model_group)
-        model_layout.setSpacing(10)
-
-        model_layout.addWidget(self._label("Upscale Model:"))
-
-        self.upscale_combo = QComboBox()
-        self.upscale_combo.addItems(list(_load_upscaler_models().keys()))
-        self.upscale_combo.setCurrentText(self.upscale_model)
-        model_layout.addWidget(self.upscale_combo)
-
-        model_layout.addWidget(self._label("RIFE Model:"))
-
-        self.rife_combo = QComboBox()
-        self.rife_combo.addItems(list(_load_rife_models().keys()))
-        self.rife_combo.setCurrentText(self.rife_model)
-        model_layout.addWidget(self.rife_combo)
-
-        blend_row = QHBoxLayout()
-        blend_row.setSpacing(8)
-
-        self.blend_combo = QComboBox()
-        self.blend_combo.addItems(["OFF", "LOW", "MEDIUM", "HIGH"])
-        self.blend_combo.setCurrentText("OFF")
-
-        self.res_pct_combo = QComboBox()
-        self.res_pct_combo.addItems(["25", "50", "75", "100"])
-        self.res_pct_combo.setCurrentText("100")
-
-        blend_row.addWidget(self._label("Blend:"))
-        blend_row.addWidget(self.blend_combo, 1)
-        blend_row.addWidget(self._label("Input %:"))
-        blend_row.addWidget(self.res_pct_combo, 1)
-
-        model_layout.addLayout(blend_row)
-        left_layout.addWidget(model_group)
-        left_layout.addStretch()
-
-        left_scroll.setWidget(left_widget)
-
-        center_widget = QWidget()
-        center_widget.setMinimumWidth(420)
-        center_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        center_layout = QVBoxLayout(center_widget)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.setSpacing(12)
-
-        render_card = self._card(
-            "Render Plan",
-            "Current export settings, pipeline state, and job progress."
-        )
-        
-        render_grid = QGridLayout()
-        render_grid.setHorizontalSpacing(18)
-        render_grid.setVerticalSpacing(8)
-
-        self.summary_resolution = QLabel("1920 × 1080")
-        self.summary_fps = QLabel("23.976 FPS × 2")
-        self.summary_codec = QLabel("NVENC H.264")
-        self.summary_pipeline = QLabel("RIFE enabled, ESRGAN off")
-        self.summary_model = QLabel("RealESR Balanced / RIFE FP32")
-
-        for label in (
-            self.summary_resolution,
-            self.summary_fps,
-            self.summary_codec,
-            self.summary_pipeline,
-            self.summary_model,
-        ):
-            label.setObjectName("MutedLabel")
-            label.setWordWrap(True)
-            label.setMinimumWidth(120)
-
-        def add_summary_item(row, col, title_key, value_label, col_span=1):
-            title = self._label(title_key)
-            title.setObjectName("MutedLabel")
-
-            box = QVBoxLayout()
-            box.setContentsMargins(0, 0, 0, 0)
-            box.setSpacing(2)
-            box.addWidget(title)
-            box.addWidget(value_label)
-
-            wrapper = QWidget()
-            wrapper.setLayout(box)
-
-            render_grid.addWidget(wrapper, row, col, 1, col_span)
-
-        add_summary_item(0, 0, "Resolution:", self.summary_resolution)
-        add_summary_item(0, 1, "Frame Rate:", self.summary_fps)
-        add_summary_item(0, 2, "Codec:", self.summary_codec)
-        add_summary_item(1, 0, "Pipeline:", self.summary_pipeline, 2)
-        add_summary_item(1, 2, "Models:", self.summary_model)
-
-        render_grid.setColumnStretch(0, 1)
-        render_grid.setColumnStretch(1, 1)
-        render_grid.setColumnStretch(2, 1)
-
-        render_card.layout.addLayout(render_grid)
-
-        render_card.setMaximumHeight(150)
-        center_layout.addWidget(render_card, 0)
-
-        preview_card = self._card(
-            "Preview / Job Output",
-            "Generate sample previews from the beginning, middle, and end of the frame folder."
-        )
-
-        self.preview_placeholder = QLabel()
-        self._register_text(self.preview_placeholder, "No preview loaded yet")
-        self.preview_placeholder.setObjectName("PreviewPlaceholder")
-        self.preview_placeholder.setAlignment(Qt.AlignCenter)
-        self.preview_placeholder.setMinimumSize(640, 460)
-        self.preview_placeholder.setWordWrap(True)
-        self.preview_placeholder.setMouseTracking(True)
-        self.preview_placeholder.setCursor(Qt.CursorShape.OpenHandCursor)
-
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(False)
-        self.preview_scroll.setFrameShape(QFrame.NoFrame)
-        self.preview_scroll.setAlignment(Qt.AlignCenter)
-        self.preview_scroll.setMinimumHeight(460)
-        self.preview_scroll.setWidget(self.preview_placeholder)
-        self.preview_scroll.viewport().setMouseTracking(True)
-        self.preview_scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
-
-        self.preview_placeholder.installEventFilter(self)
-        self.preview_scroll.viewport().installEventFilter(self)
-
-        preview_nav = QHBoxLayout()
-        preview_nav.setSpacing(8)
-
-        self.generate_preview_btn = self._button("Generate Preview")
-        self.generate_preview_btn.setMinimumHeight(32)
-        self.generate_preview_btn.clicked.connect(self._generate_preview)
-
-        self.preview_prev_btn = self._button("Previous")
-        self.preview_prev_btn.setMinimumHeight(32)
-        self.preview_prev_btn.clicked.connect(self._preview_previous)
-
-        self.preview_counter_label = QLabel("Preview 0 / 0")
-        self.preview_counter_label.setObjectName("MutedLabel")
-        self.preview_counter_label.setAlignment(Qt.AlignCenter)
-
-        self.preview_next_btn = self._button("Next")
-        self.preview_next_btn.setMinimumHeight(32)
-        self.preview_next_btn.clicked.connect(self._preview_next)
-
-        self.preview_zoom_label = QLabel("100%")
-        self.preview_zoom_label.setObjectName("MutedLabel")
-        self.preview_zoom_label.setAlignment(Qt.AlignCenter)
-        self.preview_zoom_label.setMinimumWidth(58)
-
-        self.preview_hint_label = QLabel(self._t("Mouse wheel over Original or Preview to zoom."))
-        self.preview_hint_label.setObjectName("MutedLabel")
-        self.preview_hint_label.setAlignment(Qt.AlignCenter)
-
-        self.preview_reset_btn = self._button("Reset View")
-        self.preview_reset_btn.setMinimumHeight(32)
-        self.preview_reset_btn.clicked.connect(self._preview_zoom_reset)
-
-        preview_nav.addWidget(self.generate_preview_btn, 2)
-        preview_nav.addWidget(self.preview_prev_btn, 1)
-        preview_nav.addWidget(self.preview_counter_label, 1)
-        preview_nav.addWidget(self.preview_next_btn, 1)
-        preview_nav.addWidget(self.preview_zoom_label)
-        preview_nav.addWidget(self.preview_reset_btn, 1)
-
-        preview_card.layout.addWidget(self.preview_scroll, 1)
-        preview_card.layout.addWidget(self.preview_hint_label)
-        preview_card.layout.addLayout(preview_nav)
-
-        center_layout.addWidget(preview_card, 1)
-
-        center_layout.setStretch(0, 0)
-        center_layout.setStretch(1, 1)
-
-        right_widget = QWidget()
-        right_widget.setMinimumWidth(260)
-
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
-
-        info_card = self._card("Session Info")
-
-        self.info_label = QLabel()
-        self._register_text(
-            self.info_label,
-            "Select a frames folder and output file to begin.\n\n"
-            "• RIFE interpolates new frames between existing ones\n"
-            "• ESRGAN upscales each frame to a higher resolution\n"
-            "• Threaded mode can process RIFE and ESRGAN in parallel"
-        )
-        self.info_label.setObjectName("MutedLabel")
-        self.info_label.setWordWrap(True)
-
-        info_card.layout.addWidget(self.info_label)
-        right_layout.addWidget(info_card)
-
-        self.status_label = QLabel(self._t("Ready"))
-        self.status_label.setObjectName("StatusLabel")
-        self.status_label.setWordWrap(True)
-
-        right_layout.addWidget(self.status_label)
-
-        actions_card = self._card("Actions")
-
-        self.start_btn = self._button("▶ Start Processing")
-        self.start_btn.setObjectName("PrimaryButton")
-        self.start_btn.setMinimumHeight(42)
-        self.start_btn.clicked.connect(self._start_processing)
-
-        self.threaded_btn = self._button("⚡ Threaded RIFE + ESRGAN")
-        self.threaded_btn.setMinimumHeight(40)
-        self.threaded_btn.clicked.connect(self._start_threaded)
-
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(8)
-
-        self.suspend_btn = QPushButton("⏸")
-        self.suspend_btn.setObjectName("IconButton")
-        self._register_tooltip(self.suspend_btn, "Pause")
-        self.suspend_btn.clicked.connect(self._pause)
-
-        self.resume_btn = QPushButton("▶")
-        self.resume_btn.setObjectName("IconButton")
-        self._register_tooltip(self.resume_btn, "Resume")
-        self.resume_btn.clicked.connect(self._resume)
-
-        self.cancel_btn = QPushButton("⏹")
-        self.cancel_btn.setObjectName("DangerButton")
-        self._register_tooltip(self.cancel_btn, "Stop")
-        self.cancel_btn.clicked.connect(self._stop)
-
-        ctrl_row.addWidget(self.suspend_btn)
-        ctrl_row.addWidget(self.resume_btn)
-        ctrl_row.addWidget(self.cancel_btn)
-
-        actions_card.layout.addWidget(self.start_btn)
-        actions_card.layout.addWidget(self.threaded_btn)
-        actions_card.layout.addLayout(ctrl_row)
-
-        right_layout.addWidget(actions_card)
-        right_layout.addStretch()
-
-        # Resizable FPS/Upscale layout:
-        # left settings | center preview/render plan | right session/actions
-        self.main_splitter = QSplitter(Qt.Horizontal)
-        self.main_splitter.setChildrenCollapsible(False)
-
-        self.main_splitter.addWidget(left_scroll)
-        self.main_splitter.addWidget(center_widget)
-        self.main_splitter.addWidget(right_widget)
-
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 0)
-
-        self.main_splitter.setSizes([380, 950, 330])
-
-        top_row.addWidget(self.main_splitter, 1)
-
-        body_scroll.setWidget(body_widget)
-        root.addWidget(body_scroll, 1)
-
-        self._connect_summary_signals()
-        self._refresh_summary()
-
-    def _connect_summary_signals(self):
-        self.w_spin.valueChanged.connect(self._refresh_summary)
-        self.h_spin.valueChanged.connect(self._refresh_summary)
-        self.fps_combo.currentTextChanged.connect(self._refresh_summary)
-        self.mult_combo.currentTextChanged.connect(self._refresh_summary)
-        self.codec_combo.currentTextChanged.connect(self._refresh_summary)
-        self.rife_check.toggled.connect(self._refresh_summary)
-        self.upscale_check.toggled.connect(self._refresh_summary)
-        self.upscale_combo.currentTextChanged.connect(self._refresh_summary)
-        self.rife_combo.currentTextChanged.connect(self._refresh_summary)
-        self.blend_combo.currentTextChanged.connect(self._refresh_summary)
-        self.res_pct_combo.currentTextChanged.connect(self._refresh_summary)
-
-    def _short_codec_label(self, codec_name: str) -> str:
-        if "NVENC" in codec_name:
-            if "H.265" in codec_name:
-                return "NVENC H.265"
-            if "AV1" in codec_name:
-                return "NVENC AV1"
-            return "NVENC H.264"
-
-        if "AMF" in codec_name:
-            if "H.265" in codec_name:
-                return "AMD AMF H.265"
-            if "AV1" in codec_name:
-                return "AMD AMF AV1"
-            return "AMD AMF H.264"
-
-        if "QSV" in codec_name:
-            if "H.265" in codec_name:
-                return "Intel QSV H.265"
-            if "AV1" in codec_name:
-                return "Intel QSV AV1"
-            if "VP9" in codec_name:
-                return "Intel QSV VP9"
-            return "Intel QSV H.264"
-
-        if "libx265" in codec_name or "H.265" in codec_name:
-            return "CPU H.265"
-        if "libx264" in codec_name or "H.264" in codec_name:
-            return "CPU H.264"
-        if "AV1" in codec_name:
-            return "CPU AV1"
-
-        return codec_name
-
-    def _refresh_summary(self):
-        width = self.w_spin.value()
-        height = self.h_spin.value()
-        fps = self.fps_combo.currentData()
-        mult = self.mult_combo.currentData()
-
-        rife_state = self._t("RIFE enabled") if self.rife_check.isChecked() else self._t("RIFE off")
-        upscale_state = self._t("ESRGAN enabled") if self.upscale_check.isChecked() else self._t("ESRGAN off")
-        
-        blend = self.blend_combo.currentText()
-        input_pct = self.res_pct_combo.currentText()
-
-        self.summary_resolution.setText(f"{width} × {height}")
-        self.summary_fps.setText(f"{fps} FPS × {mult}")
-        self.summary_codec.setText(self._short_codec_label(self.codec_combo.currentText()))
-        self.summary_pipeline.setText(
-            f"{rife_state}, {upscale_state}, {self._t('blend')} {blend}, {self._t('input')} {input_pct}%"
-        )
-
-        if getattr(self, "preview_images", None):
-            self._show_preview_index()
-            return
-
-        if self.frames_folder or self.output_file:
-            frames_text = self.frames_folder if self.frames_folder else self._t("No frames folder selected")
-            output_text = self.output_file if self.output_file else self._t("No output file selected")
-            self.preview_placeholder.setText(
-                f"{self._t('Frames:')}\n{frames_text}\n\n{self._t('Output:')}\n{output_text}"
+            # both ttk.Progressbar and Scale understand "value"
+            progress_bar.configure(value=pct)
+
+            status_label.configure(
+                text=f"Progress: {done}/{total} | FPS: {fps:.2f} | ETA: {eta_str}"
             )
-        else:
-            self.preview_placeholder.setText(self._t("No preview loaded yet"))
-
-    def _set_state(self, state_text: str):
-        self.state_badge.setText(self._t(state_text).upper())
-
-    def apply_theme(self, theme: dict):
-        self._active_theme = theme
-        self._apply_modern_style()
-
-    def _set_input_video_file(self, path: str):
-        self.input_video_file = path
-        self.input_video_edit.setText(path)
-        self._refresh_summary()
-
-    def _browse_input_video(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self._t("Select Input Video"),
-            "",
-            "Video (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*.*)",
-        )
-
-        if path:
-            self._set_input_video_file(path)
-            self.status_label.setText(self._t("Input video selected."))
-            self._set_state("Ready")
-
-    def _set_frames_folder(self, path: str):
-        self.frames_folder = path
-        self.frames_edit.setText(path)
-        self._clear_preview_cache()
-        self._refresh_summary()
-        
-    def _set_output_file(self, path: str):
-        self.output_file = path
-        self.output_edit.setText(path)
-        self._refresh_summary()
-
-    def _browse_frames(self):
-        path = QFileDialog.getExistingDirectory(self, self._t("Select Frames Folder"))
-        if path:
-            self._set_frames_folder(path)
-            self.status_label.setText(self._t("Frames folder selected."))
-            self._set_state("Ready")
-
-    def _browse_output(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            self._t("Save Output Video"),
-            "",
-            "MKV (*.mkv);;MP4 (*.mp4);;MOV (*.mov);;AVI (*.avi);;All (*.*)"
-        )
-
-        if path:
-            self._set_output_file(path)
-            self.status_label.setText(self._t("Output file selected."))
-            self._set_state("Ready")
-
-    def _preview_frame_files(self):
-        if not self.frames_folder or not os.path.isdir(self.frames_folder):
-            return []
-
-        files = [
-            os.path.join(self.frames_folder, name)
-            for name in os.listdir(self.frames_folder)
-            if name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp"))
-        ]
-
-        try:
-            from core.merged_pipeline import natural_sort
-            return natural_sort(files)
         except Exception:
-            return sorted(files)
-
-    def _pick_preview_files(self, count=5):
-        files = self._preview_frame_files()
-
-        if not files:
-            return []
-
-        if len(files) <= count:
-            return files
-
-        positions = [0.0, 0.25, 0.50, 0.75, 0.95]
-        indexes = []
-
-        for pos in positions:
-            idx = int(round((len(files) - 1) * pos))
-            idx = max(0, min(len(files) - 1, idx))
-            indexes.append(idx)
-
-        # keep order, remove duplicates
-        picked = []
-        seen = set()
-
-        for idx in indexes:
-            if idx not in seen:
-                picked.append(files[idx])
-                seen.add(idx)
-
-        return picked
-
-    def _clear_preview_cache(self):
-        self.preview_images = []
-        self.preview_index = 0
-        self.preview_zoom = 1.0
-        self.preview_focus_side = "sbs"
-
-        if hasattr(self, "preview_counter_label"):
-            self.preview_counter_label.setText("Preview 0 / 0")
-
-        if hasattr(self, "preview_zoom_label"):
-            self.preview_zoom_label.setText("100%")
-
-        if hasattr(self, "preview_placeholder"):
-            self.preview_placeholder.clear()
-            self.preview_placeholder.setText(self._t("No preview loaded yet"))
-            self.preview_placeholder.setMinimumSize(640, 460)
-
-    def _on_preview_ready(self, image_paths):
-        self.preview_images = list(image_paths or [])
-        self.preview_index = 0
-        self._show_preview_index()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-
-        if getattr(self, "preview_images", None):
-            self._show_preview_index()
-
-    def _preview_source_pixmap(self):
-        if not getattr(self, "preview_images", None):
-            return QPixmap()
-
-        self.preview_index = max(0, min(self.preview_index, len(self.preview_images) - 1))
-        path = self.preview_images[self.preview_index]
-        pixmap = QPixmap(path)
-
-        if pixmap.isNull():
-            return pixmap
-
-        # At 100%, show the normal side-by-side comparison.
-        if self.preview_zoom <= 1.01 or self.preview_focus_side == "sbs":
-            return pixmap
-
-        half_w = pixmap.width() // 2
-
-        if self.preview_focus_side == "original":
-            return pixmap.copy(0, 0, half_w, pixmap.height())
-
-        if self.preview_focus_side == "preview":
-            return pixmap.copy(half_w, 0, pixmap.width() - half_w, pixmap.height())
-
-        return pixmap
-
-    def _show_preview_index(self):
-        if not getattr(self, "preview_images", None):
-            if hasattr(self, "preview_counter_label"):
-                self.preview_counter_label.setText("Preview 0 / 0")
-            return
-
-        pixmap = self._preview_source_pixmap()
-
-        if pixmap.isNull():
-            self.preview_placeholder.clear()
-            self.preview_placeholder.setText(self._t("Could not load preview image."))
-            return
-
-        viewport_size = self.preview_scroll.viewport().size()
-
-        if viewport_size.width() <= 0 or viewport_size.height() <= 0:
-            viewport_size = self.preview_placeholder.size()
-
-        base_scale = min(
-            viewport_size.width() / max(1, pixmap.width()),
-            viewport_size.height() / max(1, pixmap.height()),
-        )
-
-        base_scale = max(0.01, base_scale)
-
-        target_w = max(1, int(pixmap.width() * base_scale * self.preview_zoom))
-        target_h = max(1, int(pixmap.height() * base_scale * self.preview_zoom))
-
-        scaled = pixmap.scaled(
-            target_w,
-            target_h,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-
-        self.preview_placeholder.clear()
-        self.preview_placeholder.setPixmap(scaled)
-        self.preview_placeholder.setFixedSize(scaled.size())
-
-        self.preview_counter_label.setText(
-            f"Preview {self.preview_index + 1} / {len(self.preview_images)}"
-        )
-
-        if hasattr(self, "preview_zoom_label"):
-            side_text = ""
-            if self.preview_focus_side == "original" and self.preview_zoom > 1.01:
-                side_text = " Original"
-            elif self.preview_focus_side == "preview" and self.preview_zoom > 1.01:
-                side_text = " Preview"
-
-            self.preview_zoom_label.setText(f"{int(self.preview_zoom * 100)}%{side_text}")
-
-    def _event_point(self, event):
-        if hasattr(event, "position"):
-            return event.position().toPoint()
-        return event.pos()
-
-    def _preview_side_from_pos(self, label_pos):
-        # At normal fit view, the comparison image is Original | Preview.
-        # Left half = original, right half = generated preview.
-        label_w = max(1, self.preview_placeholder.width())
-
-        if label_pos.x() < label_w / 2:
-            return "original"
-
-        return "preview"
-
-    def _clamp01(self, value):
-        return max(0.0, min(1.0, float(value)))
-
-    def _preview_anchor_from_pos(self, label_pos):
-        """
-        Returns:
-            side, x_ratio, y_ratio
-
-        x_ratio/y_ratio represent the mouse position inside the visible image/side,
-        so after zoom we can scroll back to that same pixel area.
-        """
-        label_w = max(1, self.preview_placeholder.width())
-        label_h = max(1, self.preview_placeholder.height())
-
-        x = self._clamp01(label_pos.x() / label_w)
-        y = self._clamp01(label_pos.y() / label_h)
-
-        # When fitted at 100%, the displayed image is Original | Preview.
-        # Left half zooms original, right half zooms preview.
-        if self.preview_zoom <= 1.01 or self.preview_focus_side == "sbs":
-            if x < 0.5:
-                side = "original"
-                side_x = self._clamp01(x / 0.5)
-            else:
-                side = "preview"
-                side_x = self._clamp01((x - 0.5) / 0.5)
-
-            return side, side_x, y
-
-        # Already zoomed into one side. Keep that side.
-        return self.preview_focus_side, x, y
-
-    def _scroll_preview_to_anchor(self, anchor_x, anchor_y, viewport_point):
-        """
-        After zooming, scroll so the pixel under the mouse stays under the mouse.
-        """
-        hbar = self.preview_scroll.horizontalScrollBar()
-        vbar = self.preview_scroll.verticalScrollBar()
-
-        content_w = max(1, self.preview_placeholder.width())
-        content_h = max(1, self.preview_placeholder.height())
-
-        target_x = int((anchor_x * content_w) - viewport_point.x())
-        target_y = int((anchor_y * content_h) - viewport_point.y())
-
-        hbar.setValue(max(hbar.minimum(), min(hbar.maximum(), target_x)))
-        vbar.setValue(max(vbar.minimum(), min(vbar.maximum(), target_y)))
-        
-    def eventFilter(self, obj, event):
-        preview_label = getattr(self, "preview_placeholder", None)
-        preview_scroll = getattr(self, "preview_scroll", None)
-        preview_viewport = preview_scroll.viewport() if preview_scroll is not None else None
-
-        if obj not in (preview_label, preview_viewport):
-            return super().eventFilter(obj, event)
-
-        if not getattr(self, "preview_images", None):
-            return super().eventFilter(obj, event)
-
-        # Convert mouse position to viewport + label coordinates.
-        raw_point = self._event_point(event) if hasattr(event, "pos") or hasattr(event, "position") else None
-
-        def _map_point_between(source_widget, target_widget, point):
-            if point is None or source_widget is None or target_widget is None:
-                return None
-
-            global_point = source_widget.mapToGlobal(point)
-            return target_widget.mapFromGlobal(global_point)
-
-        def to_viewport_point(point):
-            if point is None:
-                return None
-
-            if obj is preview_viewport:
-                return point
-
-            return _map_point_between(preview_label, preview_viewport, point)
-
-        def to_label_point(point):
-            if point is None:
-                return None
-
-            if obj is preview_label:
-                return point
-
-            return _map_point_between(preview_viewport, preview_label, point)
-
-        # Mouse wheel zoom
-        if event.type() == QEvent.Type.Wheel:
-            label_point = to_label_point(raw_point)
-            viewport_point = to_viewport_point(raw_point)
-
-            if label_point is None or viewport_point is None:
-                return super().eventFilter(obj, event)
-
-            side, anchor_x, anchor_y = self._preview_anchor_from_pos(label_point)
-
-            # Pick side on first zoom from 100%.
-            if self.preview_zoom <= 1.01:
-                self.preview_focus_side = side
-
-            delta = event.angleDelta().y()
-
-            if delta > 0:
-                self.preview_zoom = min(6.0, self.preview_zoom * 1.25)
-            else:
-                self.preview_zoom = max(1.0, self.preview_zoom / 1.25)
-
-            if self.preview_zoom <= 1.01:
-                self.preview_zoom = 1.0
-                self.preview_focus_side = "sbs"
-                self._show_preview_index()
-            else:
-                self._show_preview_index()
-                self._scroll_preview_to_anchor(anchor_x, anchor_y, viewport_point)
-
-            event.accept()
-            return True
-
-        # Click + drag pan
-        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            self.preview_dragging = True
-            self.preview_drag_start = to_viewport_point(raw_point)
-
-            hbar = self.preview_scroll.horizontalScrollBar()
-            vbar = self.preview_scroll.verticalScrollBar()
-
-            self.preview_drag_h_start = hbar.value()
-            self.preview_drag_v_start = vbar.value()
-
-            self.preview_placeholder.setCursor(Qt.CursorShape.ClosedHandCursor)
-            self.preview_scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
-
-            event.accept()
-            return True
-
-        if event.type() == QEvent.Type.MouseMove and self.preview_dragging:
-            current_point = to_viewport_point(raw_point)
-
-            if current_point is None or self.preview_drag_start is None:
-                return True
-
-            dx = current_point.x() - self.preview_drag_start.x()
-            dy = current_point.y() - self.preview_drag_start.y()
-
-            hbar = self.preview_scroll.horizontalScrollBar()
-            vbar = self.preview_scroll.verticalScrollBar()
-
-            hbar.setValue(self.preview_drag_h_start - dx)
-            vbar.setValue(self.preview_drag_v_start - dy)
-
-            event.accept()
-            return True
-
-        if event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.Leave):
-            if self.preview_dragging:
-                self.preview_dragging = False
-                self.preview_drag_start = None
-
-                self.preview_placeholder.setCursor(Qt.CursorShape.OpenHandCursor)
-                self.preview_scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
-
-                event.accept()
-                return True
-
-        return super().eventFilter(obj, event)
-
-    def _preview_zoom_reset(self):
-        self.preview_zoom = 1.0
-        self.preview_focus_side = "sbs"
-        self.preview_dragging = False
-        self.preview_drag_start = None
-
-        if hasattr(self, "preview_zoom_label"):
-            self.preview_zoom_label.setText("100%")
-
-        if hasattr(self, "preview_placeholder"):
-            self.preview_placeholder.setCursor(Qt.CursorShape.OpenHandCursor)
-
-        if hasattr(self, "preview_scroll"):
-            self.preview_scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
-
-        self._show_preview_index()
-            
-    def _preview_previous(self):
-        if not self.preview_images:
-            return
-
-        self.preview_index = (self.preview_index - 1) % len(self.preview_images)
-        self._show_preview_index()
-
-    def _preview_next(self):
-        if not self.preview_images:
-            return
-
-        self.preview_index = (self.preview_index + 1) % len(self.preview_images)
-        self._show_preview_index()
-
-    def _generate_preview(self):
-        frame_files = self._pick_preview_files(count=5)
-
-        if not frame_files:
-            QMessageBox.warning(
-                self,
-                self._t("Missing frames"),
-                self._t("Select a frames folder with images first."),
-            )
-            return
-
-        settings = self._get_settings()
-
-        preview_dir = os.path.join(self.frames_folder, "_vd3d_preview")
-        os.makedirs(preview_dir, exist_ok=True)
-
-        self._clear_preview_cache()
-        self.status_label.setText(self._t("Generating preview..."))
-        self._set_state("Preview")
-
-        self._emit_job_progress(
-            progress=0,
-            status_text=self._t("Preparing preview frames..."),
-            start_time=time.time(),
-            completed_units=0,
-            total_units=len(frame_files),
-            rate_label="Frames/s",
-            state="Preview",
-        )
-
-        def _run():
-            start_time = time.time()
-
-            try:
-                import cv2
-                import numpy as np
-                from core.merged_pipeline import init_upscaler, run_esrgan
-
-                target_size = (settings["width"], settings["height"])
-                model_path = settings["model_path"]
-                enable_upscale = bool(settings["enable_upscale"])
-
-                if enable_upscale:
-                    self._emit_job_progress(
-                        progress=2,
-                        status_text=self._t("Loading preview upscaler model..."),
-                        start_time=start_time,
-                        completed_units=0,
-                        total_units=len(frame_files),
-                        rate_label="Frames/s",
-                        state="Preview",
-                    )
-
-                    if not init_upscaler(model_path, True):
-                        raise RuntimeError(
-                            f"{self._t('Failed to load/download upscaler model:')} {model_path}"
-                        )
-
-                output_paths = []
-                total = len(frame_files)
-
-                for index, frame_path in enumerate(frame_files, start=1):
-                    img = cv2.imread(frame_path, cv2.IMREAD_COLOR)
-
-                    if img is None:
-                        continue
-
-                    original = cv2.resize(
+            # widget might be destroyed during shutdown, ignore
+            pass
+
+    # marshal to Tk main thread
+    try:
+        progress_bar.after(0, _apply)
+    except Exception:
+        pass
+
+def _validate_frame_bytes(frame, width, height):
+    if frame is None:
+        return False, "frame=None"
+    if not isinstance(frame, np.ndarray):
+        return False, f"type={type(frame)}"
+    if frame.dtype != np.uint8:
+        return False, f"dtype={frame.dtype}"
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        return False, f"shape={frame.shape}"
+    if frame.shape[1] != width or frame.shape[0] != height:
+        return False, f"size={frame.shape[1]}x{frame.shape[0]} expected={width}x{height}"
+    return True, "ok"
+
+def _frame_to_bytes(frame):
+    # ensure contiguous BGR24 for rawvideo
+    if not frame.flags['C_CONTIGUOUS']:
+        frame = np.ascontiguousarray(frame)
+    return frame.tobytes()
+
+def _frame_loader(file_list, target_size=None, max_queue=8):
+    """
+    Generator that loads frames in a background thread and yields them.
+    - Uses a bounded queue to limit RAM
+    - Supports cancellation via global cancel_flag
+    - Avoids deadlock by using timeouts on put/get
+    """
+    q = Queue(maxsize=max_queue)
+    stop = object()
+
+    def _worker():
+        try:
+            for fp in file_list:
+                if cancel_flag.is_set():
+                    break
+
+                img = cv2.imread(fp, cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+
+                if target_size:
+                    img = cv2.resize(
                         img,
                         target_size,
-                        interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC,
+                        interpolation=cv2.INTER_AREA if img.shape[1] > target_size[0] else cv2.INTER_CUBIC
                     )
 
-                    if enable_upscale:
-                        processed = run_esrgan(
-                            img,
-                            settings["blend_mode"],
-                            settings["input_res_pct"],
-                            model_name=model_path,
-                            target_size=target_size,
-                        )
-                    else:
-                        processed = original.copy()
+                # Put with timeout so we can observe cancel_flag and not deadlock
+                while not cancel_flag.is_set():
+                    try:
+                        q.put(img, timeout=0.25)
+                        break
+                    except queue.Full:
+                        continue
+        finally:
+            # Always try to signal end
+            while True:
+                try:
+                    q.put(stop, timeout=0.25)
+                    break
+                except queue.Full:
+                    # If consumer died, we don't want to hang forever
+                    if cancel_flag.is_set():
+                        break
+                    continue
 
-                    if processed is None:
-                        processed = original.copy()
+    threading.Thread(target=_worker, daemon=True).start()
 
-                    if processed.shape[:2] != original.shape[:2]:
-                        processed = cv2.resize(processed, target_size, interpolation=cv2.INTER_CUBIC)
-
-                    comparison = np.hstack([original, processed])
-
-                    # Small readable labels
-                    cv2.putText(
-                        comparison,
-                        "Original",
-                        (24, 42),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.1,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                    cv2.putText(
-                        comparison,
-                        "Preview",
-                        (target_size[0] + 24, 42),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.1,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
-
-                    out_path = os.path.join(preview_dir, f"preview_{index:02d}.jpg")
-                    cv2.imwrite(out_path, comparison, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                    output_paths.append(out_path)
-
-                    progress = (index / max(total, 1)) * 100.0
-
-                    self._emit_job_progress(
-                        progress=progress,
-                        status_text=f"{self._t('Generating preview')} {index}/{total}",
-                        start_time=start_time,
-                        completed_units=index,
-                        total_units=total,
-                        rate_label="Frames/s",
-                        state="Preview",
-                    )
-
-                if not output_paths:
-                    raise RuntimeError(self._t("No preview frames were created."))
-
-                self.preview_ready.emit(output_paths)
-
-                self._emit_job_progress(
-                    progress=100,
-                    status_text=self._t("Preview complete."),
-                    start_time=start_time,
-                    completed_units=len(output_paths),
-                    total_units=len(output_paths),
-                    rate_label="Frames/s",
-                    state="Done",
-                    notify_complete=False,
-                )
-
-                self.status_label.setText(
-                    self._t("Preview generated. Use Previous / Next to compare samples.")
-                )
-
-            except Exception as exc:
-                self._emit_job_progress(
-                    progress=0,
-                    status_text=f"{self._t('Preview failed:')} {exc}",
-                    start_time=start_time,
-                    completed_units=0,
-                    total_units=max(len(frame_files), 1),
-                    rate_label="Frames/s",
-                    state="Error",
-                    notify_error=True,
-                    message_title=self._t("Preview Failed"),
-                    message_text=str(exc),
-                    traceback_text=traceback.format_exc(),
-                )
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _format_seconds(self, seconds):
-        seconds = max(0, int(seconds or 0))
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
-
-    def _emit_job_progress(
-        self,
-        *,
-        progress=0.0,
-        status_text="",
-        start_time=None,
-        completed_units=None,
-        total_units=None,
-        rate_label="FPS",
-        state=None,
-        notify_complete=False,
-        notify_error=False,
-        message_title="",
-        message_text="",
-        traceback_text=None,
-    ):
-        now = time.time()
-        elapsed = 0.0
-        eta = None
-        fps_like = None
-
-        if start_time is not None:
-            elapsed = now - start_time
-
-        if (
-            start_time is not None
-            and completed_units is not None
-            and total_units is not None
-            and completed_units > 0
-        ):
-            fps_like = completed_units / max(elapsed, 1e-6)
-            remaining = max(0.0, total_units - completed_units)
-            eta = remaining / fps_like if fps_like > 0 else None
-
-        self.progress_updated.emit({
-            "progress": float(max(0.0, min(100.0, progress))),
-            "status_text": status_text,
-            "elapsed": elapsed,
-            "eta": eta,
-            "fps_like": fps_like,
-            "rate_label": rate_label,
-            "state": state,
-            "notify_complete": notify_complete,
-            "notify_error": notify_error,
-            "message_title": message_title,
-            "message_text": message_text,
-            "traceback": traceback_text,
-        })
-
-    def _parse_rate(self, rate_str):
-        if not rate_str or rate_str == "0/0":
-            return 0.0
-
+    while True:
+        if cancel_flag.is_set():
+            break
         try:
-            if "/" in rate_str:
-                a, b = rate_str.split("/", 1)
-                a = float(a)
-                b = float(b)
-                return a / b if b else 0.0
+            item = q.get(timeout=0.25)
+        except queue.Empty:
+            continue
 
-            return float(rate_str)
-        except Exception:
-            return 0.0
+        if item is stop:
+            break
 
-    def _probe_video_frame_count(self, video_path):
-        cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-count_frames",
-            "-show_entries",
-            "stream=nb_read_frames,nb_frames,duration,avg_frame_rate,r_frame_rate",
-            "-of",
-            "json",
-            video_path,
+        yield item
+
+def select_video_and_generate_frames(set_folder_callback=None, merged_progress=None, merged_status=None):
+    video_path = filedialog.askopenfilename(
+        title="Select Video",
+        filetypes=[("Video Files", "*.mp4;*.avi;*.mov;*.mkv"), ("All Files", "*.*")]
+    )
+    if not video_path:
+        return
+
+    output_root = filedialog.askdirectory(title="Select Folder to Save Extracted Frames")
+    if not output_root:
+        return
+
+    image_format = askstring("Image Format", "Enter image format to save (e.g., png, jpg):")
+    valid_formats = ["png", "jpg", "jpeg", "bmp", "webp"]
+    if not image_format or image_format.lower() not in valid_formats:
+        messagebox.showerror("Invalid Format", "Please enter a valid format like png, jpg, etc.")
+        return
+    image_format = image_format.lower()
+
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    output_folder = os.path.join(output_root, f"{base_name}_frames")
+    os.makedirs(output_folder, exist_ok=True)
+
+    output_pattern = os.path.join(output_folder, f"frame_%05d.{image_format}")
+
+    def extract_thread():
+        def start_spinner():
+            if merged_progress and merged_status:
+                merged_progress.config(mode="indeterminate")
+                merged_progress.start()
+                merged_status.config(text="⏳ Extracting frames...")
+
+        def stop_spinner(success):
+            if merged_progress and merged_status:
+                merged_progress.stop()
+                merged_progress.config(mode="determinate")
+                if success:
+                    merged_status.config(text="✅ Extraction complete.")
+                    messagebox.showinfo("Done", f"✅ Frames saved to:\n{output_folder}")
+                    if set_folder_callback:
+                        set_folder_callback(output_folder)
+                else:
+                    merged_status.config(text="❌ Extraction failed.")
+                    messagebox.showerror("Error", "❌ FFmpeg frame extraction failed.")
+
+        if merged_progress:
+            merged_progress.after(0, start_spinner)
+
+        debug_print(f"🚀 Running FFmpeg to extract frames from: {video_path}")
+        debug_print(f"📁 Saving to: {output_folder}")
+
+        ffmpeg_exe = require_tool("ffmpeg")
+        command = [
+            ffmpeg_exe, "-y",
+            "-hwaccel", "auto",
+            "-i", video_path,
+            "-q:v", "2",
+            output_pattern
         ]
-
         result = subprocess.run(
-            cmd,
-            capture_output=True,
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             **hidden_subprocess_kwargs(),
         )
+        if merged_progress:
+            merged_progress.after(0, lambda: stop_spinner(result.returncode == 0))
 
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "ffprobe failed.")
 
-        data = json.loads(result.stdout or "{}")
-        streams = data.get("streams") or []
+    threading.Thread(target=extract_thread, daemon=True).start()
 
-        if not streams:
-            raise RuntimeError("No video stream found.")
 
-        stream = streams[0]
+def select_output_file(output_path_var):
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".mkv",
+        filetypes=[("MKV Files", "*.mkv"), ("MP4 Files", "*.mp4"), ("AVI Files", "*.avi"), ("All Files", "*.*")]
+    )
+    if file_path:
+        output_path_var.set(file_path)
 
-        for key in ("nb_read_frames", "nb_frames"):
-            value = stream.get(key)
-            if value and str(value).isdigit():
-                count = int(value)
-                if count > 0:
-                    return count
+def select_frames_folder(path_var):
+    folder = filedialog.askdirectory()
+    if folder:
+        path_var.set(folder)
 
-        duration = float(stream.get("duration") or 0.0)
-        fps = self._parse_rate(stream.get("avg_frame_rate")) or self._parse_rate(stream.get("r_frame_rate"))
+def extract_frame_number(filename):
+    match = re.search(r"(\d+)", os.path.basename(filename))
+    return int(match.group(1)) if match else float("inf")
 
-        if duration > 0 and fps > 0:
-            return max(1, int(duration * fps))
+def natural_sort(files):
+    return sorted(files, key=extract_frame_number)
 
-        return 1
+def concatenate_images(frame1, frame2):
+    return np.concatenate((frame1.astype(np.float32) / 255.0, frame2.astype(np.float32) / 255.0), axis=2)
 
-    def _extract_frames(self):
-        video_path, _ = QFileDialog.getOpenFileName(
-            self,
-            self._t("Select Video to Extract Frames"),
-            "",
-            "Video (*.mp4 *.mkv *.avi *.mov *.webm);;All Files (*.*)",
-        )
+# =========================
+# Pause / Resume / Stop Controls (Upscale Pipeline)
+# =========================
 
-        if not video_path:
-            return
+def _upscale_wait_if_paused():
+    """
+    Call this often inside loops.
+    If paused, block until resumed.
+    Cancel always wins.
+    """
+    while suspend_flag.is_set():
+        if cancel_flag.is_set():
+            return False
+        time.sleep(0.05)
+    return not cancel_flag.is_set()
+
+
+def request_upscale_pause(progress_widget=None, status_widget=None):
+    suspend_flag.set()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Paused")
+
+
+def request_upscale_resume(progress_widget=None, status_widget=None):
+    suspend_flag.clear()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Resuming...")
+
+
+def request_upscale_stop(progress_widget=None, status_widget=None):
+    # Stop means cancel the job and force-unpause so threads can exit
+    cancel_flag.set()
+    suspend_flag.clear()
+    if status_widget is not None:
+        ui_set_status(status_widget, "Stopping...")
         
-        self._set_input_video_file(video_path)
+def resolve_runtime_model(model_ref: str) -> str | None:
+    """
+    Supported forms:
 
-        output_dir = QFileDialog.getExistingDirectory(
-            self,
-            self._t("Select Output Folder for Frames"),
+      upscale:FuryTMP/RealESR_Gx4_fp16
+      upscale:FuryTMP/BSRGANx2_fp16
+      rife:FuryTMP/RIFE_fp32
+      weights/RealESR_Gx4_fp16.onnx
+      C:/absolute/path/model.onnx
+    """
+    if not model_ref:
+        return None
+
+    model_ref = str(model_ref).strip()
+
+    # ---- Hugging Face repo selectors ----
+    if model_ref.startswith("upscale:"):
+        repo_id = model_ref[len("upscale:"):].strip()
+        if not repo_id:
+            debug_print(f"❌ Invalid upscale model ref: {model_ref}")
+            return None
+
+        filename = repo_id.rstrip("/").split("/")[-1] + ".onnx"
+        return ensure_hf_file(repo_id, filename, local_subdir="weights")
+
+    if model_ref.startswith("rife:"):
+        repo_id = model_ref[len("rife:"):].strip()
+        if not repo_id:
+            debug_print(f"❌ Invalid RIFE model ref: {model_ref}")
+            return None
+
+        filename = repo_id.rstrip("/").split("/")[-1] + ".onnx"
+        return ensure_hf_file(repo_id, filename, local_subdir="weights")
+
+    # ---- Local path fallback ----
+    model_ref = os.path.normpath(model_ref)
+
+    if os.path.isabs(model_ref):
+        return model_ref if os.path.exists(model_ref) else None
+
+    resolved = resolve_model_path(model_ref)
+    return resolved if os.path.exists(resolved) else None
+
+def ensure_hf_file(repo_id: str, filename: str, local_subdir: str = "weights") -> str | None:
+    """
+    Download a single file from Hugging Face into VisionDepth3D/weights if missing.
+    Returns the local file path, or None on failure.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as e:
+        debug_print(f"❌ huggingface_hub not available: {e}")
+        return None
+
+    local_dir = os.path.join(app_root(), local_subdir)
+    os.makedirs(local_dir, exist_ok=True)
+
+    local_path = os.path.join(local_dir, filename)
+    if os.path.exists(local_path):
+        debug_print(f"✅ Model already exists: {local_path}")
+        return local_path
+
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=local_dir
         )
+        debug_print(f"⬇️ Downloaded {filename} from Hugging Face to: {downloaded}")
+        return downloaded
+    except Exception as e:
+        debug_print(f"❌ Failed to download {filename} from {repo_id}: {e}")
+        return None
 
-        if not output_dir:
-            return
 
-        image_format, ok = QInputDialog.getItem(
-            self,
-            self._t("Select Frame Format"),
-            self._t("Choose image format for extracted frames:"),
-            ["png", "jpg", "jpeg", "bmp", "webp"],
-            0,
-            False,
+def load_rife_model(model_ref: str):
+    global rife_session, rife_model_path, rife_model_id
+
+    rife_session = None
+    rife_model_path = None
+    rife_model_id = model_ref
+
+    if not model_ref:
+        debug_print("⚠️ No RIFE model selected.")
+        return False
+
+    resolved_path = resolve_runtime_model(model_ref)
+
+    if not resolved_path or not os.path.exists(resolved_path):
+        debug_print(f"❌ RIFE model file not found: {resolved_path}")
+        return False
+
+    try:
+        rife_session = ort.InferenceSession(
+            resolved_path,
+            sess_options=session_options,
+            providers=device
         )
-
-        if not ok or not image_format:
-            return
-
-        image_format = image_format.lower().strip()
-
-        frames_dir = os.path.join(
-            output_dir,
-            os.path.splitext(os.path.basename(video_path))[0] + f"_{image_format}_frames",
-        )
+        rife_model_path = resolved_path
+        debug_print(f"✅ RIFE model loaded: {resolved_path}")
+        return True
+    except Exception as e:
+        debug_print(f"❌ Failed to load RIFE model session: {e}")
+        rife_session = None
+        rife_model_path = None
+        return False
         
-        os.makedirs(frames_dir, exist_ok=True)
+def preprocess_rife(frame):
+    frame = np.transpose(frame, (2, 0, 1))
+    frame = np.expand_dims(frame, axis=0)
+    return frame.astype(np.float32)
 
-        self._set_frames_folder(frames_dir)
-        self.status_label.setText(self._t("Extracting frames..."))
-        self._set_state("Extract")
 
-        self._emit_job_progress(
-            progress=0,
-            status_text=self._t("Preparing frame extraction..."),
-            start_time=time.time(),
-            completed_units=0,
-            total_units=1,
-            state="Extract",
+def _linear_intermediate_frames(frame1, frame2, count):
+    """
+    Timing-safe fallback.
+    These are not true AI interpolation frames, but they preserve duration
+    if RIFE fails or returns the wrong number of frames.
+    """
+    frames = []
+
+    if count <= 0:
+        return frames
+
+    frame1 = normalize_frame(frame1)
+    frame2 = normalize_frame(frame2, (frame1.shape[1], frame1.shape[0]))
+
+    for i in range(count):
+        alpha = (i + 1) / (count + 1)
+        blended = cv2.addWeighted(frame1, 1.0 - alpha, frame2, alpha, 0)
+        frames.append(blended.astype(np.uint8))
+
+    return frames
+
+
+def _run_rife_middle(frame1, frame2):
+    """
+    Run RIFE once and return one middle frame between frame1 and frame2.
+    Most simple RIFE ONNX exports produce one middle/interpolated frame.
+    """
+    if not rife_session:
+        return None
+
+    try:
+        frame1 = normalize_frame(frame1)
+        frame2 = normalize_frame(frame2, (frame1.shape[1], frame1.shape[0]))
+
+        merged = concatenate_images(frame1, frame2)
+        tensor = preprocess_rife(merged)
+
+        input_name = rife_session.get_inputs()[0].name
+        output = rife_session.run(None, {input_name: tensor})[0]
+        output = np.clip(output, 0, 1)
+
+        # Usually [1, 3, H, W]
+        if output.ndim == 4:
+            frame = output[0]
+        else:
+            frame = output
+
+        # CHW to HWC
+        if frame.ndim == 3 and frame.shape[0] in (1, 3):
+            frame = np.transpose(frame, (1, 2, 0))
+
+        frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
+
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        return normalize_frame(frame, (frame1.shape[1], frame1.shape[0]))
+
+    except Exception as e:
+        debug_print(f"❌ RIFE middle-frame inference error: {e}")
+        return None
+
+    finally:
+        gc.collect()
+
+
+def _rife_recursive_between(frame1, frame2, levels):
+    """
+    Recursive interpolation.
+
+    levels=1:
+        1 in-between frame, for 2x
+
+    levels=2:
+        3 in-between frames, for 4x
+
+    levels=3:
+        7 in-between frames, for 8x
+    """
+    if levels <= 0:
+        return []
+
+    mid = _run_rife_middle(frame1, frame2)
+
+    if mid is None:
+        return []
+
+    left = _rife_recursive_between(frame1, mid, levels - 1)
+    right = _rife_recursive_between(mid, frame2, levels - 1)
+
+    return left + [mid] + right
+
+
+def run_rife(frame1, frame2, multiplier):
+    """
+    Always returns exactly multiplier - 1 intermediate frames.
+
+    This is critical:
+    2x needs 1 in-between frame
+    4x needs 3 in-between frames
+    8x needs 7 in-between frames
+
+    If output_fps is multiplied but these frames are missing,
+    the video plays too fast.
+    """
+    multiplier = int(multiplier)
+    expected = max(0, multiplier - 1)
+
+    if expected <= 0:
+        return []
+
+    level_map = {
+        2: 1,
+        4: 2,
+        8: 3,
+    }
+
+    levels = level_map.get(multiplier)
+
+    if not rife_session or levels is None:
+        debug_print(f"⚠️ RIFE unavailable or unsupported multiplier {multiplier}. Using timing fallback.")
+        return _linear_intermediate_frames(frame1, frame2, expected)
+
+    frames = _rife_recursive_between(frame1, frame2, levels)
+
+    if len(frames) != expected:
+        debug_print(
+            f"⚠️ RIFE returned {len(frames)} frames, expected {expected}. "
+            "Using timing-safe fallback frames."
+        )
+        frames = _linear_intermediate_frames(frame1, frame2, expected)
+
+    # Final guarantee. Never return too few or too many.
+    if len(frames) < expected:
+        frames.extend(_linear_intermediate_frames(frame1, frame2, expected - len(frames)))
+
+    return frames[:expected]
+
+def preprocess_esr(frame):
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, axis=0)
+    return img.astype(np.float32)
+
+def postprocess_esr(tensor):
+    tensor = np.squeeze(tensor, axis=0)
+    tensor = np.transpose(tensor, (1, 2, 0))
+    tensor = np.clip(tensor, 0, 1) * 255.0
+    return cv2.cvtColor(tensor.astype(np.uint8), cv2.COLOR_RGB2BGR)
+
+def blend_images(original, upscaled, mode="OFF"):
+    if mode == "OFF":
+        return upscaled
+    alpha_map = {"LOW": 0.85, "MEDIUM": 0.5, "HIGH": 0.25}
+    alpha = alpha_map.get(mode.upper(), 1.0)
+    return cv2.addWeighted(upscaled, alpha, original, 1 - alpha, 0)
+
+def init_upscaler(model_path: str, enable_upscale: bool):
+    """
+    Decide which backend to use based on model_path extension:
+      - .onnx -> ONNX / ESRGAN
+      - .pth  -> PyTorch SRResNet super-res
+
+    model_path can be:
+      - local relative path
+      - local absolute path
+      - Hugging Face ref: repo_id::filename
+    """
+    global esrgan_session, srresnet_model, UPSCALE_BACKEND
+
+    esrgan_session = None
+    srresnet_model = None
+    UPSCALE_BACKEND = "none"
+
+    if not enable_upscale or not model_path:
+        debug_print("Upscaler disabled.")
+        return False
+
+    resolved_model_path = resolve_runtime_model(model_path)
+    if not resolved_model_path:
+        debug_print(f"❌ Failed to resolve upscaler model: {model_path}")
+        return False
+
+    debug_print(f"Upscaler path resolved to: {resolved_model_path}")
+    ext = os.path.splitext(resolved_model_path)[1].lower()
+
+    if ext == ".onnx":
+        try:
+            debug_print(f"Loading ONNX upscaler from {resolved_model_path}")
+            esrgan_session = ort.InferenceSession(
+                resolved_model_path,
+                sess_options=session_options,
+                providers=device
+            )
+            UPSCALE_BACKEND = "onnx"
+            debug_print(f"ONNX upscaler ready [{provider_txt}]")
+            return True
+        except Exception as e:
+            UPSCALE_BACKEND = "none"
+            debug_print(f"❌ Failed to load ONNX upscaler: {e}")
+            return False
+
+    elif ext == ".pth":
+        try:
+            debug_print(f"Loading SRResNet (.pth) upscaler from {resolved_model_path}")
+            model = SRResNet(num_blocks=16, upscale_factor=4)
+            state = torch.load(resolved_model_path, map_location=srresnet_device)
+            model.load_state_dict(state)
+            model.to(srresnet_device)
+            model.eval()
+            srresnet_model = model
+            UPSCALE_BACKEND = "srresnet"
+            if srresnet_device.type == "cuda":
+                mode_txt = "CUDA" if not getattr(torch.version, "hip", None) else "ROCm"
+            elif srresnet_device.type == "mps":
+                mode_txt = "Metal"
+            else:
+                mode_txt = "CPU"
+            debug_print(f"SRResNet upscaler ready [{mode_txt}]")
+            return True
+        except Exception as e:
+            UPSCALE_BACKEND = "none"
+            debug_print(f"❌ Failed to load SRResNet model: {e}")
+            return False
+
+    else:
+        debug_print(f"⚠️ Unknown upscaler model extension: {ext}. Supported: .onnx, .pth")
+        UPSCALE_BACKEND = "none"
+        return False
+
+
+
+def _run_srresnet(frame_bgr: np.ndarray, scale: int = 4) -> np.ndarray:
+    """
+    Run your trained SRResNet on a single BGR uint8 frame.
+    Returns a BGR uint8 image (native 4x HR from the model).
+    """
+    global srresnet_model, srresnet_device
+    if srresnet_model is None:
+        return frame_bgr
+
+    # BGR uint8 -> RGB [0,1] tensor
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    rgb = np.transpose(rgb, (2, 0, 1))  # C,H,W
+    tensor = torch.from_numpy(rgb).unsqueeze(0).to(srresnet_device)
+
+    with torch.no_grad():
+        if srresnet_device.type == "cuda" and not getattr(torch.version, "hip", None):
+            with torch.autocast("cuda", dtype=torch.float16):
+                sr = srresnet_model(tensor)
+        else:
+            sr = srresnet_model(tensor)
+
+    sr = sr.clamp(0.0, 1.0).cpu().numpy()[0]
+    sr = np.transpose(sr, (1, 2, 0))  # H,W,C
+    sr = (sr * 255.0).round().astype(np.uint8)
+    sr = cv2.cvtColor(sr, cv2.COLOR_RGB2BGR)
+    return sr
+
+
+def run_esrgan(frame,
+               blend_mode="OFF",
+               input_res_pct=100,
+               model_name="RealESR_Gx4_fp16",
+               target_size=None,
+               tile=None,
+               tile_pad=8):
+    """
+    Generic upscaler entrypoint.
+
+    Backends:
+      - ONNX ESRGAN (UPSCALE_BACKEND == "onnx")
+      - PyTorch SRResNet (.pth) (UPSCALE_BACKEND == "srresnet")
+
+    Always returns a BGR uint8 frame matching target_size if given.
+    """
+    global esrgan_session, srresnet_model, UPSCALE_BACKEND
+    if frame is None:
+        return frame
+
+    # --- helpers ---
+    def _to_bgr_uint8(img):
+        if img is None:
+            return None
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255)
+            if img.max() <= 1.0:
+                img = img * 255.0
+            img = img.astype(np.uint8)
+        return img
+
+    def _fit_size(img, wh):
+        if img is None:
+            return None
+        w, h = wh
+        if img.shape[1] != w or img.shape[0] != h:
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+        return img
+
+    frame = _to_bgr_uint8(frame)
+    original = frame.copy()
+
+    # No upscaler loaded
+    backend_has_model = (
+        (UPSCALE_BACKEND == "onnx" and esrgan_session is not None) or
+        (UPSCALE_BACKEND == "srresnet" and srresnet_model is not None)
+    )
+    if not backend_has_model:
+        out = original
+        if target_size:
+            out = _fit_size(out, target_size)
+        return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
+
+    # Optional pre-scale (applies to both backends)
+    if input_res_pct != 100:
+        h, w = frame.shape[:2]
+        new_w = max(1, int(w * input_res_pct / 100))
+        new_h = max(1, int(h * input_res_pct / 100))
+        frame = cv2.resize(
+            frame,
+            (new_w, new_h),
+            interpolation=cv2.INTER_AREA if input_res_pct < 100 else cv2.INTER_CUBIC,
         )
 
-        def _run():
-            start_time = time.time()
+    # --- Actual backend inference ---
+    if UPSCALE_BACKEND == "srresnet":
+        # SRResNet path: use its native 4x output
+        upscaled = _run_srresnet(frame, scale=4)
 
-            try:
-                total_frames = self._probe_video_frame_count(video_path)
-                output_pattern = os.path.join(frames_dir, f"frame_%06d.{image_format}")
+        upscaled = _to_bgr_uint8(upscaled)
 
-                cmd = [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-y",
-                    "-i",
-                    video_path,
-                    "-vsync",
-                    "0",
-                ]
+        # If a specific output size was requested, resize there directly
+        if target_size:
+            upscaled = _fit_size(upscaled, target_size)
+            original_for_blend = _fit_size(original, target_size)
+        else:
+            h_hr, w_hr = upscaled.shape[:2]
+            original_for_blend = _fit_size(original, (w_hr, h_hr))
 
-                if image_format in ("jpg", "jpeg", "webp"):
-                    cmd += ["-q:v", "2"]
+        return blend_images(original_for_blend, upscaled, mode=blend_mode)
 
-                cmd += [
-                    output_pattern,
-                    "-progress",
-                    "pipe:1",
-                    "-nostats",
-                ]
+    # ---- ONNX Real-ESRGAN branch ----
+    if tile:
+        upscaled = _esrgan_tiled(frame, tile, tile_pad)
+    else:
+        tensor = preprocess_esr(frame)
+        try:
+            output = esrgan_session.run(
+                None, {esrgan_session.get_inputs()[0].name: tensor}
+            )[0]
+            upscaled = postprocess_esr(output)
+        except Exception as e:
+            debug_print(f"❌ ESRGAN failed: {e}")
+            out = original
+            if target_size:
+                out = _fit_size(out, target_size)
+            return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
 
-                print("[FRAME EXTRACT CMD]", " ".join(str(x) for x in cmd))
+    upscaled = _to_bgr_uint8(upscaled)
 
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    **hidden_subprocess_kwargs(),
+    # 2x vs 4x heuristic for ONNX models
+    scale = 2 if "x2" in model_name.lower() else 4
+
+    h0, w0 = frame.shape[:2]
+    h1, w1 = upscaled.shape[:2]
+    if h1 >= h0 and w1 >= w0:
+        # model already scaled, don't resize here
+        pass
+    else:
+        # model returned same size, then you can upscale if you want
+        upscaled = cv2.resize(upscaled, (w0 * scale, h0 * scale), interpolation=cv2.INTER_CUBIC)
+        
+    if target_size:
+        upscaled = _fit_size(upscaled, target_size)
+        original_for_blend = _fit_size(original, target_size)
+    else:
+        original_for_blend = original
+
+    return blend_images(original_for_blend, upscaled, mode=blend_mode)
+
+
+
+def _esrgan_tiled(img, tile, pad):
+    h, w = img.shape[:2]
+    out = np.zeros_like(img)
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            y0, x0 = max(0, y - pad), max(0, x - pad)
+            y1, x1 = min(h, y + tile + pad), min(w, x + tile + pad)
+            crop = img[y0:y1, x0:x1]
+            t = preprocess_esr(crop)
+            pred = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: t})[0]
+            up = postprocess_esr(pred)
+            # place center region
+            yc0, xc0 = y - y0, x - x0
+            yc1, xc1 = yc0 + min(tile, h - y), xc0 + min(tile, w - x)
+            out[y:y+min(tile, h - y), x:x+min(tile, w - x)] = up[yc0:yc1, xc0:xc1]
+    return out
+    
+
+def merge_audio_from_source_video(rendered_video_path, source_video_path, output_with_audio_path):
+    if not source_video_path or not os.path.exists(source_video_path):
+        return rendered_video_path
+
+    if not rendered_video_path or not os.path.exists(rendered_video_path):
+        return rendered_video_path
+
+    ffmpeg_exe = require_tool("ffmpeg")
+
+    cmd = [
+        ffmpeg_exe,
+        "-hide_banner",
+        "-y",
+        "-i", rendered_video_path,
+        "-i", source_video_path,
+        "-map", "0:v:0",
+        "-map", "1:a?",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        "-movflags", "+faststart",
+        output_with_audio_path,
+    ]
+
+    debug_print("[AUDIO MERGE CMD]", " ".join(str(x) for x in cmd))
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        **hidden_subprocess_kwargs(),
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[-4000:] or "Audio merge failed.")
+
+    return output_with_audio_path
+   
+def start_merged_pipeline(settings, progress_widget, status_label_widget):
+    global progress_bar, status_label, esrgan_session
+    progress_bar = progress_widget
+    status_label = status_label_widget
+
+    cancel_flag.clear()
+    suspend_flag.clear()
+
+    frames_dir = settings["frames_folder"]
+    output_path = settings["output_file"]
+    codec = settings["codec"]
+    width, height = settings["width"], settings["height"]
+    fps = settings["fps"]
+    fps_mult = settings["fps_multiplier"]
+    enable_rife = settings["enable_rife"]
+    rife_model = settings.get("rife_model", "rife:FuryTMP/RIFE_fp32")
+    enable_upscale = settings["enable_upscale"]
+    blend_mode = settings.get("blend_mode", "OFF")
+    input_res_pct = settings.get("input_res_pct", 100)
+    model_path = settings.get("model_path", "upscale:FuryTMP/RealESR_Gx4_fp16")
+
+    # Initialize upscaler (ONNX or SRResNet)
+    if enable_upscale:
+        if not init_upscaler(model_path, enable_upscale):
+            messagebox.showerror(
+                "Upscaler Error",
+                f"Failed to load/download upscaler model:\n{model_path}"
+            )
+            return
+
+    # Initialize RIFE only if needed
+    if enable_rife:
+        if not load_rife_model(rife_model):
+            messagebox.showerror(
+                "RIFE Error",
+                f"Failed to load/download RIFE model:\n{rife_model}"
+            )
+            return
+
+    files = natural_sort([
+        os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ])
+
+    if not files:
+        messagebox.showerror("Error", "No frames found in selected folder.")
+        return
+
+    output_fps = fps * fps_mult if enable_rife else fps
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
+    start = time.monotonic()
+
+    target_size = (width, height)
+
+    # Keep native resolution internally for SR / RIFE
+    file_iter = _frame_loader(files, None)
+
+    prev = next(file_iter, None)
+    if prev is None:
+        messagebox.showerror("Error", "No readable frames.")
+        try:
+            video.stdin.close()
+        except Exception:
+            pass
+        video.wait()
+        return
+
+    total_src = len(files)
+
+    # Write the first source frame so output duration matches the input timeline.
+    if enable_upscale:
+        prev_proc = run_esrgan(
+            prev,
+            blend_mode,
+            input_res_pct,
+            model_name=model_path,
+            target_size=target_size
+        )
+    else:
+        prev_proc = cv2.resize(prev, target_size)
+
+    video.stdin.write(prev_proc.tobytes())
+    del prev_proc
+    gc.collect()
+
+    for i, curr in enumerate(file_iter, start=1):
+        if cancel_flag.is_set():
+            break
+        if not _upscale_wait_if_paused():
+            break
+
+        if enable_rife:
+            if not _upscale_wait_if_paused():
+                break
+
+            interpolated = run_rife(prev, curr, fps_mult)
+            expected_interpolated = int(fps_mult) - 1
+
+            if is_debug_enabled() and i <= 10:
+                debug_print(
+                    f"[RIFE CHECK] pair={i} multiplier={fps_mult} "
+                    f"expected={expected_interpolated} got={len(interpolated)}"
                 )
 
-                current_frame = 0
+            if len(interpolated) != expected_interpolated:
+                debug_print(
+                    f"⚠️ RIFE returned {len(interpolated)} frames, "
+                    f"expected {expected_interpolated}. Timing will be wrong unless fallback is used."
+                )
 
-                if proc.stdout:
-                    for line in proc.stdout:
-                        line = line.strip()
+            if enable_upscale:
+                if not _upscale_wait_if_paused():
+                    break
 
-                        if line.startswith("frame="):
-                            try:
-                                current_frame = int(line.split("=", 1)[1])
-                            except Exception:
-                                continue
+                interpolated = [
+                    run_esrgan(f, blend_mode, input_res_pct, model_name=model_path, target_size=target_size)
+                    for f in interpolated
+                ]
 
-                            progress = (current_frame / max(total_frames, 1)) * 100.0
+                if not _upscale_wait_if_paused():
+                    break
 
-                            self._emit_job_progress(
-                                progress=progress,
-                                status_text=f"{self._t('Extracting frames')} {current_frame}/{total_frames}",
-                                start_time=start_time,
-                                completed_units=current_frame,
-                                total_units=total_frames,
-                                rate_label="FPS",
-                                state="Extract",
-                            )
+                curr_proc = run_esrgan(
+                    curr,
+                    blend_mode,
+                    input_res_pct,
+                    model_name=model_path,
+                    target_size=target_size
+                )
+            else:
+                interpolated = [cv2.resize(f, target_size) for f in interpolated]
+                curr_proc = cv2.resize(curr, target_size)
 
-                return_code = proc.wait()
+            for f in interpolated:
+                if cancel_flag.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
+                video.stdin.write(f.tobytes())
 
-                stderr_text = ""
+        else:
+            if enable_upscale:
+                if not _upscale_wait_if_paused():
+                    break
+
+                curr_proc = run_esrgan(
+                    curr,
+                    blend_mode,
+                    input_res_pct,
+                    model_name=model_path,
+                    target_size=target_size
+                )
+            else:
+                curr_proc = cv2.resize(curr, target_size)
+
+        if cancel_flag.is_set():
+            break
+        if not _upscale_wait_if_paused():
+            break
+
+        video.stdin.write(curr_proc.tobytes())
+        prev = curr
+
+        update_progress(i + 1, total_src, start)
+
+    try:
+        video.stdin.close()
+    except Exception:
+        pass
+    video.wait()
+
+    final_output_path = output_path
+
+    if settings.get("keep_original_audio", False) and settings.get("input_video_file"):
+        try:
+            base, ext = os.path.splitext(output_path)
+            audio_output_path = base + "_audio" + ext
+
+            ui_set_status(status_label, "Merging original audio...")
+            final_output_path = merge_audio_from_source_video(
+                output_path,
+                settings.get("input_video_file"),
+                audio_output_path,
+            )
+
+            # Replace silent output with audio version if possible.
+            try:
+                os.replace(final_output_path, output_path)
+                final_output_path = output_path
+            except Exception:
+                pass
+
+        except Exception as exc:
+            debug_print(f"⚠️ Audio merge failed: {exc}")
+            ui_set_status(status_label, f"Processing complete, but audio merge failed: {exc}")
+
+    update_progress(total_src, total_src, start)
+    try:
+        status_label.after(0, lambda: status_label.configure(text="✅ Processing Complete!"))
+    except Exception:
+        pass
+
+MAX_QUEUE_SIZE = 16
+END_SEG = ("END", None, None, [])
+END_FRM = ("END", None)
+
+def q_put(q, item, cancel_evt, timeout=0.25):
+    while not cancel_flag.is_set() and not cancel_evt.is_set():
+        try:
+            q.put(item, timeout=timeout)
+            return True
+        except queue.Full:
+            # normal: queue is full, retry until cancel
+            continue
+        except Exception as e:
+            # not normal: surface the real bug
+            debug_print(f"[q_put] unexpected error: {e}")
+            cancel_evt.set()
+            return False
+    return False
+
+def q_get(q, cancel_evt, timeout=0.25):
+    while not cancel_flag.is_set() and not cancel_evt.is_set():
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            # normal: nothing ready yet, retry until cancel
+            continue
+        except Exception as e:
+            debug_print(f"[q_get] unexpected error: {e}")
+            cancel_evt.set()
+            return None
+    return None
+
+def start_threaded_pipeline(settings, progress_widget, status_label_widget):
+    global progress_bar, status_label, esrgan_session
+    progress_bar = progress_widget
+    status_label = status_label_widget
+
+    cancel_flag.clear()
+    suspend_flag.clear()
+
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    import gc
+    gc.collect()
+
+    try:
+        progress_bar.after(0, lambda: progress_bar.configure(
+            mode="determinate", maximum=100.0, value=0.0
+        ))
+        status_label.after(0, lambda: status_label.configure(text="Preparing..."))
+    except Exception:
+        pass
+
+    frames_dir    = settings["frames_folder"]
+    output_path   = settings["output_file"]
+    codec         = settings["codec"]
+    width         = settings["width"]
+    height        = settings["height"]
+    fps           = settings["fps"]
+    fps_mult      = settings["fps_multiplier"]
+    enable_rife   = settings["enable_rife"]
+    enable_up     = settings["enable_upscale"]
+    blend_mode    = settings.get("blend_mode", "OFF")
+    input_res_pct = settings.get("input_res_pct", 100)
+    rife_model    = settings.get("rife_model", "rife:FuryTMP/RIFE_fp32")
+    model_path    = settings.get("model_path", "upscale:FuryTMP/RealESR_Gx4_fp16")
+
+    ui_set_status(status_label, "Preparing...")
+
+    output_fps = fps * fps_mult if enable_rife else fps
+    target_size = (width, height)
+    work_size = None
+
+    files = natural_sort([
+        os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ])
+    total_src = len(files)
+    total_pairs = max(1, total_src - 1)
+
+    if total_src < 2:
+        ui_set_status(status_label, "⚠️ Not enough frames to process.")
+        return
+
+    if enable_up:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if not init_upscaler(model_path, enable_up):
+            ui_set_status(status_label, "❌ Failed to load/download upscaler model.")
+            return
+
+    if enable_rife:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if not load_rife_model(rife_model):
+            ui_set_status(status_label, "❌ Failed to load/download RIFE model.")
+            return
+
+    video = start_ffmpeg_writer(output_path, width, height, output_fps, codec)
+    start = time.monotonic()
+
+    # Small queues. Keep them tight so RAM does not balloon.
+    segment_queue = Queue(maxsize=4)
+    write_queue = Queue(maxsize=8)
+
+    cancel_local = threading.Event()
+    END_SEG = ("END", None, None)
+    END_WRITE = ("END", None)
+
+    def reader_rife_worker():
+        """
+        Reads frames and performs only the RIFE stage.
+        Sends:
+            (pair_index, curr_frame, interpolated_frames)
+        in natural order.
+        """
+        try:
+            prev = cv2.imread(files[0], cv2.IMREAD_COLOR)
+            prev = normalize_frame(prev, work_size)
+
+            for idx in range(1, len(files)):
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
+
+                curr = cv2.imread(files[idx], cv2.IMREAD_COLOR)
+                curr = normalize_frame(curr, work_size)
+
+                if enable_rife:
+                    interpolated = run_rife(prev, curr, fps_mult)
+                    expected_interpolated = int(fps_mult) - 1
+
+                    if is_debug_enabled() and idx <= 10:
+                        debug_print(
+                            f"[RIFE CHECK THREADED] pair={idx} multiplier={fps_mult} "
+                            f"expected={expected_interpolated} got={len(interpolated)}"
+                        )
+                    
+                else:
+                    interpolated = []
+
+                if not q_put(segment_queue, (idx, curr, interpolated), cancel_local):
+                    break
+
+                prev = curr
+
+        except Exception as e:
+            debug_print(f"⚠️ reader_rife_worker error: {e}")
+            cancel_local.set()
+        finally:
+            q_put(segment_queue, END_SEG, cancel_local)
+
+    def process_worker():
+        """
+        Consumes ordered segments, performs upscale/resize, and emits finished
+        frames in final output order. No reordering dict needed.
+        """
+        try:
+            processed = 0
+
+            while True:
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
+
+                item = q_get(segment_queue, cancel_local)
+                if item is None:
+                    break
+
+                idx, curr, interpolated = item
+                if idx == "END":
+                    break
+
+                # Process interpolated frames first
+                if enable_up:
+                    inter_proc = [
+                        run_esrgan(
+                            f,
+                            blend_mode,
+                            input_res_pct,
+                            model_name=model_path,
+                            target_size=target_size
+                        )
+                        for f in interpolated
+                    ]
+                    curr_proc = run_esrgan(
+                        curr,
+                        blend_mode,
+                        input_res_pct,
+                        model_name=model_path,
+                        target_size=target_size
+                    )
+                else:
+                    inter_proc = [cv2.resize(f, target_size) for f in interpolated]
+                    curr_proc = cv2.resize(curr, target_size)
+
+                for f in inter_proc:
+                    if cancel_flag.is_set() or cancel_local.is_set():
+                        break
+                    if not _upscale_wait_if_paused():
+                        break
+                    if not q_put(write_queue, ("FRAME", f), cancel_local):
+                        break
+
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+                if not _upscale_wait_if_paused():
+                    break
+
+                if not q_put(write_queue, ("FRAME", curr_proc), cancel_local):
+                    break
+
+                processed += 1
+                update_progress(processed, total_pairs, start)
+
+        except Exception as e:
+            debug_print(f"⚠️ process_worker error: {e}")
+            cancel_local.set()
+        finally:
+            q_put(write_queue, END_WRITE, cancel_local)
+
+    def writer_worker():
+        """
+        Writes already-ordered finished frames directly to ffmpeg.
+        """
+        try:
+            while True:
+                if cancel_flag.is_set() or cancel_local.is_set():
+                    break
+
+                item = q_get(write_queue, cancel_local)
+                if item is None:
+                    break
+
+                kind, payload = item
+                if kind == "END":
+                    break
+
+                frame = payload
+                ok, why = _validate_frame_bytes(frame, width, height)
+                if not ok:
+                    debug_print(f"[writer] drop bad frame: {why}")
+                    continue
+
                 try:
-                    if proc.stderr:
-                        stderr_text = proc.stderr.read()
+                    video.stdin.write(_frame_to_bytes(frame))
+                except Exception as e:
+                    debug_print(f"[writer] write error: {e}")
+                    cancel_local.set()
+                    break
+
+        except Exception as e:
+            debug_print(f"⚠️ writer_worker error: {e}")
+            cancel_local.set()
+        finally:
+            try:
+                video.stdin.close()
+            except Exception:
+                pass
+            try:
+                video.wait()
+            except Exception:
+                pass
+
+    t_read = threading.Thread(target=reader_rife_worker, daemon=True)
+    t_proc = threading.Thread(target=process_worker, daemon=True)
+    t_wrt  = threading.Thread(target=writer_worker, daemon=True)
+
+    debug_print(">>> start_threaded_pipeline called")
+    t_read.start()
+    t_proc.start()
+    t_wrt.start()
+
+    ui_set_status(status_label, "Running threaded pipeline...")
+
+    def _wait_finish():
+        t_read.join()
+        t_proc.join()
+        t_wrt.join()
+
+        if settings.get("keep_original_audio", False) and settings.get("input_video_file"):
+            try:
+                base, ext = os.path.splitext(output_path)
+                audio_output_path = base + "_audio" + ext
+
+                ui_set_status(status_label, "Merging original audio...")
+                merged_path = merge_audio_from_source_video(
+                    output_path,
+                    settings.get("input_video_file"),
+                    audio_output_path,
+                )
+
+                try:
+                    os.replace(merged_path, output_path)
                 except Exception:
                     pass
 
-                if return_code != 0:
-                    raise RuntimeError(stderr_text[-4000:] or f"ffmpeg exited with code {return_code}")
-
-                extracted_count = len([
-                    name for name in os.listdir(frames_dir)
-                    if name.lower().endswith((".png", ".jpg", ".jpeg"))
-                ])
-
-                self._emit_job_progress(
-                    progress=100,
-                    status_text=f"{self._t('Frame extraction complete.')} {extracted_count} {self._t('frames extracted.')}",
-                    start_time=start_time,
-                    completed_units=max(extracted_count, total_frames),
-                    total_units=max(extracted_count, total_frames, 1),
-                    rate_label="FPS",
-                    state="Done",
-                    notify_complete=True,
-                    message_title=self._t("Frame Extraction Complete"),
-                    message_text=f"{self._t('Extracted frames to:')}\n{frames_dir}",
-                )
-
             except Exception as exc:
-                self._emit_job_progress(
-                    progress=0,
-                    status_text=f"{self._t('Frame extraction failed:')} {exc}",
-                    start_time=start_time,
-                    completed_units=0,
-                    total_units=1,
-                    rate_label="FPS",
-                    state="Error",
-                    notify_error=True,
-                    message_title=self._t("Frame Extraction Failed"),
-                    message_text=str(exc),
-                    traceback_text=traceback.format_exc(),
-                )
+                debug_print(f"⚠️ Audio merge failed: {exc}")
+                ui_set_status(status_label, f"Processing complete, but audio merge failed: {exc}")
 
-        threading.Thread(target=_run, daemon=True).start()
+        update_progress(total_pairs, total_pairs, start)
+        ui_set_progress(progress_bar, 100.0)
+        ui_set_status(status_label, "Processing Complete!")
 
-    def _get_settings(self):
-        return {
-            "input_video_file": self.input_video_file,
-            "keep_original_audio": self.keep_audio_check.isChecked(),
-            "frames_folder": self.frames_folder,
-            "output_file": self.output_file,
-            "width": self.w_spin.value(),
-            "height": self.h_spin.value(),
-            "fps": self.fps_combo.currentData(),
-            "fps_multiplier": self.mult_combo.currentData(),
-            "codec": FFMPEG_CODEC_MAP.get(
-                self.codec_combo.currentText(),
-                "h264_nvenc"
-            ),
-            "enable_rife": self.rife_check.isChecked(),
-            "enable_upscale": self.upscale_check.isChecked(),
-            "blend_mode": self.blend_combo.currentText(),
-            "input_res_pct": int(self.res_pct_combo.currentText()),
-            "rife_model": _load_rife_models().get(
-                self.rife_combo.currentText(),
-                "rife:FuryTMP/RIFE_fp32"
-            ),
-            "model_path": _load_upscaler_models().get(
-                self.upscale_combo.currentText(),
-                "upscale:FuryTMP/RealESR_Gx4_fp16"
-            ),
-        }
-
-    def _validate_paths(self) -> bool:
-        if not self.frames_folder or not self.output_file:
-            QMessageBox.warning(
-                self,
-                self._t("Missing paths"),
-                self._t("Select a frames folder and output file first.")
-            )
-            return False
-
-        return True
-
-    def _start_processing(self):
-        if not self._validate_paths():
-            return
-
-        settings = self._get_settings()
-
-        self.status_label.setText(self._t("Processing..."))
-        self._set_state("Running")
-
-        self.progress_updated.emit({
-            "progress": 0,
-            "status_text": self._t("Starting standard pipeline...")
-        })
-
-        def _run():
-            try:
-                from core.merged_pipeline import start_merged_pipeline
-
-                proxy = _TkProgressProxy(
-                    lambda p: self.progress_updated.emit(p)
-                )
-                start_merged_pipeline(settings, proxy, proxy)
-
-                self.progress_updated.emit({
-                    "progress": 100,
-                    "status_text": self._t("Done.")
-                })
-
-            except Exception as exc:
-                self.progress_updated.emit({
-                    "progress": 0,
-                    "status_text": f"{self._t('Error:')} {exc}",
-                    "state": "Error",
-                    "traceback": traceback.format_exc(),
-                })
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _start_threaded(self):
-        if not self._validate_paths():
-            return
-
-        settings = self._get_settings()
-
-        self.status_label.setText(self._t("Processing with threaded RIFE + ESRGAN..."))
-        self._set_state("Running")
-
-        self.progress_updated.emit({
-            "progress": 0,
-            "status_text": self._t("Starting threaded pipeline...")
-        })
-
-        def _run():
-            try:
-                from core.merged_pipeline import start_threaded_pipeline
-
-                proxy = _TkProgressProxy(
-                    lambda p: self.progress_updated.emit(p)
-                )
-                start_threaded_pipeline(settings, proxy, proxy)
-
-                self.progress_updated.emit({
-                    "progress": 100,
-                    "status_text": self._t( "Done.")
-                })
-
-            except Exception as exc:
-                self.progress_updated.emit({
-                    "progress": 0,
-                    "status_text": f"{self._t('Error:')} {exc}",
-                    "state": "Error",
-                    "traceback": traceback.format_exc(),
-                })
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _pause(self):
-        from core.merged_pipeline import request_upscale_pause
-
-        request_upscale_pause()
-
-        self.status_label.setText(self._t("Paused"))
-        self._set_state("Paused")
-
-    def _resume(self):
-        from core.merged_pipeline import request_upscale_resume
-
-        request_upscale_resume()
-
-        self.status_label.setText(self._t("Resuming..."))
-        self._set_state("Running")
-
-    def _stop(self):
-        from core.merged_pipeline import request_upscale_stop
-
-        request_upscale_stop()
-
-        self.status_label.setText(self._t("Stopping..."))
-        self._set_state("Stopping")
-
-    def _detect_scenes(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self._t("Select Video for Scene Detection"),
-            "",
-            "Video (*.mp4 *.avi *.mov *.mkv);;All Files (*.*)"
-        )
-
-        if not path:
-            return
-
-        out_dir = QFileDialog.getExistingDirectory(
-            self,
-            self._t("Select Output Folder for Scenes")
-        )
-
-        if not out_dir:
-            return
-
-        threshold = self.scene_slider.value()
-        fmt = self.scene_fmt_combo.currentText()
-
-        self.status_label.setText(self._t("Detecting scenes..."))
-        self._set_state("Detect")
-
-        self.progress_updated.emit({
-            "progress": 0,
-            "status_text": self._t("Preparing scene detection..."),
-            "elapsed": 0,
-            "eta": None,
-            "fps_like": None,
-            "rate_label": "Scenes/s",
-            "state": "Detect",
-        })
-
-        def _run():
-            start_time = time.time()
-            total = 0
-            exported = 0
-
-            try:
-                from scenedetect import open_video, SceneManager
-                from scenedetect.detectors import ContentDetector
-
-                self._emit_job_progress(
-                    progress=2,
-                    status_text=self._t("Scanning video for scene changes..."),
-                    start_time=start_time,
-                    completed_units=0,
-                    total_units=1,
-                    rate_label="Scenes/s",
-                    state="Detect",
-                )
-
-                video = open_video(path)
-
-                sm = SceneManager()
-                sm.add_detector(ContentDetector(threshold=threshold))
-                sm.detect_scenes(video)
-
-                scenes = sm.get_scene_list()
-                fps = video.frame_rate
-                total = len(scenes)
-
-                if not scenes:
-                    self._emit_job_progress(
-                        progress=100,
-                        status_text=self._t("No scenes detected."),
-                        start_time=start_time,
-                        completed_units=1,
-                        total_units=1,
-                        rate_label="Scenes/s",
-                        state="Ready",
-                        notify_complete=True,
-                        message_title=self._t("Scene Detection Complete"),
-                        message_text=self._t("No scenes were detected in this video."),
-                    )
-                    return
-
-                self._emit_job_progress(
-                    progress=10,
-                    status_text=f"{self._t('Detected')} {total} {self._t('scenes.')} {self._t('Exporting...')}",
-                    start_time=start_time,
-                    completed_units=0,
-                    total_units=total,
-                    rate_label="Scenes/s",
-                    state="Export",
-                )
-
-                for i, (start, end) in enumerate(scenes, start=1):
-                    t0 = start.get_frames() / fps
-                    dur = (end.get_frames() - start.get_frames()) / fps
-                    out = os.path.join(out_dir, f"scene_{i:03d}.{fmt}")
-
-                    status = (
-                        f"{self._t('Exporting scene')} {i}/{total} "
-                        f"({dur:.2f}s)"
-                    )
-
-                    # progress before this scene starts
-                    pre_progress = 10.0 + ((i - 1) / max(total, 1)) * 90.0
-                    self._emit_job_progress(
-                        progress=pre_progress,
-                        status_text=status,
-                        start_time=start_time,
-                        completed_units=i - 1,
-                        total_units=total,
-                        rate_label="Scenes/s",
-                        state="Export",
-                    )
-
-                    cmd = [
-                        "ffmpeg",
-                        "-hide_banner",
-                        "-y",
-                        "-ss",
-                        f"{t0:.3f}",
-                        "-i",
-                        path,
-                        "-t",
-                        f"{dur:.3f}",
-                        "-c:v",
-                        "libx264",
-                        "-crf",
-                        "18",
-                        "-preset",
-                        "fast",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "128k",
-                        out,
-                    ]
-
-                    print("[SCENE EXPORT CMD]", " ".join(str(x) for x in cmd))
-
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        **hidden_subprocess_kwargs(),
-                    )
-
-                    if result.returncode != 0:
-                        raise RuntimeError(
-                            f"Failed exporting scene {i}/{total}:\n"
-                            f"{result.stderr[-4000:]}"
-                        )
-
-                    exported = i
-                    progress = 10.0 + (exported / max(total, 1)) * 90.0
-
-                    self._emit_job_progress(
-                        progress=progress,
-                        status_text=f"{self._t('Exported scene')} {exported}/{total}",
-                        start_time=start_time,
-                        completed_units=exported,
-                        total_units=total,
-                        rate_label="Scenes/s",
-                        state="Export",
-                    )
-
-                self._emit_job_progress(
-                    progress=100,
-                    status_text=f"{self._t('Exported')} {exported} {self._t('scenes.')}",
-                    start_time=start_time,
-                    completed_units=exported,
-                    total_units=total,
-                    rate_label="Scenes/s",
-                    state="Done",
-                    notify_complete=True,
-                    message_title=self._t("Scene Detection Complete"),
-                    message_text=(
-                        f"{self._t('Exported')} {exported} {self._t('scenes.')}\n\n"
-                        f"{out_dir}"
-                    ),
-                )
-
-            except Exception as exc:
-                self._emit_job_progress(
-                    progress=0,
-                    status_text=f"{self._t('Scene detection error:')} {exc}",
-                    start_time=start_time,
-                    completed_units=exported,
-                    total_units=max(total, 1),
-                    rate_label="Scenes/s",
-                    state="Error",
-                    notify_error=True,
-                    message_title=self._t("Scene Detection Failed"),
-                    message_text=str(exc),
-                    traceback_text=traceback.format_exc(),
-                )
-
-        threading.Thread(target=_run, daemon=True).start()
+    threading.Thread(target=_wait_finish, daemon=True).start()
+    
+def _encoder_args(codec: str, width: int, height: int):
+    c = (codec or "").lower()
+    if c in {"h264_nvenc","hevc_nvenc","av1_nvenc"}:
+        args = [
+            "-c:v", c,
+            "-preset", "p4",
+            "-tune", "hq",
+            "-rc", "vbr",
+            "-cq", "19",
+            "-rc-lookahead", "20",
+            "-bf:v", "3",
+            "-pix_fmt", "yuv420p",
+        ]
+        if c != "av1_nvenc":
+            args += ["-b_ref_mode", "middle"]
+        return args
         
-    def _on_progress_updated(self, payload: dict):
-        status_text = payload.get("status_text")
-        state = payload.get("state")
+    # --- AMD AMF ---
+    if c in {"h264_amf", "hevc_amf", "av1_amf"}:
+        return ["-c:v", c, "-quality", "speed", "-pix_fmt", "yuv420p"]
 
-        if status_text:
-            self.status_label.setText(status_text)
+    # --- Intel QSV ---
+    if c in {"h264_qsv", "hevc_qsv", "vp9_qsv", "av1_qsv"}:
+        # global_quality is QSV’s CRF-like knob; lower = better
+        return ["-c:v", c, "-global_quality", "23", "-pix_fmt", "yuv420p"]
 
-        if state:
-            self._set_state(state)
-        elif payload.get("progress") == 100:
-            self._set_state("Done")
+    # --- CPU encoders ---
+    if c == "libx264":
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"]
+    if c == "libx265":
+        return ["-c:v", "libx265", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
+    if c == "libaom-av1":
+        return ["-c:v", "libaom-av1", "-cpu-used", "6", "-crf", "32", "-b:v", "0", "-pix_fmt", "yuv420p"]
+    if c == "libsvtav1":
+        return ["-c:v", "libsvtav1", "-preset", "6", "-crf", "28", "-pix_fmt", "yuv420p"]
+    if c in {"mp4v", "xvid", "divx"}:
+        return ["-c:v", c, "-qscale:v", "2", "-pix_fmt", "yuv420p"]  # old-school MPEG-4 style
 
-        tb = payload.get("traceback")
-        if tb:
-            print(tb)
+    # --- Fallback: pass through whatever was requested, or libx264 ---
+    return ["-c:v", (c or "libx264"), "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"]
 
-        if payload.get("notify_complete"):
-            QMessageBox.information(
-                self,
-                payload.get("message_title") or self._t("Done"),
-                payload.get("message_text") or status_text or self._t("Done."),
-            )
-
-        if payload.get("notify_error"):
-            QMessageBox.critical(
-                self,
-                payload.get("message_title") or self._t("Error"),
-                payload.get("message_text") or status_text or self._t("Error"),
-            )
+def start_ffmpeg_writer(output_path, width, height, fps, codec):
+    ffmpeg_exe = require_tool("ffmpeg")
+    base = [
+        ffmpeg_exe,"-y",
+        "-f","rawvideo","-vcodec","rawvideo",
+        "-pix_fmt","bgr24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i","-",
+    ]
+    enc = _encoder_args(codec, width, height)
+    cmd = base + enc + [output_path]
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        **hidden_subprocess_kwargs(),
+    )

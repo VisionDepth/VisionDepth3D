@@ -23,6 +23,8 @@ import onnxruntime as ort
 import matplotlib.cm as cm
 from PIL import Image, ImageTk, ImageOps
 import platform, subprocess
+from core.ffmpeg_utils import require_tool
+from core.debug_flags import debug_print, is_debug_enabled
 
 def hidden_subprocess_kwargs():
     """
@@ -127,8 +129,10 @@ def is_opencv_safe_fourcc(ffmpeg_codec: str) -> bool:
     return ffmpeg_codec in ("mp4v", "XVID", "DIVX")
     
 def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
+    ffmpeg_exe = require_tool("ffmpeg")
+
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_exe, "-y",
         "-hide_banner", "-loglevel", "error",
 
         # Bigger queue so stdin bursts do not stall as easily
@@ -447,9 +451,11 @@ def infer_depth_tile(model_call, rgb_np, inference_size, tile=TILE_SIZE, pad=TIL
             out_accum[y0:y1, x0:x1] += center * w
             w_accum[y0:y1, x0:x1]   += w
 
-            if TILE_DEBUG:
-                print(f"[tile] ({y0}:{y1},{x0}:{x1}) crop={crop_rgb.shape[:2]} center={center.shape} "
-                      f"acc={(out_accum[y0:y1, x0:x1].shape)}")
+            if TILE_DEBUG and is_debug_enabled():
+                debug_print(
+                    f"[tile] ({y0}:{y1},{x0}:{x1}) crop={crop_rgb.shape[:2]} "
+                    f"center={center.shape} acc={(out_accum[y0:y1, x0:x1].shape)}"
+                )
 
     # Normalize by weights, guard zeros
     depth_tiled = out_accum / np.maximum(w_accum, 1e-8)
@@ -565,7 +571,7 @@ def _run_pipe_or_tile(images_pil, inference_size=None, **kwargs):
             rgb = np.array(img.convert("RGB"))
             dep = infer_depth_tile(pipe, rgb, inference_size, tile=TILE_SIZE, pad=TILE_PAD)
             dep_min, dep_max = float(np.nanmin(dep)), float(np.nanmax(dep))
-            print(f"[tile] range min={dep_min:.6f} max={dep_max:.6f}")
+            debug_print(f"[tile] range min={dep_min:.6f} max={dep_max:.6f}")
             preds.append({"predicted_depth": dep})
         return preds
 
@@ -579,10 +585,15 @@ def _run_pipe_or_tile(images_pil, inference_size=None, **kwargs):
     
     # Log what the pipeline is actually receiving
     if inference_size:
-        print(f"[DEPTH] Running {pipe_type} at {inference_size[0]}x{inference_size[1]} with {len(images_pil)} frame(s)")
+        debug_print(
+            f"[DEPTH] Running {pipe_type} at "
+            f"{inference_size[0]}x{inference_size[1]} with {len(images_pil)} frame(s)"
+        )
     else:
-        print(f"[DEPTH] Running {pipe_type} at original resolution with {len(images_pil)} frame(s)")
-
+        debug_print(
+            f"[DEPTH] Running {pipe_type} at original resolution with {len(images_pil)} frame(s)"
+        )
+        
     if forward_ok:
         try:
             res = pipe(images_pil, inference_size=inference_size, **call_kwargs)
@@ -673,7 +684,7 @@ class FixedPercentileNormalizer:
     
     def lock(self):
         self.locked = True
-        print(f"🔒 Depth range locked: lo={self.lo:.4f}, hi={self.hi:.4f}")
+        debug_print(f"🔒 Depth range locked: lo={self.lo:.4f}, hi={self.hi:.4f}")
     
     def __call__(self, depth_f):
         d = np.asarray(depth_f, dtype=np.float32)
@@ -690,6 +701,26 @@ class FixedPercentileNormalizer:
         
         d = (d - lo) / (hi - lo + 1e-6)
         return np.clip(d, 0.0, 1.0)
+
+def fast_depth_to_01(depth_f):
+    """
+    Fast local per-frame normalization.
+    Skips scene-level percentile bootstrap.
+    Good for speed testing, but may allow depth breathing/flicker.
+    """
+    d = np.asarray(depth_f, dtype=np.float32)
+
+    if not np.isfinite(d).all():
+        d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+
+    dmin = float(np.min(d))
+    dmax = float(np.max(d))
+
+    if dmax - dmin < 1e-6:
+        return np.full_like(d, 0.5, dtype=np.float32)
+
+    d = (d - dmin) / (dmax - dmin + 1e-6)
+    return np.clip(d, 0.0, 1.0)
 
 def apply_offload_if_supported(model_callable, caps, mode: str):
     """
@@ -2683,6 +2714,7 @@ def process_video2(
     target_fps=15,
     ignore_letterbox_bars=False,
     prefer_opencv_writer=False,
+    disable_scene_normalization=False,
 ):
     
     def ui_set_progress(pct: int):
@@ -2700,6 +2732,23 @@ def process_video2(
 
     global pipe, pipe_type
     global global_session_start_time
+    
+    profile_depth_stages = True
+
+    stage_times = {
+        "decode": 0.0,
+        "preprocess": 0.0,
+        "inference": 0.0,
+        "postprocess": 0.0,
+        "write": 0.0,
+    }
+
+    stage_counts = {
+        "frames": 0,
+        "batches": 0,
+    }
+
+    last_profile_print = time.time()
 
     # Plain-value normalization for worker thread use
     output_dir = (output_dir or "").strip()
@@ -2922,43 +2971,58 @@ def process_video2(
     prev_depth_u8 = None
 
     # ============================================================
-    # FIXED PERCENTILE NORMALIZER + BOOTSTRAP
+    # DEPTH NORMALIZATION MODE
     # ============================================================
-    temp_normalizer = FixedPercentileNormalizer(pclip=(2.0, 98.0))
+    temp_normalizer = None
 
-    print("🔍 Bootstrapping depth normalizer with scene-level percentiles...")
-    bootstrap_frames = []
-    cap_bootstrap = cv2.VideoCapture(file_path)
-    bootstrap_samples = min(30, max(10, total_frames // 10))
-    bootstrap_indices = np.linspace(0, total_frames - 1, bootstrap_samples, dtype=int)
+    if disable_scene_normalization:
+        debug_print("⚡ Scene normalization disabled. Using fast local per-frame normalization.")
+    else:
+        temp_normalizer = FixedPercentileNormalizer(pclip=(2.0, 98.0))
+        bootstrap_frames = []
+        cap_bootstrap = cv2.VideoCapture(file_path)
+        # Lighter depth normalizer bootstrap.
+        # Old behavior sampled 10 to 30 frames, which can be expensive because each
+        # sample still runs through the depth model before the real render starts.
+        bootstrap_samples = min(5, max(3, total_frames // 300))
 
-    for idx in bootstrap_indices:
-        cap_bootstrap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap_bootstrap.read()
-        if ret:
-            if inference_size:
-                frame_rs = cv2.resize(frame, inference_size, interpolation=cv2.INTER_AREA)
-            else:
-                frame_rs = frame
-            frame_rgb = cv2.cvtColor(frame_rs, cv2.COLOR_BGR2RGB)
-            bootstrap_frames.append(Image.fromarray(frame_rgb))
-    cap_bootstrap.release()
+        if total_frames <= 0:
+            bootstrap_indices = np.array([], dtype=int)
+        else:
+            bootstrap_indices = np.linspace(0, total_frames - 1, bootstrap_samples, dtype=int)
 
-    if bootstrap_frames:
-        for i in range(0, len(bootstrap_frames), batch_size):
-            batch_imgs = bootstrap_frames[i:i+batch_size]
-            if cancel_requested.is_set():
-                break
-            try:
-                batch_preds = _run_pipe_or_tile(batch_imgs, inference_size)
-                for pred in batch_preds:
-                    depth_f = _ensure_depth_np(pred["predicted_depth"])
-                    temp_normalizer.learn(depth_f)
-            except Exception as e:
-                print(f"⚠️ Bootstrap batch failed: {e}")
+        debug_print(f"🔍 Bootstrapping depth normalizer with {len(bootstrap_indices)} sampled frame(s).")
+        for idx in bootstrap_indices:
+            cap_bootstrap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap_bootstrap.read()
+            if ret:
+                if inference_size:
+                    frame_rs = cv2.resize(frame, inference_size, interpolation=cv2.INTER_AREA)
+                else:
+                    frame_rs = frame
+                frame_rgb = cv2.cvtColor(frame_rs, cv2.COLOR_BGR2RGB)
+                bootstrap_frames.append(Image.fromarray(frame_rgb))
 
-    temp_normalizer.lock()
-    print(f"🔒 Depth normalizer locked with range: lo={temp_normalizer.lo:.4f}, hi={temp_normalizer.hi:.4f}")
+        cap_bootstrap.release()
+
+        if bootstrap_frames:
+            for i in range(0, len(bootstrap_frames), batch_size):
+                batch_imgs = bootstrap_frames[i:i + batch_size]
+                if cancel_requested.is_set():
+                    break
+                try:
+                    batch_preds = _run_pipe_or_tile(batch_imgs, inference_size)
+                    for pred in batch_preds:
+                        depth_f = _ensure_depth_np(pred["predicted_depth"])
+                        temp_normalizer.learn(depth_f)
+                except Exception as e:
+                    print(f"⚠️ Bootstrap batch failed: {e}")
+
+        temp_normalizer.lock()
+        debug_print(
+            f"🔒 Depth normalizer locked with range: "
+            f"lo={temp_normalizer.lo:.4f}, hi={temp_normalizer.hi:.4f}"
+        )
 
     # ============================================================
     # MAIN PROCESSING - wrapped in try/finally for cleanup
@@ -2990,7 +3054,7 @@ def process_video2(
                 all_bars.append((bt, bb))
 
             total_frames_vda = len(all_frames)
-            print(f"[VDA] Loaded {total_frames_vda} frames for sliding window processing")
+            debug_print(f"[VDA] Loaded {total_frames_vda} frames for sliding window processing")
 
             window_start = 0
             all_depth_frames = [None] * total_frames_vda
@@ -2999,7 +3063,10 @@ def process_video2(
                 wait_if_paused(status_label)
                 window_end = min(window_start + vda_window_size, total_frames_vda)
                 batch_frames = all_frames[window_start:window_end]
-                print(f"[VDA] Processing window {window_start}-{window_end-1} ({len(batch_frames)} frames)")
+                debug_print(
+                    f"[VDA] Processing window {window_start}-{window_end - 1} "
+                    f"({len(batch_frames)} frames)"
+                )
 
                 try:
                     predictions = _run_pipe_or_tile(batch_frames, inference_size,
@@ -3014,7 +3081,10 @@ def process_video2(
                     if global_idx >= total_frames_vda:
                         break
                     depth_f = _ensure_depth_np(pred["predicted_depth"])
-                    depth_01 = temp_normalizer(depth_f)
+                    if temp_normalizer is not None:
+                        depth_01 = temp_normalizer(depth_f)
+                    else:
+                        depth_01 = fast_depth_to_01(depth_f)
                     if all_depth_frames[global_idx] is None:
                         all_depth_frames[global_idx] = depth_01
                     else:
@@ -3032,7 +3102,7 @@ def process_video2(
                 ui_set_progress(progress)
                 window_start += vda_stride
 
-            print(f"[VDA] Writing {total_frames_vda} depth frames to video...")
+            debug_print(f"[VDA] Writing {total_frames_vda} depth frames to video.")
             for i in range(total_frames_vda):
                 if cancel_requested.is_set():
                     break
@@ -3067,11 +3137,17 @@ def process_video2(
                 if cancel_requested.is_set():
                     break
 
+                t_decode = time.perf_counter()
                 ret, frame = cap.read()
+                stage_times["decode"] += time.perf_counter() - t_decode
+
                 if not ret:
                     break
 
                 frame_count += 1
+                
+                t_pre = time.perf_counter()
+
                 if ignore_letterbox_bars:
                     bars_top, bars_bottom = tracker.update(frame, frame_count)
                 else:
@@ -3089,6 +3165,9 @@ def process_video2(
                 frames_batch.append(Image.fromarray(frame_rgb))
                 bars_batch.append((bars_top, bars_bottom))
 
+                stage_times["preprocess"] += time.perf_counter() - t_pre
+                stage_counts["frames"] += 1
+
                 if len(frames_batch) == batch_size or (frame_count == total_frames and frames_batch):
                     wait_if_paused(status_label)
                     if cancel_requested.is_set():
@@ -3098,45 +3177,93 @@ def process_video2(
                     if pipe_type == "vda":
                         extra = {"target_fps": int(target_fps) if target_fps and target_fps > 0 else int(fps), "input_size": 518}
 
+                    t_infer = time.perf_counter()
                     predictions = _run_pipe_or_tile(frames_batch, inference_size, **extra)
+                    stage_times["inference"] += time.perf_counter() - t_infer
+                    stage_counts["batches"] += 1
 
                     for i, prediction in enumerate(predictions):
                         if cancel_requested.is_set():
                             break
+
                         try:
+                            # -------------------------
+                            # Postprocess timing
+                            # -------------------------
+                            t_post = time.perf_counter()
+
                             raw_depth = prediction["predicted_depth"]
                             depth_f = _ensure_depth_np(raw_depth).squeeze()
-                            depth_01 = temp_normalizer(depth_f)
+
+                            if temp_normalizer is not None:
+                                depth_01 = temp_normalizer(depth_f)
+                            else:
+                                depth_01 = fast_depth_to_01(depth_f)
+
                             depth_u8 = (depth_01 * 255.0 + 0.5).astype(np.uint8)
+
                             if invert_flag:
                                 depth_u8 = 255 - depth_u8
-                            depth_u8 = cv2.resize(depth_u8, (original_width, original_height), interpolation=cv2.INTER_CUBIC)
+
+                            depth_u8 = cv2.resize(
+                                depth_u8,
+                                (original_width, original_height),
+                                interpolation=cv2.INTER_CUBIC,
+                            )
 
                             if prev_depth_u8 is None:
                                 smoothed_u8 = depth_u8
                             else:
-                                smoothed_u8 = (0.2 * prev_depth_u8.astype(np.float32) + 0.8 * depth_u8.astype(np.float32)).astype(np.uint8)
+                                smoothed_u8 = (
+                                    0.2 * prev_depth_u8.astype(np.float32)
+                                    + 0.8 * depth_u8.astype(np.float32)
+                                ).astype(np.uint8)
+
                             prev_depth_u8 = smoothed_u8
 
                             bt, bb = bars_batch[i] if i < len(bars_batch) else (bars_top, bars_bottom)
+
                             if ignore_letterbox_bars and (bt or bb):
-                                top = max(0, int(bt)); bot = max(0, int(bb))
+                                top = max(0, int(bt))
+                                bot = max(0, int(bb))
+
                                 if top + bot < original_height:
-                                    full_gray = depth_u8.copy()
+                                    full_gray = smoothed_u8.copy()
                                     core = full_gray[top:original_height - bot, :]
                                     neutral = int(np.median(core)) if core.size else 0
-                                    if top > 0: full_gray[:top, :] = neutral
-                                    if bot > 0: full_gray[original_height - bot:, :] = neutral
+
+                                    if top > 0:
+                                        full_gray[:top, :] = neutral
+
+                                    if bot > 0:
+                                        full_gray[original_height - bot:, :] = neutral
+
                                     bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
                                 else:
-                                    bgr = cv2.cvtColor(depth_u8, cv2.COLOR_GRAY2BGR)
+                                    bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
                             else:
-                                bgr = cv2.cvtColor(depth_u8, cv2.COLOR_GRAY2BGR)
+                                bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
 
-                            if use_opencv: out.write(bgr)
-                            else: ff_proc.stdin.write(bgr.tobytes())
+                            stage_times["postprocess"] += time.perf_counter() - t_post
+
+                            # -------------------------
+                            # Write timing
+                            # -------------------------
+                            t_write = time.perf_counter()
+
+                            if use_opencv:
+                                out.write(bgr)
+                            else:
+                                ff_proc.stdin.write(bgr.tobytes())
+
                             if save_frames:
-                                cv2.imwrite(os.path.join(frame_output_dir, f"frame_{write_index:05d}.png"), depth_u8)
+                                cv2.imwrite(
+                                    os.path.join(frame_output_dir, f"frame_{write_index:05d}.png"),
+                                    smoothed_u8,
+                                )
+
+                            stage_times["write"] += time.perf_counter() - t_write
+
                             write_index += 1
                             total_processed_frames += 1
 
@@ -3145,6 +3272,23 @@ def process_video2(
 
                     if cancel_requested.is_set():
                         break
+
+                    now_profile = time.time()
+
+                    if profile_depth_stages and (now_profile - last_profile_print) >= 10:
+                        total_profile = sum(stage_times.values()) or 1e-6
+
+                        print(
+                            "[DEPTH PROFILE] "
+                            f"frames={stage_counts['frames']} batches={stage_counts['batches']} | "
+                            f"decode={stage_times['decode']:.2f}s ({stage_times['decode'] / total_profile * 100:.1f}%) | "
+                            f"pre={stage_times['preprocess']:.2f}s ({stage_times['preprocess'] / total_profile * 100:.1f}%) | "
+                            f"infer={stage_times['inference']:.2f}s ({stage_times['inference'] / total_profile * 100:.1f}%) | "
+                            f"post={stage_times['postprocess']:.2f}s ({stage_times['postprocess'] / total_profile * 100:.1f}%) | "
+                            f"write={stage_times['write']:.2f}s ({stage_times['write'] / total_profile * 100:.1f}%)"
+                        )
+
+                        last_profile_print = now_profile
 
                     if frame_count % 300 == 0:
                         if torch.cuda.is_available():
@@ -3201,15 +3345,19 @@ def is_av1_encoded(file_path):
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                ffprobe_exe,
+                "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=codec_name",
                 "-of", "default=nokey=1:noprint_wrappers=1",
-                file_path
+                file_path,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            universal_newlines=True
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
         )
         codec = result.stdout.strip().lower()
         return "av1" in codec

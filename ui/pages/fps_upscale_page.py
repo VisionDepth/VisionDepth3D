@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.styles.page_theme import apply_unified_page_theme
+from core.ffmpeg_utils import require_tool
 
 import platform
 import subprocess
@@ -50,9 +51,14 @@ def hidden_subprocess_kwargs():
     }
 
 COMMON_FPS = [
-    23.976, 24.0, 25.0, 29.97, 29.976, 30.0, 48.0, 50.0,
-    59.94, 60.0, 72.0, 90.0, 100.0, 119.88, 120.0,
-    144.0, 165.0, 239.76, 239.808, 240.0,
+    23.976, 24.0, 25.0, 29.97, 29.976, 30.0,
+    47.952, 48.0, 50.0,
+    59.94, 59.952, 60.0,
+    72.0, 90.0, 95.904, 100.0,
+    119.88, 119.904, 120.0,
+    144.0, 165.0,
+    191.808, 191.828128,
+    239.76, 239.808, 240.0,
 ]
 
 FPS_MULTIPLIERS = [2, 4, 8]
@@ -1750,13 +1756,21 @@ class FpsUpscalePage(QWidget):
             return 0.0
 
     def _probe_video_frame_count(self, video_path):
+        """
+        Fast frame count estimate for progress.
+        Avoids ffprobe -count_frames because that can scan the whole video
+        and make extraction look frozen at 'Preparing frame extraction.'
+        """
+        from core.ffmpeg_utils import require_tool
+
+        ffprobe_exe = require_tool("ffprobe")
+
         cmd = [
-            "ffprobe",
+            ffprobe_exe,
             "-v", "error",
             "-select_streams", "v:0",
-            "-count_frames",
             "-show_entries",
-            "stream=nb_read_frames,nb_frames,duration,avg_frame_rate,r_frame_rate",
+            "stream=nb_frames,duration,avg_frame_rate,r_frame_rate",
             "-of",
             "json",
             video_path,
@@ -1766,6 +1780,7 @@ class FpsUpscalePage(QWidget):
             cmd,
             capture_output=True,
             text=True,
+            timeout=15,
             **hidden_subprocess_kwargs(),
         )
 
@@ -1780,12 +1795,11 @@ class FpsUpscalePage(QWidget):
 
         stream = streams[0]
 
-        for key in ("nb_read_frames", "nb_frames"):
-            value = stream.get(key)
-            if value and str(value).isdigit():
-                count = int(value)
-                if count > 0:
-                    return count
+        value = stream.get("nb_frames")
+        if value and str(value).isdigit():
+            count = int(value)
+            if count > 0:
+                return count
 
         duration = float(stream.get("duration") or 0.0)
         fps = self._parse_rate(stream.get("avg_frame_rate")) or self._parse_rate(stream.get("r_frame_rate"))
@@ -1854,11 +1868,32 @@ class FpsUpscalePage(QWidget):
             start_time = time.time()
 
             try:
+                self._emit_job_progress(
+                    progress=0,
+                    status_text=self._t("Reading video info..."),
+                    start_time=start_time,
+                    completed_units=0,
+                    total_units=1,
+                    state="Extract",
+                )
+                
                 total_frames = self._probe_video_frame_count(video_path)
+                
+                self._emit_job_progress(
+                    progress=0,
+                    status_text=self._t("Starting FFmpeg frame extraction..."),
+                    start_time=start_time,
+                    completed_units=0,
+                    total_units=max(total_frames, 1),
+                    state="Extract",
+                )
                 output_pattern = os.path.join(frames_dir, f"frame_%06d.{image_format}")
 
+                from core.ffmpeg_utils import require_tool
+                ffmpeg_exe = require_tool("ffmpeg")
+
                 cmd = [
-                    "ffmpeg",
+                    ffmpeg_exe,
                     "-hide_banner",
                     "-y",
                     "-i",
@@ -2209,7 +2244,7 @@ class FpsUpscalePage(QWidget):
                     )
 
                     cmd = [
-                        "ffmpeg",
+                        ffmpeg_exe,
                         "-hide_banner",
                         "-y",
                         "-ss",

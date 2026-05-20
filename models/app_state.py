@@ -30,6 +30,7 @@ class AppState:
     dof_strength: float = 0.6
     convergence_strength: float = 0.0
     enable_dynamic_convergence: bool = True
+    edge_repair_quality: str = "Balanced"
 
     depth_pop_gamma: float = 0.45
     depth_pop_mid: float = 0.50

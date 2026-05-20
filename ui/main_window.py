@@ -24,6 +24,7 @@ from ui.pages.fps_upscale_page import FpsUpscalePage
 from ui.pages.live_3d_page import Live3DPage
 from services.theme_service import ThemeService
 from ui.dialogs.theme_creator_dialog import ThemeCreatorDialog
+from core.debug_flags import set_debug_enabled
 
 import psutil
 
@@ -241,6 +242,8 @@ class MainWindow(QMainWindow):
 
     # ── Debug toggle ──
     def _toggle_debug(self, checked):
+        set_debug_enabled(checked)
+
         self._debug_active = checked
         self.queue.set_log_visible(checked)
 
@@ -473,8 +476,25 @@ class MainWindow(QMainWindow):
         self.file_menu.setTitle(self._t("File"))
         self.help_menu.setTitle(self._t("Help"))
         self.lang_menu.setTitle(self._t("Language"))
+        
         if hasattr(self, "theme_menu"):
             self.theme_menu.setTitle(self._t("Themes"))
+            
+        # Theme submenu actions
+        if hasattr(self, "reload_themes_action"):
+            self.reload_themes_action.setText(self._t("Reload Themes"))
+
+        if hasattr(self, "create_theme_action"):
+            self.create_theme_action.setText(self._t("Create Theme..."))
+
+        # Built-in theme names
+        if hasattr(self, "_theme_actions"):
+            themes = self.theme_service.available_themes()
+
+            for theme_id, action in self._theme_actions.items():
+                theme = themes.get(theme_id, {})
+                theme_name = theme.get("name", theme_id.title())
+                action.setText(self._t(theme_name))
 
         # File actions
         self._set_action_text(self.save_preset_action, "Save Preset As…")
@@ -546,21 +566,27 @@ class MainWindow(QMainWindow):
         self._theme_group.setExclusive(True)
 
         for theme_id, theme in self.theme_service.available_themes().items():
-            action = self.theme_menu.addAction(theme.get("name", theme_id.title()))
+            theme_name = theme.get("name", theme_id.title())
+
+            # Translate built-in theme names if a translation exists.
+            # Custom user theme names will stay unchanged if no translation exists.
+            action = self.theme_menu.addAction(self._t(theme_name))
+
             action.setCheckable(True)
             action.setChecked(theme_id == self.current_theme_id)
             action.triggered.connect(lambda checked=False, tid=theme_id: self._set_theme(tid))
+
             self._theme_group.addAction(action)
             self._theme_actions[theme_id] = action
 
         self.theme_menu.addSeparator()
 
-        reload_action = self.theme_menu.addAction(self._t("Reload Themes"))
-        reload_action.triggered.connect(self._rebuild_theme_menu)
+        self.reload_themes_action = self.theme_menu.addAction(self._t("Reload Themes"))
+        self.reload_themes_action.triggered.connect(self._rebuild_theme_menu)
 
-        create_action = self.theme_menu.addAction(self._t("Create Theme..."))
-        create_action.triggered.connect(self._create_theme_dialog)
-
+        self.create_theme_action = self.theme_menu.addAction(self._t("Create Theme..."))
+        self.create_theme_action.triggered.connect(self._create_theme_dialog)
+        
     def _build_menu_bar(self):
         menubar = self.menuBar()
 
@@ -654,7 +680,7 @@ class MainWindow(QMainWindow):
             self,
             self._t("About VisionDepth3D"),
             (
-                f"{self._t('VisionDepth3D v4.0')}\n\n"
+                f"{self._t('VisionDepth3D v4.1.1')}\n\n"
                 f"{self._t('A hybrid 2D-to-3D conversion suite for cinema and VR.')}\n\n"
                 f"{self._t('Features:')}\n"
                 f" • {self._t('Depth map blending (multi-model)')}\n"
@@ -670,22 +696,33 @@ class MainWindow(QMainWindow):
 
     def _run_gpu_diagnostics(self):
         try:
-            import torch
-            info = f"PyTorch: {torch.__version__}\n"
-            info += f"CUDA Available: {torch.cuda.is_available()}\n"
-            if torch.cuda.is_available():
-                info += f"CUDA Version: {torch.version.cuda}\n"
-                info += f"GPU: {torch.cuda.get_device_name(0)}\n"
-                info += f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB\n"
-            info += f"\nDevice: {self.gpu_label.text()}"
-            QMessageBox.information(self, self._t("GPU Diagnostics"), info)
+            from gpu_diag import gpu_diagnostics
+        except Exception:
+            try:
+                from core.gpu_diag import gpu_diagnostics
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    self._t("GPU Diagnostics"),
+                    self._t("Could not load GPU diagnostics:") + f"\n{e}"
+                )
+                return
+
+        try:
+            report = gpu_diagnostics(return_text=True)
+
+            QMessageBox.information(
+                self,
+                self._t("GPU Diagnostics"),
+                report,
+            )
+
         except Exception as e:
             QMessageBox.warning(
                 self,
                 self._t("GPU Diagnostics"),
                 self._t("Could not detect GPU:") + f"\n{e}"
             )
-
     def _on_language_changed(self, code: str):
         # Update checked state in the language menu
         for c, action in self._lang_actions.items():
