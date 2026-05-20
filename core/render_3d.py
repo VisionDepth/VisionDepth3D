@@ -373,37 +373,91 @@ def get_video_info_safe(video_path):
 
     return width, height, fps
 
+def source_has_audio_stream(video_path):
+    """
+    Returns True if ffprobe can find at least one audio stream.
+    """
+    if not video_path or not os.path.exists(video_path):
+        return False
+
+    try:
+        ffprobe_exe = require_tool("ffprobe")
+
+        cmd = [
+            ffprobe_exe,
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            video_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
+        )
+
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    except Exception as e:
+        print(f"⚠️ Audio probe failed: {e}")
+        return False
+
+
 def merge_audio_from_source(final_video, original_video, output_with_audio, start_s=None):
     """
-    Muxes the original audio track into the final 3D render without re-encoding.
-    Uses two-pass seek to avoid frozen frames at the start.
+    Muxes the original audio track into the final 3D render.
+    MP4 output uses AAC for compatibility.
+    MKV/MOV output attempts audio stream copy.
     """
     if not os.path.exists(original_video) or not os.path.exists(final_video):
         return final_video
 
+    if not source_has_audio_stream(original_video):
+        print("⚠️ No audio stream detected in source video. Skipping audio merge.")
+        return final_video
+
     ffmpeg_exe = require_tool("ffmpeg")
 
+    # Clean old failed output first.
+    if os.path.exists(output_with_audio):
+        try:
+            os.remove(output_with_audio)
+        except Exception:
+            pass
+
+    ext = os.path.splitext(output_with_audio)[1].lower()
+
+    # MP4 is picky with DTS/TrueHD/etc. AAC is safest.
+    if ext == ".mp4":
+        audio_args = ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        audio_args = ["-c:a", "copy"]
+
     cmd = [
-        ffmpeg_exe, "-y",
+        ffmpeg_exe,
+        "-y",
         "-i", final_video,
     ]
-    
-    # Two-pass seek on the original: fast keyframe seek then accurate decode seek
-    if start_s is not None and start_s > 0:
-        cmd += ["-ss", str(start_s)]  # fast seek before input
-        cmd += ["-i", original_video]
-        cmd += ["-ss", str(start_s)]  # accurate seek after input (on audio)
-    else:
-        cmd += ["-i", original_video]
+
+    # Rendered video starts at 0, but source audio may need to seek to clip start.
+    if start_s is not None and float(start_s) > 0:
+        cmd += ["-ss", str(float(start_s))]
 
     cmd += [
-        "-map", "0:v:0",      # video from rendered file
-        "-map", "1:a:0?",     # audio from original
+        "-i", original_video,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-c:v", "copy",
-        "-c:a", "copy",
+        *audio_args,
         "-shortest",
-        "-fflags", "+shortest",
-        output_with_audio
+        "-movflags", "+faststart",
+        output_with_audio,
     ]
 
     process = subprocess.run(
@@ -417,8 +471,15 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
     )
 
     if process.returncode != 0:
-        print(f"[AUDIO MERGE] ffmpeg failed (code {process.returncode}):")
-        print(process.stderr[:500])
+        print(f"[AUDIO MERGE] FFmpeg failed with code {process.returncode}:")
+        print(process.stderr[-4000:])
+
+        if os.path.exists(output_with_audio):
+            try:
+                os.remove(output_with_audio)
+            except Exception:
+                pass
+
         return final_video
 
     if os.path.exists(output_with_audio) and os.path.getsize(output_with_audio) > 1000:
@@ -426,11 +487,18 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
             os.remove(final_video)
         except Exception:
             pass
+
         return output_with_audio
 
+    print("⚠️ Audio merge produced an empty or invalid output file.")
+
+    if os.path.exists(output_with_audio):
+        try:
+            os.remove(output_with_audio)
+        except Exception:
+            pass
+
     return final_video
-
-
 
 def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
     """
@@ -4685,9 +4753,19 @@ def process_video(
         base, ext = os.path.splitext(final_render_path)
         merged_output = base + "_audio" + ext  # keep .mkv/.mp4/.mov etc
 
-        final_render_path = merge_audio_from_source(final_render_path, input_path, merged_output, start_s=start_s)
-        print("🎧 Audio merge done!")
+        before_audio_merge = final_render_path
+        final_render_path = merge_audio_from_source(
+            final_render_path,
+            input_path,
+            merged_output,
+            start_s=start_s,
+        )
 
+        if final_render_path != before_audio_merge:
+            print("🎧 Audio merge done!")
+        else:
+            print("⚠️ Audio merge skipped or failed. Keeping silent rendered video.")
+            
     return final_render_path
 
 
