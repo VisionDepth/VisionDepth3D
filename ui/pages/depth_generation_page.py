@@ -217,10 +217,12 @@ class DepthGenerationPage(QWidget):
         self.invert_check = QCheckBox()
         self.save_frames_check = QCheckBox()
         self.fp16_check = QCheckBox()
+        self.disable_scene_norm_check = QCheckBox()
 
         self._register_text(self.invert_check, "Invert Depth")
         self._register_text(self.save_frames_check, "Save Frames")
         self._register_text(self.fp16_check, "Use FP16")
+        self._register_text(self.disable_scene_norm_check, "Disable Depth Normalizer")
         self.offload_combo = QComboBox()
         self.offload_combo.addItems(OFFLOAD_MODES)
         self.offload_combo.setCurrentText("none")
@@ -230,6 +232,7 @@ class DepthGenerationPage(QWidget):
         options_card.inner_layout.addWidget(self.invert_check)
         options_card.inner_layout.addWidget(self.save_frames_check)
         options_card.inner_layout.addWidget(self.fp16_check)
+        options_card.inner_layout.addWidget(self.disable_scene_norm_check)
         self.offload_label = QLabel()
         self._register_text(self.offload_label, "CPU Offload Mode")
 
@@ -601,6 +604,7 @@ class DepthGenerationPage(QWidget):
         self.colormap_combo.currentTextChanged.connect(lambda v: setattr(self._state, "colormap", v))
         self.save_frames_check.toggled.connect(lambda v: setattr(self._state, "save_frames", v))
         self.fp16_check.toggled.connect(lambda v: setattr(self._state, "use_fp16", v))
+        self.disable_scene_norm_check.toggled.connect(lambda v: setattr(self._state, "disable_scene_normalization", v))
         self.offload_combo.currentTextChanged.connect(lambda v: setattr(self._state, "offload_mode", v))
         self.process_btn.clicked.connect(self._start_processing)
         self.generate_preview_btn.clicked.connect(self._generate_depth_preview_samples)
@@ -636,6 +640,9 @@ class DepthGenerationPage(QWidget):
         self.invert_check.setChecked(self._state.invert_depth)
         self.save_frames_check.setChecked(self._state.save_frames)
         self.fp16_check.setChecked(self._state.use_fp16)
+        self.disable_scene_norm_check.setChecked(
+            getattr(self._state, "disable_scene_normalization", False)
+        )
         self.offload_combo.setCurrentText(self._state.offload_mode)
         self.colormap_combo.setCurrentText(self._state.colormap)
         self._apply_processing_mode_ui()
