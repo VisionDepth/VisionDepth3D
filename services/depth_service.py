@@ -331,6 +331,7 @@ class DepthService:
         ignore_letterbox_bars = state.ignore_letterbox_bars
         prefer_opencv_writer = state.prefer_opencv_writer
         save_frames = state.save_frames
+        disable_scene_normalization = getattr(state, "disable_scene_normalization", False)
 
         try:
             process_video2(
@@ -351,6 +352,7 @@ class DepthService:
                 target_fps=target_fps,
                 ignore_letterbox_bars=ignore_letterbox_bars,
                 prefer_opencv_writer=prefer_opencv_writer,
+                disable_scene_normalization=disable_scene_normalization,
             )
         except Exception as e:
             if self.cancel_flag.is_set():
