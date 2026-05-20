@@ -14,6 +14,7 @@ class DepthState:
     invert_depth: bool = False
     save_frames: bool = False
     use_fp16: bool = False
+    disable_depth_normalizer: bool = False
     offload_mode: str = "none"
     target_fps: int = 8
     ignore_letterbox_bars: bool = True
