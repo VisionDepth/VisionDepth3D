@@ -66,6 +66,9 @@ class StereoGeneratorPage(QWidget):
         self.controller = controller
         self._translation_map = []
         self._last_preview_result = None
+        self._last_preview_pixmap = None
+        self._fullscreen_dialog = None
+        self._fullscreen_label = None
         
         self._preview_debounce = QTimer()
         self._preview_debounce.setSingleShot(True)
@@ -271,6 +274,17 @@ class StereoGeneratorPage(QWidget):
         self.skip_blank_check = self._checkbox("Skip Blank/White Frames")
         self.edge_masking_check = self._checkbox("Enable Edge Masking")
         self.feathering_check = self._checkbox("Enable Feathering")
+        self.edge_repair_quality_combo = QComboBox()
+        self.edge_repair_quality_combo.addItems([
+            "Off",
+            "Fast",
+            "Balanced",
+            "High",
+            "Showcase",
+        ])
+        self.edge_repair_quality_combo.setCurrentText(
+            getattr(self.controller.state, "edge_repair_quality", "Balanced")
+        )
         self.dynamic_convergence_check = self._checkbox("Enable Dynamic Convergence")
         self.floating_window_check = self._checkbox("Enable Floating Window (DFW)")
         self.disable_shift_ema_check = self._checkbox("Disable Shift EMA (Debug)")
@@ -288,6 +302,10 @@ class StereoGeneratorPage(QWidget):
         processing_card.inner_layout.addWidget(self.skip_blank_check)
         processing_card.inner_layout.addWidget(self.edge_masking_check)
         processing_card.inner_layout.addWidget(self.feathering_check)
+
+        processing_card.inner_layout.addWidget(self._label("Edge Repair Quality"))
+        processing_card.inner_layout.addWidget(self.edge_repair_quality_combo)
+
         processing_card.inner_layout.addWidget(self.dynamic_convergence_check)
         processing_card.inner_layout.addWidget(self.floating_window_check)
         processing_card.inner_layout.addWidget(self.disable_shift_ema_check)
@@ -346,11 +364,13 @@ class StereoGeneratorPage(QWidget):
         self.frame_label = QLabel(f"{self._t('Frame')}: 0 / 0")
         self.refresh_preview_btn = self._button("Refresh Preview")
         self.save_preview_btn = self._button("Save Preview Image")
+        self.fullscreen_preview_btn = self._button("Fullscreen Preview")
 
         frame_card.inner_layout.addWidget(self.frame_label)
         frame_card.inner_layout.addWidget(self.frame_slider)
         frame_card.inner_layout.addWidget(self.refresh_preview_btn)
         frame_card.inner_layout.addWidget(self.save_preview_btn)
+        frame_card.inner_layout.addWidget(self.fullscreen_preview_btn)
 
         frame_card.inner_layout.addSpacing(12)
 
@@ -665,6 +685,7 @@ class StereoGeneratorPage(QWidget):
             "Stabilize Zero-Parallax": "Use Subject Tracking",
 
             "Output & Encoding...": "Encoding Settings",
+            "Output & Encoding": "Encoding Settings",
             "Processing Options...": "Processing Options",
 
             "Start Render": "Generate 3D",
@@ -715,6 +736,36 @@ class StereoGeneratorPage(QWidget):
         text = str(text)
         marker = "\u0000"
         return text.replace("&&", marker).replace("&", "&&").replace(marker, "&&")
+
+    def _rebuild_combo_translated(self, combo, items):
+        """
+        Rebuild a combo with translated display text while preserving internal data.
+        items = [("Display Key", "internal_value"), ...]
+        """
+        current_data = combo.currentData()
+
+        combo.blockSignals(True)
+        combo.clear()
+
+        for text_key, data_value in items:
+            combo.addItem(self._qt_text(self._t(text_key)), data_value)
+
+        index = combo.findData(current_data)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+        combo.blockSignals(False)
+            
+    def _refresh_combo_labels(self):
+        self._rebuild_combo_translated(
+            self.render_mode_combo,
+            [
+                ("Single Video Render", "video"),
+                ("3D Image Render", "image"),
+                ("Batch Video Folder Render", "video_folder"),
+                ("Image Folder Render", "image_folder"),
+            ],
+        )
 
     def _set_title_text(self, widget, text: str):
         """
@@ -955,6 +1006,18 @@ class StereoGeneratorPage(QWidget):
                 elif widget is self.output_row:
                     self._apply_file_row_translation(widget, "Output", "Choose output file...")
 
+        # Refresh dialog window titles
+        if hasattr(self, "encoding_dialog") and self.encoding_dialog is not None:
+            self.encoding_dialog.setWindowTitle(
+                self._qt_text(self._t("Output & Encoding"))
+            )
+
+        if hasattr(self, "processing_dialog") and self.processing_dialog is not None:
+            self.processing_dialog.setWindowTitle(
+                self._qt_text(self._t("Processing Options"))
+            )
+            
+        self._refresh_combo_labels()
         self._apply_render_mode_ui()
         self._update_frame_label()
         self._refresh_preview_meta()
@@ -1102,6 +1165,9 @@ class StereoGeneratorPage(QWidget):
         self.feathering_check.toggled.connect(
             lambda checked: self.controller.set_state("enable_feathering", checked)
         )
+        self.edge_repair_quality_combo.currentTextChanged.connect(
+            lambda value: self.controller.set_state("edge_repair_quality", value)
+        )
         self.dynamic_convergence_check.toggled.connect(
             lambda checked: self.controller.set_state("enable_dynamic_convergence", checked)
         )       
@@ -1134,6 +1200,7 @@ class StereoGeneratorPage(QWidget):
         self.preview_btn.clicked.connect(self._load_preview_sources)
         self.refresh_preview_btn.clicked.connect(self.controller.update_preview)
         self.save_preview_btn.clicked.connect(self._save_preview_image)
+        self.fullscreen_preview_btn.clicked.connect(self._open_fullscreen_preview)
         self.render_btn.clicked.connect(self._start_render_clicked)
 
         self.aspect_ratio_combo.currentTextChanged.connect(
@@ -1280,6 +1347,11 @@ class StereoGeneratorPage(QWidget):
         self.skip_blank_check.setChecked(getattr(self.controller.state, "skip_blank_frames", False))
         self.edge_masking_check.setChecked(getattr(self.controller.state, "enable_edge_masking", True))
         self.feathering_check.setChecked(getattr(self.controller.state, "enable_feathering", True))
+
+        self.edge_repair_quality_combo.setCurrentText(
+            getattr(self.controller.state, "edge_repair_quality", "Balanced")
+        )
+
         self.dynamic_convergence_check.setChecked(getattr(self.controller.state, "enable_dynamic_convergence", True))
         self.floating_window_check.setChecked(getattr(self.controller.state, "use_floating_window", False))
         self.disable_shift_ema_check.setChecked(getattr(self.controller.state, "disable_shift_ema", False))
@@ -1352,13 +1424,13 @@ class StereoGeneratorPage(QWidget):
         format_layout.setHorizontalSpacing(14)
         format_layout.setVerticalSpacing(10)
 
-        format_layout.addWidget(QLabel("Output Format"), 0, 0)
+        format_layout.addWidget(self._label("Output Format"), 0, 0)
         format_layout.addWidget(self.output_format_combo, 0, 1)
 
-        format_layout.addWidget(QLabel("Stereo Output"), 1, 0)
+        format_layout.addWidget(self._label("Stereo Output"), 1, 0)
         format_layout.addWidget(self.stereo_out_combo, 1, 1)
 
-        format_layout.addWidget(QLabel("Aspect Ratio"), 2, 0)
+        format_layout.addWidget(self._label("Aspect Ratio"), 2, 0)
         format_layout.addWidget(self.aspect_ratio_combo, 2, 1)
 
         content_layout.addWidget(format_group)
@@ -1382,16 +1454,16 @@ class StereoGeneratorPage(QWidget):
         codec_layout.setHorizontalSpacing(14)
         codec_layout.setVerticalSpacing(10)
 
-        codec_layout.addWidget(QLabel("FFmpeg Codec"), 0, 0)
+        codec_layout.addWidget(self._label("FFmpeg Codec"), 0, 0)
         codec_layout.addWidget(self.ffmpeg_codec_combo, 0, 1)
 
-        codec_layout.addWidget(QLabel("Basic Codec"), 1, 0)
+        codec_layout.addWidget(self._label("Basic Codec"), 1, 0)
         codec_layout.addWidget(self.basic_codec_combo, 1, 1)
 
-        codec_layout.addWidget(QLabel("CRF"), 2, 0)
+        codec_layout.addWidget(self._label("CRF"), 2, 0)
         codec_layout.addWidget(self.crf_spin, 2, 1)
 
-        codec_layout.addWidget(QLabel("NVENC CQ"), 3, 0)
+        codec_layout.addWidget(self._label("NVENC CQ"), 3, 0)
         codec_layout.addWidget(self.nvenc_cq_spin, 3, 1)
 
         content_layout.addWidget(codec_group)
@@ -1403,26 +1475,26 @@ class StereoGeneratorPage(QWidget):
         vr_layout.setHorizontalSpacing(14)
         vr_layout.setVerticalSpacing(10)
 
-        vr_layout.addWidget(QLabel("HFOV"), 0, 0)
+        vr_layout.addWidget(self._label("HFOV"), 0, 0)
         vr_layout.addWidget(self.vr180_hfov_slider, 0, 1)
         vr_layout.addWidget(self.vr180_hfov_value, 1, 1)
 
-        vr_layout.addWidget(QLabel("Equirect Preset"), 2, 0)
+        vr_layout.addWidget(self._label("Equirect Preset"), 2, 0)
         vr_layout.addWidget(self.vr180_equi_preset_combo, 2, 1)
 
-        vr_layout.addWidget(QLabel("VR180 Equirect Width"), 3, 0)
+        vr_layout.addWidget(self._label("VR180 Equirect Width"), 3, 0)
         vr_layout.addWidget(self.vr180_equi_w_spin, 3, 1)
 
-        vr_layout.addWidget(QLabel("VR180 Equirect Height"), 4, 0)
+        vr_layout.addWidget(self._label("VR180 Equirect Height"), 4, 0)
         vr_layout.addWidget(self.vr180_equi_h_spin, 4, 1)
 
-        vr_layout.addWidget(QLabel("Flat Preset"), 5, 0)
+        vr_layout.addWidget(self._label("Flat Preset"), 5, 0)
         vr_layout.addWidget(self.vr180_flat_preset_combo, 5, 1)
 
-        vr_layout.addWidget(QLabel("VR180 Flat Width"), 6, 0)
+        vr_layout.addWidget(self._label("VR180 Flat Width"), 6, 0)
         vr_layout.addWidget(self.vr180_flat_w_spin, 6, 1)
 
-        vr_layout.addWidget(QLabel("VR180 Flat Height"), 7, 0)
+        vr_layout.addWidget(self._label("VR180 Flat Height"), 7, 0)
         vr_layout.addWidget(self.vr180_flat_h_spin, 7, 1)
 
         content_layout.addWidget(vr_group)
@@ -1817,6 +1889,7 @@ class StereoGeneratorPage(QWidget):
         bytes_per_line = ch * w
         qimg = QImage(image_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
+        self._last_preview_pixmap = pixmap
 
         if hasattr(self.preview_panel, "placeholder"):
             target_size = self.preview_panel.frame.contentsRect().size()
@@ -1830,10 +1903,137 @@ class StereoGeneratorPage(QWidget):
             )
             self.preview_panel.placeholder.setAlignment(Qt.AlignCenter)
 
+        if (
+            self._fullscreen_dialog is not None
+            and self._fullscreen_dialog.isVisible()
+            and self._fullscreen_label is not None
+        ):
+            self._update_fullscreen_preview_pixmap()
+
         self._refresh_preview_meta()
 
     def _on_preview_failed(self, message):
-        QMessageBox.warning(self, "Preview Error", message)
+        QMessageBox.warning(
+            self,
+            self._t("Preview Error"),
+            str(message),
+        )
+
+    def _save_preview_image(self):
+        if self._last_preview_result is None or self._last_preview_result.image_bgr is None:
+            QMessageBox.information(
+                self,
+                self._t("Save Preview"),
+                self._t("No preview image available yet."),
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self._t("Save Preview Image"),
+            "",
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;All Files (*.*)",
+        )
+
+        if not path:
+            return
+
+        try:
+            self.controller.preview_service.save_preview(
+                path,
+                self._last_preview_result.image_bgr,
+            )
+
+            QMessageBox.information(
+                self,
+                self._t("Save Preview"),
+                self._t("Saved preview image to:") + f"\n{path}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self._t("Save Preview Failed"),
+                str(e),
+            )
+
+    def _update_fullscreen_preview_pixmap(self):
+        if self._last_preview_pixmap is None:
+            return
+
+        if self._fullscreen_label is None:
+            return
+
+        target_size = self._fullscreen_label.contentsRect().size()
+
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
+
+        self._fullscreen_label.setPixmap(
+            self._last_preview_pixmap.scaled(
+                target_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        )
+
+        self._fullscreen_label.setAlignment(Qt.AlignCenter)
+
+
+    def _open_fullscreen_preview(self):
+        if self._last_preview_result is None or self._last_preview_result.image_bgr is None:
+            QMessageBox.information(
+                self,
+                self._t("Fullscreen Preview"),
+                self._t("No preview image available yet. Load preview sources first."),
+            )
+            return
+
+        if self._last_preview_pixmap is None:
+            QMessageBox.information(
+                self,
+                self._t("Fullscreen Preview"),
+                self._t("No preview image available yet. Refresh the preview first."),
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("Fullscreen Preview"))
+        dialog.setModal(False)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: black;
+            }
+
+            QLabel {
+                background-color: black;
+                color: white;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        label = QLabel()
+        label.setAlignment(Qt.AlignCenter)
+        label.setMinimumSize(640, 360)
+
+        layout.addWidget(label, 1)
+
+        self._fullscreen_dialog = dialog
+        self._fullscreen_label = label
+
+        def _cleanup():
+            self._fullscreen_dialog = None
+            self._fullscreen_label = None
+
+        dialog.finished.connect(_cleanup)
+
+        dialog.showFullScreen()
+
+        # Let Qt finish sizing the fullscreen dialog before scaling the pixmap.
+        QTimer.singleShot(50, self._update_fullscreen_preview_pixmap)
 
     def _save_preview_image(self):
         if self._last_preview_result is None or self._last_preview_result.image_bgr is None:
