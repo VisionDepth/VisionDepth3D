@@ -39,6 +39,7 @@ einops
 psutil
 nvidia-ml-py
 GPUtil
+easydict
 
 # 3D / reconstruction related
 pycolmap
