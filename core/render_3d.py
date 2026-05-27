@@ -94,11 +94,15 @@ def hidden_subprocess_kwargs():
 def start_stderr_drain_thread(proc, keep_last=4000):
     """
     Drains proc.stderr so FFmpeg cannot block on a full stderr pipe.
-    Keeps only the last chunk for error reporting.
+    Keeps only the last stderr text for error reporting.
     """
-    chunks = []
+    chunks = deque()
+    total_len = 0
+    lock = threading.Lock()
 
     def _reader():
+        nonlocal total_len
+
         try:
             while True:
                 data = proc.stderr.readline()
@@ -108,12 +112,13 @@ def start_stderr_drain_thread(proc, keep_last=4000):
                 if isinstance(data, bytes):
                     data = data.decode("utf-8", errors="replace")
 
-                chunks.append(data)
+                with lock:
+                    chunks.append(data)
+                    total_len += len(data)
 
-                # Keep memory bounded.
-                joined = "".join(chunks)
-                if len(joined) > keep_last:
-                    chunks[:] = [joined[-keep_last:]]
+                    while chunks and total_len > keep_last:
+                        removed = chunks.popleft()
+                        total_len -= len(removed)
 
         except Exception:
             pass
@@ -153,6 +158,11 @@ def pick_torch_device():
 
     # CPU fallback
     return torch.device("cpu")
+
+try:
+    from services.keyframe_service import KeyframeService
+except Exception:
+    KeyframeService = None
 
 torch_device = pick_torch_device()
 print(f"3D Pipeline running on Torch device: {torch_device.type.upper()}")
@@ -276,7 +286,7 @@ EDGE_REPAIR_PRESETS = {
         "mode": "full",
         "grad_threshold": 0.009,
         "validity_soft_threshold": 0.994,
-        "expand_ksize": 6,
+        "expand_ksize": 7,
         "fill_radius": 10,
         "repair_strength": 0.35,
         "protect_dilate_ksize": 11,
@@ -302,7 +312,31 @@ def get_edge_repair_preset(name):
     if name not in EDGE_REPAIR_PRESETS:
         name = "Balanced"
 
-    return EDGE_REPAIR_PRESETS[name]
+    cfg = dict(EDGE_REPAIR_PRESETS[name])
+
+    def _odd_int(value, default=1):
+        try:
+            value = int(value)
+        except Exception:
+            value = int(default)
+
+        value = max(1, value)
+
+        # Even kernels with padding=k//2 can grow tensors by 1 pixel.
+        # Force odd kernels to preserve H/W.
+        if value % 2 == 0:
+            value += 1
+
+        return value
+
+    cfg["expand_ksize"] = _odd_int(cfg.get("expand_ksize", 3), 3)
+    cfg["protect_dilate_ksize"] = _odd_int(cfg.get("protect_dilate_ksize", 5), 5)
+    cfg["blur_ksize"] = _odd_int(cfg.get("blur_ksize", 1), 1)
+
+    cfg["fill_radius"] = int(max(0, cfg.get("fill_radius", 0)))
+    cfg["repair_strength"] = float(cfg.get("repair_strength", 0.0))
+
+    return cfg
 
 def get_video_info_safe(video_path):
     """
@@ -408,12 +442,56 @@ def source_has_audio_stream(video_path):
         print(f"⚠️ Audio probe failed: {e}")
         return False
 
+def is_valid_video_file(video_path: str) -> bool:
+    if not video_path or not os.path.exists(video_path):
+        return False
 
-def merge_audio_from_source(final_video, original_video, output_with_audio, start_s=None):
+    if os.path.getsize(video_path) < 4096:
+        return False
+
+    try:
+        ffprobe_exe = require_tool("ffprobe")
+
+        cmd = [
+            ffprobe_exe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            video_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
+        )
+
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    except Exception:
+        return False
+
+def merge_audio_from_source(final_video, original_video, output_with_audio, start_s=None, end_s=None):
     """
     Muxes the original audio track into the final 3D render.
-    MP4 output uses AAC for compatibility.
-    MKV/MOV output attempts audio stream copy.
+
+    Important for clipped renders:
+    - The rendered video starts at timestamp 0.
+    - The source audio must be trimmed to the same clip start.
+    - Audio timestamps must be reset to 0, otherwise some players show a frozen
+      first video frame until audio/video timestamps line up.
+
+    For unclipped renders:
+    - MP4/MOV uses AAC for compatibility.
+    - MKV/AVI attempts audio stream copy.
+
+    For clipped renders:
+    - Audio is filtered with atrim/asetpts, so it must be re-encoded.
     """
     if not os.path.exists(original_video) or not os.path.exists(final_video):
         return final_video
@@ -433,32 +511,82 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
 
     ext = os.path.splitext(output_with_audio)[1].lower()
 
-    # MP4 is picky with DTS/TrueHD/etc. AAC is safest.
-    if ext == ".mp4":
-        audio_args = ["-c:a", "aac", "-b:a", "192k"]
-    else:
-        audio_args = ["-c:a", "copy"]
+    try:
+        clip_start = float(start_s) if start_s is not None else 0.0
+    except Exception:
+        clip_start = 0.0
+
+    try:
+        clip_end = float(end_s) if end_s is not None else None
+    except Exception:
+        clip_end = None
+
+    clipped_audio = (clip_start > 0.0001) or (clip_end is not None and clip_end > 0.0001)
 
     cmd = [
         ffmpeg_exe,
         "-y",
         "-i", final_video,
-    ]
-
-    # Rendered video starts at 0, but source audio may need to seek to clip start.
-    if start_s is not None and float(start_s) > 0:
-        cmd += ["-ss", str(float(start_s))]
-
-    cmd += [
         "-i", original_video,
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-c:v", "copy",
-        *audio_args,
-        "-shortest",
-        "-movflags", "+faststart",
-        output_with_audio,
     ]
+
+    if clipped_audio:
+        # Accurate audio trim + timestamp reset.
+        # This prevents the common "frozen first video frame for a few seconds"
+        # problem after muxing clipped renders.
+        if clip_end is not None and clip_end > clip_start:
+            atrim = f"atrim=start={clip_start:.6f}:end={clip_end:.6f}"
+        else:
+            atrim = f"atrim=start={clip_start:.6f}"
+
+        audio_filter = (
+            f"[1:a:0]{atrim},"
+            "asetpts=PTS-STARTPTS,"
+            "aresample=async=1:first_pts=0"
+            "[aout]"
+        )
+
+        cmd += [
+            "-filter_complex", audio_filter,
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-c:v", "copy",
+
+            # Filtering requires re-encoding audio. AAC is broadly compatible
+            # in MP4, MOV, MKV, and most players.
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+        ]
+
+    else:
+        # No clip: keep existing behavior.
+        if ext == ".mp4":
+            audio_args = ["-c:a", "aac", "-b:a", "192k"]
+        else:
+            audio_args = ["-c:a", "copy"]
+
+        cmd += [
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            *audio_args,
+            "-shortest",
+        ]
+
+    # Helps avoid odd timestamp/edit-list behavior in some containers/players.
+    cmd += [
+        "-avoid_negative_ts", "make_zero",
+        "-muxpreload", "0",
+        "-muxdelay", "0",
+    ]
+
+    if ext in {".mp4", ".mov", ".m4v"}:
+        cmd += ["-movflags", "+faststart"]
+
+    cmd += [output_with_audio]
+
+    debug_print("[AUDIO MERGE CMD]", " ".join(str(x) for x in cmd))
 
     process = subprocess.run(
         cmd,
@@ -500,6 +628,7 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
 
     return final_video
 
+
 def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
     """
     Decode video frames to RGB 16-bit (rgb48le) while explicitly preserving HDR signaling.
@@ -524,13 +653,21 @@ def ffmpeg_rgb48_reader(path, width, height, start_s=None, end_s=None):
     elif end_s is not None:
         cmd += ["-to", str(float(end_s))]
 
-    # Force HDR colorspace handling so FFmpeg doesn't guess:
-    # - zscale sets primaries/transfer/matrix and preserves PQ/BT.2020
-    # - npl=1000 sets nominal peak luminance (helps prevent weird scaling)
-    # - format=rgb48le ensures 16-bit RGB output
+    # Decode HDR10 YUV/PQ into full-range RGB48 while keeping BT.2020 primaries
+    # and PQ transfer. This is NOT tone mapping. It is a color-space conversion
+    # for the tensor pipeline.
     vf = (
-        "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc:"
-        "range=tv:npl=1000,format=rgb48le"
+        "zscale="
+        "primariesin=bt2020:"
+        "transferin=smpte2084:"
+        "matrixin=bt2020nc:"
+        "rangein=tv:"
+        "primaries=bt2020:"
+        "transfer=smpte2084:"
+        "matrix=gbr:"
+        "range=pc:"
+        "npl=1000,"
+        "format=rgb48le"
     )
 
     cmd += [
@@ -597,37 +734,206 @@ def ffmpeg_yuv10_reader(path, width, height):
         **hidden_subprocess_kwargs(),
     )
     stride = width * height * 2 * 3 // 2  # P010 size
-    while True:
-        buf = p.stdout.read(stride)
-        if not buf or len(buf) < stride:
-            break
-        yuv = np.frombuffer(buf, dtype=np.uint16)
-        # reshape to planar P010 (Y full res, UV half res)
-        y = (yuv[:width*height].reshape((height, width)) >> 6).astype(np.float32) / 1023.0
-        uv = (yuv[width*height:].reshape((height//2, width)) >> 6).astype(np.float32) / 1023.0
-        u = uv[:, 0::2]; v = uv[:, 1::2]
-        # upsample chroma (nearest is fine here)
-        u = np.repeat(np.repeat(u, 2, axis=0), 2, axis=1)
-        v = np.repeat(np.repeat(v, 2, axis=0), 2, axis=1)
-        # very simple YUV->RGB for BT.2020 (non-constant luminance)
-        # keep in PQ domain (no tone map)
-        r = y + 1.4746*(v-0.5)
-        g = y - 0.16455*(u-0.5) - 0.57135*(v-0.5)
-        b = y + 1.8814*(u-0.5)
-        rgb = np.stack([r,g,b], axis=2).clip(0,1).astype(np.float32)
-        yield rgb
+
     try:
-        if p.stdout:
-            p.stdout.close()
-    except Exception:
-        pass
+        while True:
+            buf = p.stdout.read(stride)
+            if not buf or len(buf) < stride:
+                break
 
-    p.wait()
+            yuv = np.frombuffer(buf, dtype=np.uint16)
 
-    if p.returncode not in (0, None):
-        raise RuntimeError(
-            f"ffmpeg_yuv10_reader: ffmpeg exited with code {p.returncode}."
+            # reshape to planar P010 (Y full res, UV half res)
+            y = (yuv[:width * height].reshape((height, width)) >> 6).astype(np.float32) / 1023.0
+            uv = (yuv[width * height:].reshape((height // 2, width)) >> 6).astype(np.float32) / 1023.0
+
+            u = uv[:, 0::2]
+            v = uv[:, 1::2]
+
+            # upsample chroma
+            u = np.repeat(np.repeat(u, 2, axis=0), 2, axis=1)
+            v = np.repeat(np.repeat(v, 2, axis=0), 2, axis=1)
+
+            # simple BT.2020 non-constant-luminance YUV -> RGB
+            r = y + 1.4746 * (v - 0.5)
+            g = y - 0.16455 * (u - 0.5) - 0.57135 * (v - 0.5)
+            b = y + 1.8814 * (u - 0.5)
+
+            rgb = np.stack([r, g, b], axis=2).clip(0, 1).astype(np.float32)
+            yield rgb
+
+    finally:
+        try:
+            if p.stdout:
+                p.stdout.close()
+        except Exception:
+            pass
+
+        p.wait()
+
+        if p.returncode not in (0, None):
+            raise RuntimeError(
+                f"ffmpeg_yuv10_reader: ffmpeg exited with code {p.returncode}."
+            )
+        
+def _ffprobe_json(video_path: str) -> dict:
+    try:
+        ffprobe_exe = require_tool("ffprobe")
+
+        cmd = [
+            ffprobe_exe,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_streams",
+            "-show_format",
+            "-of", "json",
+            video_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
         )
+
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+
+        return json.loads(result.stdout)
+
+    except Exception as e:
+        debug_print(f"[HDR10] ffprobe metadata read failed: {e}")
+        return {}
+
+
+def _xy_to_hdr10_coord(value, fallback):
+    """
+    Converts ffprobe-style decimal chromaticity to HDR10 integer coordinate.
+    HDR10 uses chromaticity * 50000.
+    """
+    try:
+        return int(round(float(value) * 50000.0))
+    except Exception:
+        return int(fallback)
+
+
+def _luma_to_hdr10(value, fallback):
+    """
+    Converts luminance cd/m2 to HDR10 integer coordinate.
+    HDR10 uses luminance * 10000.
+    """
+    try:
+        return int(round(float(value) * 10000.0))
+    except Exception:
+        return int(fallback)
+
+
+def get_hdr10_metadata_for_x265(input_path: str) -> tuple[str, str]:
+    """
+    Returns (master_display, max_cll) strings for x265.
+
+    Falls back to common HDR10 BT.2020 values when source metadata
+    cannot be read.
+    """
+    # Fallback matches common P3-in-BT.2020 HDR10 mastering:
+    # R 0.6800/0.3200, G 0.2650/0.6900, B 0.1500/0.0600,
+    # WP 0.3127/0.3290, L 4000/0.005
+    fallback_master = (
+        "G(13250,34500)"
+        "B(7500,3000)"
+        "R(34000,16000)"
+        "WP(15635,16450)"
+        "L(40000000,50)"
+    )
+    fallback_cll = "0,0"
+
+    data = _ffprobe_json(input_path)
+    streams = data.get("streams", [])
+    if not streams:
+        return fallback_master, fallback_cll
+
+    stream = streams[0]
+    side_data = stream.get("side_data_list", []) or []
+
+    master_display = fallback_master
+    max_cll = fallback_cll
+
+    for item in side_data:
+        side_type = str(item.get("side_data_type", "")).lower()
+
+        if "mastering display metadata" in side_type:
+            # ffprobe can expose these as strings like "34000/50000"
+            # or decimals depending on build/container.
+            # Handle both.
+            def parse_fraction_or_float(v, fallback_float):
+                try:
+                    if isinstance(v, str) and "/" in v:
+                        a, b = v.split("/", 1)
+                        return float(a) / float(b)
+                    return float(v)
+                except Exception:
+                    return float(fallback_float)
+
+            rx = parse_fraction_or_float(item.get("red_x"), 0.6800)
+            ry = parse_fraction_or_float(item.get("red_y"), 0.3200)
+            gx = parse_fraction_or_float(item.get("green_x"), 0.2650)
+            gy = parse_fraction_or_float(item.get("green_y"), 0.6900)
+            bx = parse_fraction_or_float(item.get("blue_x"), 0.1500)
+            by = parse_fraction_or_float(item.get("blue_y"), 0.0600)
+            wx = parse_fraction_or_float(item.get("white_point_x"), 0.3127)
+            wy = parse_fraction_or_float(item.get("white_point_y"), 0.3290)
+
+            max_l = parse_fraction_or_float(item.get("max_luminance"), 4000.0)
+            min_l = parse_fraction_or_float(item.get("min_luminance"), 0.005)
+
+            master_display = (
+                f"G({_xy_to_hdr10_coord(gx, 13250)},{_xy_to_hdr10_coord(gy, 34500)})"
+                f"B({_xy_to_hdr10_coord(bx, 7500)},{_xy_to_hdr10_coord(by, 3000)})"
+                f"R({_xy_to_hdr10_coord(rx, 34000)},{_xy_to_hdr10_coord(ry, 16000)})"
+                f"WP({_xy_to_hdr10_coord(wx, 15635)},{_xy_to_hdr10_coord(wy, 16450)})"
+                f"L({_luma_to_hdr10(max_l, 40000000)},{_luma_to_hdr10(min_l, 50)})"
+            )
+
+        elif "content light level" in side_type:
+            max_content = item.get("max_content")
+            max_average = item.get("max_average")
+
+            try:
+                max_content = int(max_content)
+                max_average = int(max_average)
+                max_cll = f"{max_content},{max_average}"
+            except Exception:
+                pass
+
+    return master_display, max_cll
+
+
+def build_hdr_rgb48_to_p010_filter() -> str:
+    """
+    Convert VD3D's raw RGB48 HDR tensor output back to HDR10-compatible P010.
+
+    Input to FFmpeg pipe:
+      rgb48le, full-range RGB, BT.2020 primaries, PQ transfer.
+
+    Output to encoder:
+      p010le, limited-range YUV, BT.2020 non-constant luminance, PQ transfer.
+    """
+    return (
+        "zscale="
+        "primariesin=bt2020:"
+        "transferin=smpte2084:"
+        "matrixin=gbr:"
+        "rangein=pc:"
+        "primaries=bt2020:"
+        "transfer=smpte2084:"
+        "matrix=bt2020nc:"
+        "range=tv,"
+        "format=p010le"
+    )
 
 def reset_render_state():
     # reset shift EMA
@@ -643,11 +949,14 @@ def reset_render_state():
     for k in ("dfw_last_side", "dfw_last_width"):
         if k in globals():
             del globals()[k]
-            
+
     # reset depth percentile EMA so it learns per render
     global depth_ema_norm
     depth_ema_norm = DepthPercentileEMA(p_lo=0.02, p_hi=0.98, alpha=0.82)
 
+    # reset subject tracking EMA so one render does not affect the next
+    global subject_depth_ema
+    subject_depth_ema = SubjectDepthEMA(alpha=0.80)
 
     # reset convergence EMA so each render starts clean
     global conv_ema
@@ -908,36 +1217,69 @@ def depth_to_tensor(depth_frame, invert_depth=True):
 
 @torch.no_grad()
 def estimate_subject_depth(depth_tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Faster subject depth estimate.
+
+    Original version sorted the full-resolution depth map every frame.
+    This version downsamples large depth maps before the weighted percentile,
+    preserving the same general behavior at a fraction of the cost.
+    """
     d = depth_tensor.clamp(0.0, 1.0)
+
+    if d.dim() == 2:
+        d = d.unsqueeze(0)
+
     device = d.device
+    dtype = d.dtype
     _, H, W = d.shape
 
+    # Downsample for statistics only.
+    # This does not change the actual depth map used for rendering.
+    max_side = 384
+    if max(H, W) > max_side:
+        scale = max_side / float(max(H, W))
+        stat_h = max(32, int(round(H * scale)))
+        stat_w = max(32, int(round(W * scale)))
+
+        d_stat = F.interpolate(
+            d.unsqueeze(0),
+            size=(stat_h, stat_w),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0).clamp(0.0, 1.0)
+    else:
+        d_stat = d
+
+    _, h, w = d_stat.shape
+
     yy, xx = torch.meshgrid(
-        torch.linspace(-1, 1, H, device=device),
-        torch.linspace(-1, 1, W, device=device),
+        torch.linspace(-1, 1, h, device=device, dtype=dtype),
+        torch.linspace(-1, 1, w, device=device, dtype=dtype),
         indexing="ij"
     )
 
     center_w = torch.exp(-0.5 * ((yy / 0.55) ** 2 + (xx / 0.70) ** 2))
 
-    dx = F.pad(d[:, :, 1:] - d[:, :, :-1], (1, 0))
-    dy = F.pad(d[:, 1:, :] - d[:, :-1, :], (0, 0, 1, 0))
+    dx = F.pad(d_stat[:, :, 1:] - d_stat[:, :, :-1], (1, 0))
+    dy = F.pad(d_stat[:, 1:, :] - d_stat[:, :-1, :], (0, 0, 1, 0))
     grad = torch.sqrt(dx.pow(2) + dy.pow(2)).squeeze(0)
+
     smooth_w = 1.0 - torch.sigmoid(10.0 * (grad - 0.025))
 
-    w = center_w * smooth_w
-    vals = d.squeeze(0).reshape(-1)
-    weights = w.reshape(-1)
+    weights = (center_w * smooth_w).reshape(-1)
+    vals = d_stat.squeeze(0).reshape(-1)
 
-    # nearer-biased weighted percentile, since "subject" is often nearer than background
+    # Weighted percentile on the reduced/statistical map.
     sort_idx = torch.argsort(vals)
     vals_sorted = vals[sort_idx]
     w_sorted = weights[sort_idx]
-    cdf = torch.cumsum(w_sorted, dim=0) / (w_sorted.sum() + 1e-8)
 
-    # 35th percentile in white-near convention
-    idx = torch.searchsorted(cdf, torch.tensor(0.35, device=device))
+    denom = w_sorted.sum() + 1e-8
+    cdf = torch.cumsum(w_sorted, dim=0) / denom
+
+    idx = torch.searchsorted(cdf, torch.tensor(0.35, device=device, dtype=dtype))
     idx = torch.clamp(idx, 0, vals_sorted.numel() - 1)
+
     return vals_sorted[idx]
 
 def enhance_foreground_curvature(
@@ -1088,9 +1430,9 @@ class DepthPercentileEMA:
         """
         assert depth_01.dim() == 3 and depth_01.shape[0] == 1
         d = depth_01.clamp(0, 1)
-        
-        lo = torch.quantile(d, self.p_lo)
-        hi = torch.quantile(d, self.p_hi)
+                
+        lo = safe_quantile(d, self.p_lo)
+        hi = safe_quantile(d, self.p_hi)
         
         if (hi - lo) < 1e-5:
             return d
@@ -1165,6 +1507,13 @@ def tensor_pad_to_aspect_ratio(rgb_t, target_width, target_height):
     """
 
     C, h, w = rgb_t.shape
+    target_width = int(target_width)
+    target_height = int(target_height)
+
+    # Fast path: already target size.
+    if h == target_height and w == target_width:
+        return rgb_t.clamp(0.0, 1.0)
+
     target_aspect = target_width / target_height
     current_aspect = w / h
 
@@ -1243,19 +1592,61 @@ def tensor_apply_side_mask(rgb_t, side="left", width=40, solid_black=True, fade=
     return (rgb_t * mask).clamp(0.0, 1.0)
 
 def format_3d_output_torch(left_t, right_t, fmt):
-    # left_t/right_t: [3,H,W]
+    # left_t/right_t: [3,H,W] RGB float tensors in 0..1
     if fmt in ("Half-SBS", "Full-SBS", "VR"):
         return torch.cat([left_t, right_t], dim=2)  # SBS
+
+    elif fmt == "Red-Cyan Anaglyph":
+        # Dubois-style anaglyph in RGB tensor order.
+        lr, lg, lb = left_t[0], left_t[1], left_t[2]
+        rr, rg, rb = right_t[0], right_t[1], right_t[2]
+
+        r = 0.4561 * lr + 0.5005 * lg + 0.1762 * lb
+        g = -0.1876 * rr + 0.7616 * rg + 0.3764 * rb
+        b = -0.0401 * rr - 0.1126 * rg + 1.2723 * rb
+
+        return torch.stack([r, g, b], dim=0).clamp(0.0, 1.0)
+
     elif fmt == "Passive Interlaced":
         out = left_t.clone()
         out[:, 1::2, :] = right_t[:, 1::2, :]
         return out
+
     else:
         return torch.cat([left_t, right_t], dim=2)
 
+@torch.no_grad()
 def tensor_to_frame(tensor):
-    frame_cpu = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    return cv2.cvtColor(frame_cpu, cv2.COLOR_RGB2BGR)
+    """
+    Converts RGB torch tensor [3,H,W] float 0..1 to BGR uint8 NumPy.
+
+    Faster path:
+    - RGB->BGR on GPU
+    - float->uint8 on GPU
+    - one CPU copy at the end
+    """
+    if tensor.dim() == 4:
+        tensor = tensor.squeeze(0)
+
+    try:
+        # RGB -> BGR on GPU, quantize on GPU, then copy once.
+        x = tensor.detach().clamp(0.0, 1.0)
+        x = x[[2, 1, 0], :, :]  # RGB -> BGR
+        x = (x * 255.0 + 0.5).to(torch.uint8)
+        x = x.permute(1, 2, 0).contiguous()
+        return x.cpu().numpy()
+
+    except Exception:
+        # Safe fallback for unusual devices/backends.
+        frame_cpu = (
+            tensor.detach()
+            .clamp(0.0, 1.0)
+            .permute(1, 2, 0)
+            .cpu()
+            .numpy() * 255.0
+        ).astype(np.uint8)
+
+        return cv2.cvtColor(frame_cpu, cv2.COLOR_RGB2BGR)
 
 def detect_black_bars(
     frame_tensor: torch.Tensor,
@@ -1503,6 +1894,39 @@ def _signed_pow(x: torch.Tensor, gamma: float):
     # symmetric contrast around 0
     return torch.sign(x) * (torch.abs(x) ** gamma)
 
+def is_directml_tensor(t: torch.Tensor) -> bool:
+    return getattr(t.device, "type", None) == "privateuseone"
+
+
+@torch.no_grad()
+def safe_quantile(t: torch.Tensor, q: float, max_samples: int = 262144) -> torch.Tensor:
+    """
+    Faster quantile helper.
+
+    Full-frame torch.quantile on 1080p/4K depth maps can be very expensive.
+    This samples large tensors before computing quantiles, which is usually
+    stable enough for depth normalization and much faster.
+
+    Keeps DirectML fallback behavior.
+    """
+    q = float(q)
+    device = t.device
+    dtype = t.dtype
+
+    x = t.detach().float().reshape(-1)
+
+    # Sample large tensors instead of quantiling millions of pixels every frame.
+    n = x.numel()
+    if n > max_samples:
+        step = int(math.ceil(n / float(max_samples)))
+        x = x[::step].contiguous()
+
+    if is_directml_tensor(t):
+        value = torch.quantile(x.cpu(), q).item()
+        return torch.tensor(value, device=device, dtype=dtype)
+
+    return torch.quantile(x, q).to(device=device, dtype=dtype)
+
 @torch.no_grad()
 def shape_depth_for_pop(
     depth_01,
@@ -1515,8 +1939,8 @@ def shape_depth_for_pop(
     recenter_strength=0.35,
 ):
     d = depth_01.clamp(0, 1)
-    lo = torch.quantile(d, stretch_lo)
-    hi = torch.quantile(d, stretch_hi)
+    lo = safe_quantile(d, stretch_lo)
+    hi = safe_quantile(d, stretch_hi)
 
     if (hi - lo) < 1e-5:
         d_stretched = d
@@ -1529,6 +1953,93 @@ def shape_depth_for_pop(
 
     shaped = _signed_pow(centered - depth_mid, gamma) + depth_mid
     return shaped.clamp(0, 1)
+
+@torch.no_grad()
+def apply_subject_plane_lock(
+    total_shift: torch.Tensor,
+    depth_tensor: torch.Tensor,
+    subject_depth: torch.Tensor,
+    *,
+    strength: float = 0.0,
+    width: float = 0.08,
+    center_bias: float = 0.35,
+) -> torch.Tensor:
+    """
+    Subject-aware screen-plane stabilization.
+
+    This is different from Screen Plane Offset.
+
+    Screen Plane Offset:
+        Moves the entire stereo volume forward/backward globally.
+
+    Subject Plane Lock:
+        Locally reduces disparity around the tracked hero/subject depth
+        so the subject stays more comfortable and readable near the
+        screen plane, while foreground/background depth remains active.
+
+    total_shift:
+        [1,H,W] normalized disparity/shift map.
+
+    depth_tensor:
+        [1,H,W] normalized depth, white/near convention.
+
+    subject_depth:
+        scalar tracked subject depth.
+    """
+    strength = float(strength or 0.0)
+    if strength <= 1e-6:
+        return total_shift
+
+    width = max(float(width or 0.08), 1e-4)
+    center_bias = float(center_bias or 0.0)
+
+    d = depth_tensor.clamp(0.0, 1.0)
+
+    if not torch.is_tensor(subject_depth):
+        subject_depth = torch.tensor(
+            float(subject_depth),
+            device=d.device,
+            dtype=d.dtype,
+        )
+    else:
+        subject_depth = subject_depth.to(device=d.device, dtype=d.dtype)
+
+    # Depth band around the tracked subject plane.
+    subject_band = torch.exp(
+        -0.5 * ((d - subject_depth.clamp(0.0, 1.0)) / width) ** 2
+    ).clamp(0.0, 1.0)
+
+    # Light center weighting helps avoid locking random background regions
+    # that happen to share the same depth as the subject.
+    if center_bias > 1e-6:
+        _, H, W = d.shape
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, H, device=d.device, dtype=d.dtype),
+            torch.linspace(-1.0, 1.0, W, device=d.device, dtype=d.dtype),
+            indexing="ij",
+        )
+
+        center_weight = torch.exp(
+            -0.5 * ((yy / 0.70) ** 2 + (xx / 0.85) ** 2)
+        ).unsqueeze(0)
+
+        subject_band = subject_band * (
+            (1.0 - center_bias) + center_weight * center_bias
+        )
+
+    # Soften mask to avoid hard stereo transitions around the subject.
+    subject_band = F.avg_pool2d(
+        subject_band.unsqueeze(0),
+        kernel_size=9,
+        stride=1,
+        padding=4,
+    ).squeeze(0).clamp(0.0, 1.0)
+
+    lock_amount = torch.clamp(subject_band * strength, 0.0, 1.0)
+
+    # Pull the subject's disparity toward the screen plane.
+    # total_shift == 0 means screen plane.
+    return total_shift * (1.0 - lock_amount)
 
 def compute_occlusion_mask_from_shift(
     shift_vals: torch.Tensor,
@@ -2006,22 +2517,74 @@ def build_one_sided_repair_and_protect_masks(
     repair_mask = (repair_mask * 0.42).clamp(0.0, 1.0)
     protect_mask = (protect_mask * 1.25).clamp(0.0, 1.0)
 
-    return repair_mask, protect_mask
+    # Shape safety guard.
+    # Prevent even-kernel pooling or unusual padding from creating H+1/W+1 masks.
+    H, W = validity_mask.shape
+
+    if repair_mask.shape != (H, W):
+        repair_mask = repair_mask[:H, :W]
+        if repair_mask.shape != (H, W):
+            fixed = torch.zeros((H, W), device=validity_mask.device, dtype=validity_mask.dtype)
+            h = min(H, repair_mask.shape[0])
+            w = min(W, repair_mask.shape[1])
+            fixed[:h, :w] = repair_mask[:h, :w]
+            repair_mask = fixed
+
+    if protect_mask.shape != (H, W):
+        protect_mask = protect_mask[:H, :W]
+        if protect_mask.shape != (H, W):
+            fixed = torch.zeros((H, W), device=validity_mask.device, dtype=validity_mask.dtype)
+            h = min(H, protect_mask.shape[0])
+            w = min(W, protect_mask.shape[1])
+            fixed[:h, :w] = protect_mask[:h, :w]
+            protect_mask = fixed
+
+    return repair_mask.clamp(0.0, 1.0), protect_mask.clamp(0.0, 1.0)
 
 def dilate_mask(mask: torch.Tensor, ksize: int = 3) -> torch.Tensor:
     """
     mask: [H,W] in [0,1]
     returns dilated mask [H,W]
+
+    Safety:
+    Even kernel sizes with padding=ksize//2 can output H+1/W+1.
+    This function forces odd kernels and crops as a final guard.
     """
+    if mask.dim() != 2:
+        raise ValueError(f"dilate_mask expected [H,W], got {tuple(mask.shape)}")
+
+    H, W = mask.shape
+
+    try:
+        ksize = int(ksize)
+    except Exception:
+        ksize = 3
+
     if ksize <= 1:
         return mask.clamp(0.0, 1.0)
 
-    return F.max_pool2d(
+    if ksize % 2 == 0:
+        ksize += 1
+
+    out = F.max_pool2d(
         mask.unsqueeze(0).unsqueeze(0),
         kernel_size=ksize,
         stride=1,
-        padding=ksize // 2
+        padding=ksize // 2,
     ).squeeze(0).squeeze(0).clamp(0.0, 1.0)
+
+    # Final guard against any shape drift.
+    if out.shape != (H, W):
+        out = out[:H, :W]
+
+        if out.shape != (H, W):
+            fixed = torch.zeros((H, W), device=mask.device, dtype=mask.dtype)
+            h = min(H, out.shape[0])
+            w = min(W, out.shape[1])
+            fixed[:h, :w] = out[:h, :w]
+            out = fixed
+
+    return out.clamp(0.0, 1.0)
 
 def estimate_edge_window_violation(shift_vals: torch.Tensor, edge_band_px: int = 32):
     """
@@ -2100,7 +2663,8 @@ def pixel_shift_cuda(
     zero_parallax_strength=0.0,
     use_subject_tracking=True,
     enable_floating_window=True,
-    return_shift_map=True,
+    return_shift_map=False,
+    return_meta=True,
     enable_feathering=True,
     enable_edge_masking=True,
     edge_repair_quality="Balanced",
@@ -2114,17 +2678,32 @@ def pixel_shift_cuda(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=0.35,
+    subject_plane_lock_strength=0.0,
+    subject_plane_lock_width=0.08,
     foreground_curvature_strength=0.06,
     return_tensors=False,
-    disable_shift_ema=False
+    disable_shift_ema=False,
 ):
     width = int(width)
     height = int(height)
     device = frame_tensor.device
 
-    frame_tensor = F.interpolate(frame_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
-    depth_tensor = F.interpolate(depth_tensor.unsqueeze(0), size=(height, width), mode='bilinear', align_corners=False).squeeze(0)
+    if frame_tensor.shape[-2:] != (height, width):
+        frame_tensor = F.interpolate(
+            frame_tensor.unsqueeze(0),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
 
+    if depth_tensor.shape[-2:] != (height, width):
+        depth_tensor = F.interpolate(
+            depth_tensor.unsqueeze(0),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+        
     if 'enhance_foreground_curvature' in globals():
         curvature_strength = float(foreground_curvature_strength)
         if curvature_strength > 1e-6:
@@ -2137,17 +2716,28 @@ def pixel_shift_cuda(
             )
     depth_tensor = depth_tensor.clamp(0.0, 1.0)
     
-    # 🛡️ STRONGER depth refinement for cleaner edges
-    depth_tensor = rgb_guided_depth_refine(depth_tensor, frame_tensor, kernel_size=7, sigma_color=0.06, sigma_space=4.0)
-    
-    # 🛡️ Edge-aware depth blur to prevent sharp transitions
-    depth_grad_x = torch.abs(F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0)))
-    depth_grad_y = torch.abs(F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0)))
-    depth_edge = (depth_grad_x + depth_grad_y).squeeze(0)
-    edge_soft_mask = torch.clamp(depth_edge * 12.0, 0.0, 0.7)
-    depth_blurred = tv_gaussian_blur(depth_tensor, kernel_size=5, sigma=1.8)
-    depth_tensor = depth_tensor * (1 - edge_soft_mask.unsqueeze(0)) + depth_blurred * edge_soft_mask.unsqueeze(0)
+    # Heavy RGB-guided refinement is expensive at video resolution.
+    # Keep it for High/Showcase edge repair only.
+    use_heavy_depth_refine = str(edge_repair_quality).strip().lower() in ("high", "showcase")
 
+    if use_heavy_depth_refine:
+        depth_tensor = rgb_guided_depth_refine(
+            depth_tensor,
+            frame_tensor,
+            kernel_size=5,
+            sigma_color=0.08,
+            sigma_space=4.0,
+        )
+
+        depth_grad_x = torch.abs(F.pad(depth_tensor[:, :, 1:] - depth_tensor[:, :, :-1], (1, 0)))
+        depth_grad_y = torch.abs(F.pad(depth_tensor[:, 1:, :] - depth_tensor[:, :-1, :], (0, 0, 1, 0)))
+        depth_edge = (depth_grad_x + depth_grad_y).squeeze(0)
+
+        edge_soft_mask = torch.clamp(depth_edge * 8.0, 0.0, 0.5)
+        depth_blurred = tv_gaussian_blur(depth_tensor, kernel_size=3, sigma=1.0)
+
+        depth_tensor = depth_tensor * (1 - edge_soft_mask.unsqueeze(0)) + depth_blurred * edge_soft_mask.unsqueeze(0)
+        
     # assume caller already provides stabilized normalized depth
     d_norm = depth_tensor.clamp(0.0, 1.0)
 
@@ -2238,6 +2828,23 @@ def pixel_shift_cuda(
 
     disparity_gain = 1.0
     total_shift = total_shift * disparity_gain
+
+
+    # ------------------------------------------------------------
+    # Subject Plane Lock
+    # ------------------------------------------------------------
+    # Locally reduces disparity around the tracked hero/subject depth.
+    # This keeps the subject closer to the screen plane without globally
+    # moving the entire stereo volume.
+    # ------------------------------------------------------------
+    total_shift = apply_subject_plane_lock(
+        total_shift,
+        d_norm,
+        subject_depth_track,
+        strength=subject_plane_lock_strength,
+        width=subject_plane_lock_width,
+        center_bias=0.35,
+    )
 
     # ------------------------------------------------------------
     # Dynamic Convergence
@@ -2382,115 +2989,149 @@ def pixel_shift_cuda(
     warped_left = warped_left * (1.0 - blend) + frame_tensor * blend
     warped_right = warped_right * (1.0 - blend) + frame_tensor * blend
 
-    # --- per-eye validity / disocclusion analysis ---
-    valid_left = compute_warp_validity_mask(grid_left, H, W, device)
-    valid_right = compute_warp_validity_mask(grid_right, H, W, device)
-
     repair_cfg = get_edge_repair_preset(edge_repair_quality)
 
-    repair_mask_left, protect_mask_left = build_one_sided_repair_and_protect_masks(
-        mask_shift_vals,
-        valid_left,
-        eye="left",
-        grad_threshold=repair_cfg["grad_threshold"],
-        validity_soft_threshold=repair_cfg["validity_soft_threshold"],
-        expand_ksize=repair_cfg["expand_ksize"],
-    )
-
-    repair_mask_right, protect_mask_right = build_one_sided_repair_and_protect_masks(
-        mask_shift_vals,
-        valid_right,
-        eye="right",
-        grad_threshold=repair_cfg["grad_threshold"],
-        validity_soft_threshold=repair_cfg["validity_soft_threshold"],
-        expand_ksize=repair_cfg["expand_ksize"],
-    )
-
     if enable_feathering and repair_cfg["mode"] != "off":
+        valid_left = compute_warp_validity_mask(grid_left, H, W, device)
+        valid_right = compute_warp_validity_mask(grid_right, H, W, device)
+
+        repair_mask_left, protect_mask_left = build_one_sided_repair_and_protect_masks(
+            mask_shift_vals,
+            valid_left,
+            eye="left",
+            grad_threshold=repair_cfg["grad_threshold"],
+            validity_soft_threshold=repair_cfg["validity_soft_threshold"],
+            expand_ksize=repair_cfg["expand_ksize"],
+        )
+
+        repair_mask_right, protect_mask_right = build_one_sided_repair_and_protect_masks(
+            mask_shift_vals,
+            valid_right,
+            eye="right",
+            grad_threshold=repair_cfg["grad_threshold"],
+            validity_soft_threshold=repair_cfg["validity_soft_threshold"],
+            expand_ksize=repair_cfg["expand_ksize"],
+        )
+
         if repair_cfg["mode"] == "speed":
-            repair_fn = repair_disocclusion_regions_speed
+            left_blended = repair_disocclusion_regions_speed(
+                warped_left,
+                repair_mask_left,
+                protect_mask_left,
+                direction="right",
+                fill_radius=repair_cfg["fill_radius"],
+                repair_strength=repair_cfg["repair_strength"],
+                protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+            )
+
+            right_blended = repair_disocclusion_regions_speed(
+                warped_right,
+                repair_mask_right,
+                protect_mask_right,
+                direction="left",
+                fill_radius=repair_cfg["fill_radius"],
+                repair_strength=repair_cfg["repair_strength"],
+                protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+            )
+
         else:
-            repair_fn = repair_disocclusion_regions
+            left_blended = repair_disocclusion_regions(
+                warped_left,
+                repair_mask_left,
+                protect_mask_left,
+                direction="right",
+                fill_radius=repair_cfg["fill_radius"],
+                repair_strength=repair_cfg["repair_strength"],
+                protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+                blur_ksize=repair_cfg["blur_ksize"],
+            )
 
-        left_blended = repair_fn(
-            warped_left,
-            repair_mask_left,
-            protect_mask_left,
-            direction="right",
-            fill_radius=repair_cfg["fill_radius"],
-            repair_strength=repair_cfg["repair_strength"],
-            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
-            blur_ksize=repair_cfg["blur_ksize"] if repair_cfg["mode"] == "full" else 1,
-        ) if repair_cfg["mode"] == "full" else repair_fn(
-            warped_left,
-            repair_mask_left,
-            protect_mask_left,
-            direction="right",
-            fill_radius=repair_cfg["fill_radius"],
-            repair_strength=repair_cfg["repair_strength"],
-            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
-        )
+            right_blended = repair_disocclusion_regions(
+                warped_right,
+                repair_mask_right,
+                protect_mask_right,
+                direction="left",
+                fill_radius=repair_cfg["fill_radius"],
+                repair_strength=repair_cfg["repair_strength"],
+                protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
+                blur_ksize=repair_cfg["blur_ksize"],
+            )
 
-        right_blended = repair_fn(
-            warped_right,
-            repair_mask_right,
-            protect_mask_right,
-            direction="left",
-            fill_radius=repair_cfg["fill_radius"],
-            repair_strength=repair_cfg["repair_strength"],
-            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
-            blur_ksize=repair_cfg["blur_ksize"] if repair_cfg["mode"] == "full" else 1,
-        ) if repair_cfg["mode"] == "full" else repair_fn(
-            warped_right,
-            repair_mask_right,
-            protect_mask_right,
-            direction="left",
-            fill_radius=repair_cfg["fill_radius"],
-            repair_strength=repair_cfg["repair_strength"],
-            protect_dilate_ksize=repair_cfg["protect_dilate_ksize"],
-        )
     else:
+        valid_left = None
+        valid_right = None
+        repair_mask_left = None
+        repair_mask_right = None
+        protect_mask_left = None
+        protect_mask_right = None
+
         left_blended = warped_left
         right_blended = warped_right
 
-    zero_meta = {
-        "subject_depth": float(subject_depth.detach().cpu()) if torch.is_tensor(subject_depth) else float(subject_depth),
-        "zero_parallax_offset": float(zero_parallax_offset) if use_subject_tracking else 0.0,
-        "edge_violation_left": float(edge_violation_left),
-        "edge_violation_right": float(edge_violation_right),
-        "repair_mask_left_mean": 0.0,
-        "repair_mask_right_mean": 0.0,
-        "protect_mask_left_mean": 0.0,
-        "protect_mask_right_mean": 0.0,
-        "valid_left_p01": 1.0,
-        "valid_right_p01": 1.0,
-    }
+    want_meta = bool(return_meta or return_shift_map)
 
-    # Important:
-    # Preview modes such as Shift Heatmap need this even when Debug is OFF.
-    if return_shift_map:
-        zero_meta["shift_map"] = final_shift.detach().cpu()
+    if want_meta:
+        debug_meta = is_debug_enabled()
 
-    # Only add expensive debug-only stats when Debug is enabled.
-    if is_debug_enabled():
-        zero_meta.update({
-            "repair_mask_left_mean": float(repair_mask_left.mean().item()),
-            "repair_mask_right_mean": float(repair_mask_right.mean().item()),
-            "protect_mask_left_mean": float(protect_mask_left.mean().item()),
-            "protect_mask_right_mean": float(protect_mask_right.mean().item()),
-            "valid_left_min": float(valid_left.min().item()),
-            "valid_right_min": float(valid_right.min().item()),
-            "valid_left_p01": float(torch.quantile(valid_left, 0.01).item()),
-            "valid_right_p01": float(torch.quantile(valid_right, 0.01).item()),
-        })
-    if return_shift_map:
+        # Only pull the values the render path actually needs.
+        # Every .item() / .cpu() is a GPU synchronization point.
+        if use_subject_tracking or enable_floating_window or debug_meta:
+            subject_depth_float = (
+                float(subject_depth.detach().item())
+                if torch.is_tensor(subject_depth)
+                else float(subject_depth)
+            )
+        else:
+            subject_depth_float = 0.5
+
+        if use_subject_tracking or enable_floating_window or debug_meta:
+            zero_parallax_float = float(zero_parallax_offset)
+        else:
+            zero_parallax_float = 0.0
+
+        zero_meta = {
+            "subject_depth": subject_depth_float,
+            "zero_parallax_offset": zero_parallax_float,
+            "screen_plane_offset": zero_parallax_float,
+            "subject_plane_lock_strength": float(subject_plane_lock_strength),
+            "subject_plane_lock_width": float(subject_plane_lock_width),
+            "edge_violation_left": float(edge_violation_left),
+            "edge_violation_right": float(edge_violation_right),
+            "valid_left_p01": 1.0,
+            "valid_right_p01": 1.0,
+        }
+
+        # These means are diagnostic only. Do not force GPU sync every frame
+        # unless debug is enabled.
+        if debug_meta:
+            zero_meta.update({
+                "repair_mask_left_mean": float(repair_mask_left.mean().item()) if "repair_mask_left" in locals() and repair_mask_left is not None else 0.0,
+                "repair_mask_right_mean": float(repair_mask_right.mean().item()) if "repair_mask_right" in locals() and repair_mask_right is not None else 0.0,
+                "protect_mask_left_mean": float(protect_mask_left.mean().item()) if "protect_mask_left" in locals() and protect_mask_left is not None else 0.0,
+                "protect_mask_right_mean": float(protect_mask_right.mean().item()) if "protect_mask_right" in locals() and protect_mask_right is not None else 0.0,
+            })
+        else:
+            zero_meta.update({
+                "repair_mask_left_mean": 0.0,
+                "repair_mask_right_mean": 0.0,
+                "protect_mask_left_mean": 0.0,
+                "protect_mask_right_mean": 0.0,
+            })
+
+        # Full shift map is preview-only because it forces a big GPU to CPU copy.
+        if return_shift_map:
+            zero_meta["shift_map"] = final_shift.detach().cpu()
+
         if return_tensors:
             return left_blended, right_blended, zero_meta
+
         return tensor_to_frame(left_blended), tensor_to_frame(right_blended), zero_meta
-    else:
-        if return_tensors:
-            return left_blended, right_blended
-        return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
+
+        
+    if return_tensors:
+        return left_blended, right_blended
+
+    return tensor_to_frame(left_blended), tensor_to_frame(right_blended)
 
 def tensor_pad_to_aspect(t: torch.Tensor, target_w: int, target_h: int) -> torch.Tensor:
     """
@@ -2498,6 +3139,14 @@ def tensor_pad_to_aspect(t: torch.Tensor, target_w: int, target_h: int) -> torch
     Pads with black to exactly target_w/target_h, centered.
     """
     C, H, W = t.shape
+    target_w = int(target_w)
+    target_h = int(target_h)
+
+    # Fast path: already exactly target size.
+    # Avoids unnecessary F.interpolate every frame.
+    if H == target_h and W == target_w:
+        return t.clamp(0.0, 1.0)
+
     out = t
     # resize to fit inside target while preserving aspect
     src_ar = W / max(H, 1)
@@ -2783,6 +3432,98 @@ def compute_motion_metric(prev_d, curr_d):
     mad = torch.mean(torch.abs(curr_d - prev_d)).item()
     return max(0.0, min(1.0, mad * 4.0))  # scale a bit to feel responsive
 
+def get_keyframed_settings_for_frame_compat(keyframe_service, frame_idx: int, base_settings: dict) -> dict:
+    """
+    Compatibility helper for KeyframeService.
+
+    Supports either:
+      - keyframe_service.get_settings_for_frame(frame_idx, base_settings=...)
+      - keyframe_service.keyframes list with objects containing:
+            frame
+            settings
+            transition_frames
+            transition_type
+
+    Keyframe behavior:
+      - A keyframe controls settings from its frame until the next keyframe.
+      - Optional transition blends from previous settings into the new keyframe.
+    """
+    if keyframe_service is None:
+        return dict(base_settings)
+
+    # Newer/expected API path.
+    if hasattr(keyframe_service, "get_settings_for_frame"):
+        try:
+            return keyframe_service.get_settings_for_frame(
+                int(frame_idx),
+                base_settings=dict(base_settings),
+            )
+        except Exception as e:
+            debug_print(f"[3D KEYFRAME] get_settings_for_frame failed, using compat path: {e}")
+
+    keyframes = getattr(keyframe_service, "keyframes", None) or []
+    if not keyframes:
+        return dict(base_settings)
+
+    try:
+        keyframes = sorted(keyframes, key=lambda kf: int(getattr(kf, "frame", 0)))
+    except Exception:
+        return dict(base_settings)
+
+    frame_idx = int(frame_idx)
+
+    active_kf = None
+    prev_kf = None
+
+    for kf in keyframes:
+        kf_frame = int(getattr(kf, "frame", 0))
+
+        if kf_frame <= frame_idx:
+            prev_kf = active_kf
+            active_kf = kf
+        else:
+            break
+
+    if active_kf is None:
+        return dict(base_settings)
+
+    active_frame = int(getattr(active_kf, "frame", 0))
+    active_settings = getattr(active_kf, "settings", None) or {}
+
+    result = dict(base_settings)
+
+    # Previous settings used for transition blending.
+    prev_settings = dict(base_settings)
+    if prev_kf is not None:
+        prev_settings.update(getattr(prev_kf, "settings", None) or {})
+
+    transition_frames = int(getattr(active_kf, "transition_frames", 0) or 0)
+    transition_type = str(getattr(active_kf, "transition_type", "cut") or "cut").lower()
+
+    # No transition or already past transition window.
+    if transition_frames <= 0 or transition_type == "cut" or frame_idx >= active_frame + transition_frames:
+        result.update(active_settings)
+        return result
+
+    # Blend from previous settings into active keyframe settings.
+    t = (frame_idx - active_frame) / max(1.0, float(transition_frames))
+    t = max(0.0, min(1.0, t))
+
+    if transition_type == "smoothstep":
+        t = t * t * (3.0 - 2.0 * t)
+
+    blended = dict(result)
+
+    for key, target_value in active_settings.items():
+        prev_value = prev_settings.get(key, result.get(key, target_value))
+
+        try:
+            blended[key] = float(prev_value) * (1.0 - t) + float(target_value) * t
+        except Exception:
+            blended[key] = target_value if t >= 1.0 else prev_value
+
+    result.update(blended)
+    return result
 
 # Render
 def render_sbs_3d(
@@ -2835,6 +3576,8 @@ def render_sbs_3d(
     fg_pop_multiplier=1.20,
     bg_push_multiplier=1.10,
     subject_lock_strength=0.35,
+    subject_plane_lock_strength=0.0,
+    subject_plane_lock_width=0.08,
     foreground_curvature_strength=0.06,
     color_saturation=1.0,
     color_contrast=1.0,
@@ -2848,10 +3591,61 @@ def render_sbs_3d(
     vr180_flat_h=None,
     vr180_hfov_deg=110.0,
     disable_shift_ema=False,
-):
+    enable_shift_preview=False,
+    keyframe_service=None,
+    ):
+
     reset_render_state()
+    
+    base_keyframe_settings = {
+        "fg_shift": float(fg_shift),
+        "mg_shift": float(mg_shift),
+        "bg_shift": float(bg_shift),
+
+        "max_pixel_shift_percent": float(max_pixel_shift_percent),
+        "parallax_balance": float(parallax_balance),
+        "zero_parallax_strength": float(zero_parallax_strength),
+        "convergence_strength": float(convergence_strength),
+        "ipd_factor": float(ipd_factor),
+
+        "depth_pop_gamma": float(depth_pop_gamma),
+        "depth_pop_mid": float(depth_pop_mid),
+        "depth_stretch_lo": float(depth_stretch_lo),
+        "depth_stretch_hi": float(depth_stretch_hi),
+        "fg_pop_multiplier": float(fg_pop_multiplier),
+        "bg_push_multiplier": float(bg_push_multiplier),
+
+        "subject_lock_strength": float(subject_lock_strength),
+        "subject_plane_lock_strength": float(subject_plane_lock_strength),
+        "subject_plane_lock_width": float(subject_plane_lock_width),
+        "foreground_curvature_strength": float(foreground_curvature_strength),
+
+        "dof_strength": float(dof_strength),
+        "color_saturation": float(color_saturation),
+        "color_contrast": float(color_contrast),
+        "color_brightness": float(color_brightness),
+    }
+
+    keyframes_enabled = (
+        keyframe_service is not None
+        and hasattr(keyframe_service, "has_keyframes")
+        and keyframe_service.has_keyframes()
+    )
+
+    last_keyframe_debug_signature = None
+
+    if suspend_flag is None:
+        suspend_flag = threading.Event()
+    if cancel_flag is None:
+        cancel_flag = threading.Event()
+
+    if preserve_hdr10 and not use_ffmpeg:
+        raise RuntimeError("HDR10 output requires FFmpeg. OpenCV VideoWriter is SDR-only in this pipeline.")
+
     cap, dcap = cv2.VideoCapture(input_path), cv2.VideoCapture(depth_path)
     if not cap.isOpened() or not dcap.isOpened():
+        cap.release()
+        dcap.release()
         return
 
     hdr_gen = None
@@ -3147,6 +3941,10 @@ def render_sbs_3d(
         (abs(color_brightness) > 1e-6)
     )
 
+    if preserve_hdr10 and need_color:
+        print("⚠️ HDR10 preserve mode: SDR color grading is disabled to avoid HDR color shifts.")
+        need_color = False
+
     ffmpeg_proc = None
     out = None
 
@@ -3202,35 +4000,72 @@ def render_sbs_3d(
         is_nvenc = "nvenc" in selected_ffmpeg_codec         # h264_nvenc/hevc_nvenc/av1_nvenc
 
         if preserve_hdr10:
+            # Real HDR round-trip:
+            # raw RGB48/PQ/full-range pipe -> BT.2020nc/PQ/limited-range P010
+            hdr_rgb_to_p010_filter = build_hdr_rgb48_to_p010_filter()
+            master_display, max_cll = get_hdr10_metadata_for_x265(input_path)
+
             ffmpeg_cmd += [
-                "-pix_fmt","p010le",
-                "-color_range","tv",
-                "-colorspace","bt2020nc",
-                "-color_primaries","bt2020",
-                "-color_trc","smpte2084",
+                "-vf", hdr_rgb_to_p010_filter,
+                "-pix_fmt", "p010le",
+                "-color_range", "tv",
+                "-colorspace", "bt2020nc",
+                "-color_primaries", "bt2020",
+                "-color_trc", "smpte2084",
             ]
 
             if is_nvenc:
+                # NVENC HDR10. Some builds support metadata options differently,
+                # so keep the conversion correct and tag the output correctly.
                 ffmpeg_cmd += [
-                    "-preset","p5",               # NVENC preset (p1 fastest…p7 slowest)
-                    "-tune","hq",
-                    "-rc","vbr",
-                    "-cq", str(crf_value),        # you’re using this as “quality” knob
-                    "-b:v","0",
-                    "-profile:v","main10",
+                    "-preset", "p5",
+                    "-tune", "hq",
+                    "-rc", "vbr",
+                    "-cq", str(crf_value),
+                    "-b:v", "0",
+                    "-profile:v", "main10",
                 ]
-            elif selected_ffmpeg_codec == "libx265":
-                ffmpeg_cmd += [
-                    "-preset","slow",
-                    "-crf", str(crf_value),
-                    "-x265-params",
-                    "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
-                ]
-            elif selected_ffmpeg_codec in {"h264_amf", "hevc_amf", "av1_amf"}:
-                ffmpeg_cmd += ["-quality", "quality", "-rc", "cqp", "-qp_i", str(crf_value), "-qp_p", str(crf_value)]
-            else:
-                ffmpeg_cmd += ["-preset","slow","-crf", str(crf_value)]
 
+                # Try to pass HDR10 SEI metadata when supported by this FFmpeg/NVENC build.
+                # If your FFmpeg errors on these, remove only these two metadata lines.
+                if selected_ffmpeg_codec in {"hevc_nvenc", "av1_nvenc"}:
+                    ffmpeg_cmd += [
+                        "-master_display", master_display,
+                        "-max_cll", max_cll,
+                    ]
+
+            elif selected_ffmpeg_codec == "libx265":
+                x265_params = (
+                    "hdr-opt=1:"
+                    "repeat-headers=1:"
+                    "colorprim=bt2020:"
+                    "transfer=smpte2084:"
+                    "colormatrix=bt2020nc:"
+                    f"master-display={master_display}:"
+                    f"max-cll={max_cll}"
+                )
+
+                ffmpeg_cmd += [
+                    "-preset", "slow",
+                    "-crf", str(crf_value),
+                    "-x265-params", x265_params,
+                ]
+
+            elif selected_ffmpeg_codec in {"h264_amf", "hevc_amf", "av1_amf"}:
+                # AMF still gets the correct RGB->P010 conversion and HDR tags.
+                # Metadata support varies by FFmpeg/driver build.
+                ffmpeg_cmd += [
+                    "-quality", "quality",
+                    "-rc", "cqp",
+                    "-qp_i", str(crf_value),
+                    "-qp_p", str(crf_value),
+                ]
+
+            else:
+                ffmpeg_cmd += [
+                    "-preset", "slow",
+                    "-crf", str(crf_value),
+                ]
         else:
             # SDR
             if is_nvenc:
@@ -3309,6 +4144,7 @@ def render_sbs_3d(
         )
     
     last_ui_update = 0.0
+    last_console_status = 0.0
     
     try:
         for idx in range(total_frames):
@@ -3464,42 +4300,106 @@ def render_sbs_3d(
                     right_frame = frame
             else:
                 fg_run, mg_run, bg_run = fg, mg, bg
-                if ipd_factor != 0.0:
-                    fg_run *= ipd_factor
-                    mg_run *= ipd_factor
-                    bg_run *= ipd_factor
+
+                frame_base_settings = dict(base_keyframe_settings)
+                frame_base_settings["fg_shift"] = float(fg_run)
+                frame_base_settings["mg_shift"] = float(mg_run)
+                frame_base_settings["bg_shift"] = float(bg_run)
+                frame_base_settings["ipd_factor"] = float(ipd_factor)
 
                 t0 = profiler.tic()
+
+                if keyframes_enabled:
+                    # Use absolute source frame index so keyframes still line up
+                    # correctly when rendering a clipped segment.
+                    keyframe_frame_idx = start_frame_idx + idx
+
+                    active_3d_settings = get_keyframed_settings_for_frame_compat(
+                        keyframe_service,
+                        keyframe_frame_idx,
+                        base_settings=frame_base_settings,
+                    )
+                else:
+                    active_3d_settings = frame_base_settings
+
+                fg_run_frame = float(active_3d_settings.get("fg_shift", fg_run))
+                mg_run_frame = float(active_3d_settings.get("mg_shift", mg_run))
+                bg_run_frame = float(active_3d_settings.get("bg_shift", bg_run))
+
+                max_pixel_shift_percent_frame = float(active_3d_settings.get("max_pixel_shift_percent", max_pixel_shift_percent))
+                parallax_balance_frame = float(active_3d_settings.get("parallax_balance", parallax_balance))
+                zero_parallax_strength_frame = float(active_3d_settings.get("zero_parallax_strength", zero_parallax_strength))
+                convergence_strength_frame = float(active_3d_settings.get("convergence_strength", convergence_strength))
+                ipd_factor_frame = float(active_3d_settings.get("ipd_factor", ipd_factor))
+                
+                if ipd_factor_frame != 0.0:
+                    fg_run_frame *= ipd_factor_frame
+                    mg_run_frame *= ipd_factor_frame
+                    bg_run_frame *= ipd_factor_frame
+
+                depth_pop_gamma_frame = float(active_3d_settings.get("depth_pop_gamma", depth_pop_gamma))
+                depth_pop_mid_frame = float(active_3d_settings.get("depth_pop_mid", depth_pop_mid))
+                depth_stretch_lo_frame = float(active_3d_settings.get("depth_stretch_lo", depth_stretch_lo))
+                depth_stretch_hi_frame = float(active_3d_settings.get("depth_stretch_hi", depth_stretch_hi))
+                fg_pop_multiplier_frame = float(active_3d_settings.get("fg_pop_multiplier", fg_pop_multiplier))
+                bg_push_multiplier_frame = float(active_3d_settings.get("bg_push_multiplier", bg_push_multiplier))
+
+                subject_lock_strength_frame = float(active_3d_settings.get("subject_lock_strength", subject_lock_strength))
+                subject_plane_lock_strength_frame = float(active_3d_settings.get("subject_plane_lock_strength", subject_plane_lock_strength))
+                subject_plane_lock_width_frame = float(active_3d_settings.get("subject_plane_lock_width", subject_plane_lock_width))
+                foreground_curvature_strength_frame = float(active_3d_settings.get("foreground_curvature_strength", foreground_curvature_strength))
+
+                dof_strength_frame = float(active_3d_settings.get("dof_strength", dof_strength))
+                color_saturation_frame = float(active_3d_settings.get("color_saturation", color_saturation))
+                color_contrast_frame = float(active_3d_settings.get("color_contrast", color_contrast))
+                color_brightness_frame = float(active_3d_settings.get("color_brightness", color_brightness))
+
+                if keyframes_enabled and is_debug_enabled():
+                    keyframe_debug_signature = tuple(sorted(active_3d_settings.items()))
+                    if keyframe_debug_signature != last_keyframe_debug_signature:
+                        debug_print(
+                            f"[3D KEYFRAME] frame={idx} "
+                            f"fg={fg_run_frame:.4f} mg={mg_run_frame:.4f} bg={bg_run_frame:.4f} "
+                            f"conv={convergence_strength_frame:.4f} "
+                            f"subject_lock={subject_lock_strength_frame:.4f} "
+                            f"plane_lock={subject_plane_lock_strength_frame:.4f} "
+                            f"curvature={foreground_curvature_strength_frame:.4f}"
+                        )
+                        last_keyframe_debug_signature = keyframe_debug_signature
 
                 left_frame, right_frame, shift_meta = pixel_shift_cuda(
                     frame_tensor,
                     depth_tensor,
                     eye_w,
                     eye_h,
-                    fg_run,
-                    mg_run,
-                    bg_run,
+                    fg_run_frame,
+                    mg_run_frame,
+                    bg_run_frame,
                     blur_ksize=blur_ksize,
                     feather_strength=feather_strength,
                     use_subject_tracking=use_subject_tracking,
                     enable_floating_window=use_floating_window,
-                    return_shift_map=True,
-                    max_pixel_shift_percent=max_pixel_shift_percent,
-                    zero_parallax_strength=zero_parallax_strength,
+                    return_shift_map=bool(enable_shift_preview),
+                    return_meta=True,
+                    max_pixel_shift_percent=max_pixel_shift_percent_frame,
+                    parallax_balance=parallax_balance_frame,                    
+                    zero_parallax_strength=zero_parallax_strength_frame,
                     enable_edge_masking=enable_edge_masking,
                     enable_feathering=enable_feathering,
                     edge_repair_quality=edge_repair_quality,
-                    dof_strength=dof_strength,
-                    convergence_strength=convergence_strength,
+                    dof_strength=dof_strength_frame,
+                    convergence_strength=convergence_strength_frame,
                     enable_dynamic_convergence=enable_dynamic_convergence,
-                    depth_pop_gamma=depth_pop_gamma,
-                    depth_pop_mid=depth_pop_mid,
-                    depth_stretch_lo=depth_stretch_lo,
-                    depth_stretch_hi=depth_stretch_hi,
-                    fg_pop_multiplier=fg_pop_multiplier,
-                    bg_push_multiplier=bg_push_multiplier,
-                    subject_lock_strength=subject_lock_strength,
-                    foreground_curvature_strength=foreground_curvature_strength,
+                    depth_pop_gamma=depth_pop_gamma_frame,
+                    depth_pop_mid=depth_pop_mid_frame,
+                    depth_stretch_lo=depth_stretch_lo_frame,
+                    depth_stretch_hi=depth_stretch_hi_frame,
+                    fg_pop_multiplier=fg_pop_multiplier_frame,
+                    bg_push_multiplier=bg_push_multiplier_frame,
+                    subject_lock_strength=subject_lock_strength_frame,
+                    subject_plane_lock_strength=subject_plane_lock_strength_frame,
+                    subject_plane_lock_width=subject_plane_lock_width_frame,
+                    foreground_curvature_strength=foreground_curvature_strength_frame,
                     return_tensors=True,
                     disable_shift_ema=disable_shift_ema,
                 )
@@ -3523,12 +4423,15 @@ def render_sbs_3d(
                     
                 t0 = profiler.tic()
 
-                candidate_focal = estimate_subject_depth(depth_tensor)  # 0..1
-                motion_metric   = compute_motion_metric(prev_depth_tensor, depth_tensor)
-                focal_tracker.set_scene_motion(motion_metric)
-                focal_depth     = focal_tracker.update(candidate_focal)
+                if need_dof:
+                    candidate_focal = estimate_subject_depth(depth_tensor)
+                    motion_metric = compute_motion_metric(prev_depth_tensor, depth_tensor)
+                    focal_tracker.set_scene_motion(motion_metric)
+                    focal_depth = focal_tracker.update(candidate_focal)
+                else:
+                    focal_depth = float(shift_meta.get("subject_depth", 0.5))
 
-                profiler.toc("subject_motion_tracking", t0)
+                profiler.toc("dof_focal_tracking", t0)
 
                 t0 = profiler.tic()
 
@@ -3547,20 +4450,20 @@ def render_sbs_3d(
                     # 3) DOF first (if enabled)
                     if need_dof:
                         left_t  = apply_dof_cuda(left_t,  depth_for_eye, focal_depth,
-                                                 max_sigma=dof_strength, focus_width=0.35)
+                                                 max_sigma=dof_strength_frame, focus_width=0.35)
                         right_t = apply_dof_cuda(right_t, depth_for_eye, focal_depth,
-                                                 max_sigma=dof_strength, focus_width=0.35)
+                                                 max_sigma=dof_strength_frame, focus_width=0.35)
 
                     # 4) Color grading next (if non-neutral)
                     if need_color:
                         left_t  = apply_color_grade(left_t,
-                                                    saturation=color_saturation,
-                                                    contrast=color_contrast,
-                                                    brightness=color_brightness)
+                                                    saturation=color_saturation_frame,
+                                                    contrast=color_contrast_frame,
+                                                    brightness=color_brightness_frame)
                         right_t = apply_color_grade(right_t,
-                                                    saturation=color_saturation,
-                                                    contrast=color_contrast,
-                                                    brightness=color_brightness)
+                                                    saturation=color_saturation_frame,
+                                                    contrast=color_contrast_frame,
+                                                    brightness=color_brightness_frame)
 
                     # 5) back to numpy for SDR only
                     if preserve_hdr10:
@@ -3626,57 +4529,91 @@ def render_sbs_3d(
                 dfw_width = dfw_last_width
                 dfw_apply = (dfw_width > 1)            
 
-            if preserve_hdr10 and not use_ffmpeg:
-                raise RuntimeError("HDR10 output requires FFmpeg. OpenCV VideoWriter is SDR-only in this pipeline.")
-
             if not preserve_hdr10:
                 if torch.is_tensor(left_frame):
                     left_frame = tensor_to_frame(left_frame)
                 if torch.is_tensor(right_frame):
                     right_frame = tensor_to_frame(right_frame)
                     
-                    
             t0 = profiler.tic()
-            # sharpen & pack
+
+            # ------------------------------------------------------------
+            # Sharpen / resize / format / pack
+            #
+            # Important speed fix:
+            # SDR now stays on GPU until the final single output-frame
+            # conversion. This avoids:
+            #   GPU -> CPU left eye
+            #   GPU -> CPU right eye
+            #   CPU sharpen
+            #   CPU resize/pad
+            #   CPU pack
+            #
+            # Instead:
+            #   GPU left/right -> GPU sharpen/resize/pad/pack -> one CPU copy
+            # ------------------------------------------------------------
+
             if preserve_hdr10:
                 # left_frame/right_frame are torch tensors [3,H,W] RGB float 0..1
 
-                # 1) Sharpen in tensor space
-                left_t  = tensor_apply_sharpen(left_frame,  sharpness_factor)
+                left_t = tensor_apply_sharpen(left_frame, sharpness_factor)
                 right_t = tensor_apply_sharpen(right_frame, sharpness_factor)
 
-                # 2) Size handling before final packing
                 if vr180_enabled:
-                    # Keep at FLAT working res (eye_w x eye_h) for projection step
-                    # If anything drifted, enforce it:
-                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
-                    right_t = F.interpolate(right_t.unsqueeze(0), size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                    left_t = F.interpolate(
+                        left_t.unsqueeze(0),
+                        size=(eye_h, eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+
+                    right_t = F.interpolate(
+                        right_t.unsqueeze(0),
+                        size=(eye_h, eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
 
                 elif output_format == "Half-SBS":
-                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
-                    right_t = F.interpolate(right_t.unsqueeze(0), size=(per_eye_h, per_eye_w), mode="bilinear", align_corners=False).squeeze(0)
+                    left_t = F.interpolate(
+                        left_t.unsqueeze(0),
+                        size=(per_eye_h, per_eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+
+                    right_t = F.interpolate(
+                        right_t.unsqueeze(0),
+                        size=(per_eye_h, per_eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
 
                 else:
-                    left_t  = tensor_pad_to_aspect(left_t,  per_eye_w, per_eye_h)
+                    left_t = tensor_pad_to_aspect(left_t, per_eye_w, per_eye_h)
                     right_t = tensor_pad_to_aspect(right_t, per_eye_w, per_eye_h)
 
-                # 3) Dynamic Floating Window, apply in tensor space
                 if dfw_apply:
-                    left_t  = tensor_apply_side_mask(
-                        left_t, side=dfw_side, width=dfw_width,
-                        fade=DFW_USE_FADE, solid_black=(not DFW_USE_FADE)
-                    )
-                    right_t = tensor_apply_side_mask(
-                        right_t, side=dfw_side, width=dfw_width,
-                        fade=DFW_USE_FADE, solid_black=(not DFW_USE_FADE)
+                    left_t = tensor_apply_side_mask(
+                        left_t,
+                        side=dfw_side,
+                        width=dfw_width,
+                        fade=DFW_USE_FADE,
+                        solid_black=(not DFW_USE_FADE),
                     )
 
-                # 3.5) VR180 projection (flat -> equirect per eye)
+                    right_t = tensor_apply_side_mask(
+                        right_t,
+                        side=dfw_side,
+                        width=dfw_width,
+                        fade=DFW_USE_FADE,
+                        solid_black=(not DFW_USE_FADE),
+                    )
+
                 if vr180_enabled:
-                    left_t  = warp_eye_to_vr180_equirect(left_t,  vr180_grid, vr180_valid)
+                    left_t = warp_eye_to_vr180_equirect(left_t, vr180_grid, vr180_valid)
                     right_t = warp_eye_to_vr180_equirect(right_t, vr180_grid, vr180_valid)
-                    
-                # 4) Final pack as tensor
+
                 if eye_mode == "left":
                     final_tensor = left_t
                 elif eye_mode == "right":
@@ -3687,60 +4624,100 @@ def render_sbs_3d(
                     elif output_format == "VR180 Equirect (SBS)":
                         final_tensor = pack_stereo_sbs(left_t, right_t)
                     else:
-                        final_tensor = torch.cat([left_t, right_t], dim=2)  # your existing SBS
-
-
-                # Optional: if you really need Passive Interlaced in HDR, do it in tensor space
-                if (eye_mode == "sbs") and (output_format == "Passive Interlaced"):
-                    # interlace rows: even rows left, odd rows right, output is single-eye size
-                    H, W2 = final_tensor.shape[1], final_tensor.shape[2]
-                    W = W2 // 2
-                    left_eye  = final_tensor[:, :, :W]
-                    right_eye = final_tensor[:, :, W:]
-                    inter = left_eye.clone()
-                    inter[:, 1::2, :] = right_eye[:, 1::2, :]
-                    final_tensor = inter
+                        final_tensor = format_3d_output_torch(left_t, right_t, output_format)
 
             else:
-                # SDR numpy path
-                left_sharp  = apply_sharpening(left_frame, sharpness_factor)
-                right_sharp = apply_sharpening(right_frame, sharpness_factor)
+                # SDR GPU-first path.
+                # Convert only if this frame came from a fallback NumPy path,
+                # such as skipped blank frames.
+                def _ensure_rgb_tensor_for_sdr(img):
+                    if torch.is_tensor(img):
+                        t = img
 
+                        if t.dim() == 4:
+                            t = t.squeeze(0)
+
+                        # Do not call .item(), .amax(), or .cpu() here.
+                        # Normal render tensors are already RGB float 0..1.
+                        if t.device != torch_device:
+                            t = t.to(torch_device, non_blocking=True)
+
+                        if not torch.is_floating_point(t):
+                            t = t.float() / 255.0
+                        else:
+                            t = t.float()
+
+                        return t.clamp(0.0, 1.0)
+
+                    # NumPy BGR fallback -> RGB tensor on GPU.
+                    return frame_to_tensor(img).clamp(0.0, 1.0)
+
+                left_t = _ensure_rgb_tensor_for_sdr(left_frame)
+                right_t = _ensure_rgb_tensor_for_sdr(right_frame)
+
+                # GPU sharpen.
+                if sharpness_factor > 1e-6:
+                    left_t = tensor_sharpen(left_t, sharpness_factor)
+                    right_t = tensor_sharpen(right_t, sharpness_factor)
+
+                # GPU resize / pad.
                 if vr180_enabled:
-                    # always flat working size for projection
-                    left_out  = cv2.resize(left_sharp,  (eye_w, eye_h), interpolation=cv2.INTER_AREA)
-                    right_out = cv2.resize(right_sharp, (eye_w, eye_h), interpolation=cv2.INTER_AREA)
+                    left_t = F.interpolate(
+                        left_t.unsqueeze(0),
+                        size=(eye_h, eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+
+                    right_t = F.interpolate(
+                        right_t.unsqueeze(0),
+                        size=(eye_h, eye_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+
+                elif output_format == "Half-SBS":
+                    if left_t.shape[-2:] != (per_eye_h, per_eye_w):
+                        left_t = F.interpolate(
+                            left_t.unsqueeze(0),
+                            size=(per_eye_h, per_eye_w),
+                            mode="bilinear",
+                            align_corners=False,
+                        ).squeeze(0)
+
+                    if right_t.shape[-2:] != (per_eye_h, per_eye_w):
+                        right_t = F.interpolate(
+                            right_t.unsqueeze(0),
+                            size=(per_eye_h, per_eye_w),
+                            mode="bilinear",
+                            align_corners=False,
+                        ).squeeze(0)
+
                 else:
-                    if output_format == "Full-SBS":
-                        left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
-                        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-                    elif output_format == "Half-SBS":
-                        left_out  = cv2.resize(left_sharp,  (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-                        right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-                    else:
-                        left_out  = pad_to_aspect_ratio(left_sharp,  per_eye_w, per_eye_h)
-                        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+                    left_t = tensor_pad_to_aspect(left_t, per_eye_w, per_eye_h)
+                    right_t = tensor_pad_to_aspect(right_t, per_eye_w, per_eye_h)
 
-                # Dynamic Floating Window stays the same for SDR
+                # Dynamic Floating Window in tensor space.
                 if dfw_apply:
-                    if DFW_USE_FADE:
-                        left_out  = apply_side_mask(left_out,  side=dfw_side, width=dfw_width, fade=True,  solid_black=False)
-                        right_out = apply_side_mask(right_out, side=dfw_side, width=dfw_width, fade=True,  solid_black=False)
-                    else:
-                        left_out  = apply_side_mask(left_out,  side=dfw_side, width=dfw_width, fade=False, solid_black=True)
-                        right_out = apply_side_mask(right_out, side=dfw_side, width=dfw_width, fade=False, solid_black=True)
+                    left_t = tensor_apply_side_mask(
+                        left_t,
+                        side=dfw_side,
+                        width=dfw_width,
+                        fade=DFW_USE_FADE,
+                        solid_black=(not DFW_USE_FADE),
+                    )
 
+                    right_t = tensor_apply_side_mask(
+                        right_t,
+                        side=dfw_side,
+                        width=dfw_width,
+                        fade=DFW_USE_FADE,
+                        solid_black=(not DFW_USE_FADE),
+                    )
 
-                # Decide output in SDR path
+                # VR180 projection in tensor space.
                 if vr180_enabled:
-                    # project flat -> equirect and pack, and set final
-                    left_t  = frame_to_tensor(left_out)
-                    right_t = frame_to_tensor(right_out)
-
-                    left_t  = F.interpolate(left_t.unsqueeze(0),  size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
-                    right_t = F.interpolate(right_t.unsqueeze(0), size=(eye_h, eye_w), mode="bilinear", align_corners=False).squeeze(0)
-
-                    left_t  = warp_eye_to_vr180_equirect(left_t,  vr180_grid, vr180_valid)
+                    left_t = warp_eye_to_vr180_equirect(left_t, vr180_grid, vr180_valid)
                     right_t = warp_eye_to_vr180_equirect(right_t, vr180_grid, vr180_valid)
 
                     if eye_mode == "left":
@@ -3753,22 +4730,22 @@ def render_sbs_3d(
                         else:
                             final_t = pack_stereo_sbs(left_t, right_t)
 
-                    final = tensor_to_frame(final_t)
-
                 else:
                     if eye_mode == "left":
-                        final = left_out
+                        final_t = left_t
                     elif eye_mode == "right":
-                        final = right_out
+                        final_t = right_t
                     else:
-                        final = format_3d_output(left_out, right_out, output_format)
+                        final_t = format_3d_output_torch(left_t, right_t, output_format)
+
+                # One final GPU -> CPU transfer for FFmpeg/OpenCV.
+                final = tensor_to_frame(final_t)
 
             profiler.toc("pack_resize_format", t0)
 
             # write frame
             t0 = profiler.tic()
 
-            # write frame
             if use_ffmpeg:
                 try:
                     if not preserve_hdr10:
@@ -3783,7 +4760,13 @@ def render_sbs_3d(
                             )
                             final = cv2.resize(final, (out_width, out_height), interpolation=cv2.INTER_AREA)
 
-                        ffmpeg_proc.stdin.write(final.astype(np.uint8).tobytes())
+                        if final.dtype != np.uint8:
+                            final = final.astype(np.uint8, copy=False)
+
+                        if not final.flags["C_CONTIGUOUS"]:
+                            final = np.ascontiguousarray(final)
+
+                        ffmpeg_proc.stdin.write(final.tobytes())
 
                     else:
                         ffmpeg_proc.stdin.write(tensor_to_rgb48_bytes(final_tensor))
@@ -3791,19 +4774,18 @@ def render_sbs_3d(
                 except Exception as e:
                     print(f"❌ FFmpeg write error: {e}")
 
-                    try:
-                        if ffmpeg_proc and ffmpeg_proc.stderr:
-                            err = ffmpeg_proc.stderr.read()
-                            if err:
-                                print("[FFMPEG STDERR]")
-                                print(err.decode(errors="replace")[-4000:])
-                    except Exception:
-                        pass
+                    if "ffmpeg_stderr_chunks" in locals():
+                        err_text = "".join(ffmpeg_stderr_chunks)[-4000:]
+                        if err_text.strip():
+                            print("[FFMPEG STDERR]")
+                            print(err_text)
 
                     raise RuntimeError(f"FFmpeg write failed: {e}")
+
             else:
                 out.write(final)
-                profiler.toc("video_write", t0)
+
+            profiler.toc("video_write", t0)
                 
             if end_s is not None:
                 cur_abs_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
@@ -3840,10 +4822,16 @@ def render_sbs_3d(
                 eta = remaining_frames / avg_fps if avg_fps > 0 else 0
                 eta_str = time.strftime("%H:%M:%S", time.gmtime(eta))
 
+                status_text = f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
+
                 if progress_label:
-                    progress_label.config(
-                        text=f"{percent:.2f}% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: {eta_str}"
-                    )
+                    progress_label.config(text=status_text)
+
+                # Lightweight terminal/status log even when debug profiling is OFF.
+                # No torch.cuda.synchronize(), no tensor reads, safe for normal renders.
+                if not is_debug_enabled() and (now_ui - last_console_status) >= 5.0:
+                    last_console_status = now_ui
+                    print(f"[3D RENDER] {status_text}", flush=True)
                 
             prev_depth_tensor = depth_tensor.detach()
             prev_time = curr_time
@@ -3851,22 +4839,31 @@ def render_sbs_3d(
             profiler.toc("ui_progress", t0)
             profiler.end_frame()
 
-        # ✅ final progress update (inside try)
-        if progress:
-            progress["value"] = 100
-            progress.update()
-        if progress_label:
-            elapsed = time.time() - global_session_start_time
-            elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-            progress_label.config(
-                text=f"100.00% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: 00:00:00"
-            )
-
+        # ✅ final progress update
+        if cancel_flag.is_set():
+            if progress_label:
+                progress_label.config(text="Canceled")
+        else:
+            if progress:
+                progress["value"] = 100
+                progress.update()
+            if progress_label:
+                elapsed = time.time() - global_session_start_time
+                elapsed_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                progress_label.config(
+                    text=f"100.00% | FPS: {avg_fps:.2f} | Elapsed: {elapsed_str} | ETA: 00:00:00"
+                )
     except Exception as e:
         print(f"❌ Render crashed: {e}")
         raise
 
     finally:
+        if hdr_gen is not None:
+            try:
+                hdr_gen.close()
+            except Exception:
+                pass
+
         cap.release(); dcap.release()
         if use_ffmpeg and ffmpeg_proc is not None:
             try:
@@ -3882,13 +4879,7 @@ def render_sbs_3d(
                     return_code = ffmpeg_proc.wait(timeout=10)
 
                     if return_code != 0:
-                        err_text = ""
-                        try:
-                            if ffmpeg_proc.stderr:
-                                err = ffmpeg_proc.stderr.read()
-                                err_text = err.decode(errors="replace")[-4000:] if err else ""
-                        except Exception:
-                            pass
+                        err_text = "".join(ffmpeg_stderr_chunks)[-4000:] if "ffmpeg_stderr_chunks" in locals() else ""
 
                         print("[FFMPEG FAILED]")
                         print(err_text)
@@ -3913,10 +4904,10 @@ def render_sbs_3d(
             torch.cuda.empty_cache()
         if global_session_start_time is not None:
             total_time = time.time() - global_session_start_time
-            print(f"✅ Render complete in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
+            print(f"⏱ Render session ended in {time.strftime('%H:%M:%S', time.gmtime(total_time))}")
             global_session_start_time = None
 
-        return output_path  
+        return output_path
 
 def render_sbs_3d_image(
     input_image_path: str,
@@ -3951,6 +4942,8 @@ def render_sbs_3d_image(
     fg_pop_multiplier: float = 1.20,
     bg_push_multiplier: float = 1.10,
     subject_lock_strength: float = 1.00,
+    subject_plane_lock_strength: float = 0.0,
+    subject_plane_lock_width: float = 0.08,
     foreground_curvature_strength: float = 0.06,
     color_saturation: float = 1.0,
     color_contrast: float = 1.0,
@@ -3995,6 +4988,8 @@ def render_sbs_3d_image(
     fg_pop_multiplier      = float(_val(fg_pop_multiplier))
     bg_push_multiplier     = float(_val(bg_push_multiplier))
     subject_lock_strength  = float(_val(subject_lock_strength))
+    subject_plane_lock_strength = float(_val(subject_plane_lock_strength))
+    subject_plane_lock_width = float(_val(subject_plane_lock_width))
     foreground_curvature_strength = float(_val(foreground_curvature_strength))
     color_saturation       = float(_val(color_saturation))
     color_contrast         = float(_val(color_contrast))
@@ -4176,7 +5171,7 @@ def render_sbs_3d_image(
         feather_strength=feather_strength,
         use_subject_tracking=use_subject_tracking,
         enable_floating_window=use_floating_window,
-        return_shift_map=True,
+        return_shift_map=False,
         return_tensors=True,
         max_pixel_shift_percent=max_pixel_shift_percent,
         zero_parallax_strength=zero_parallax_strength,
@@ -4192,6 +5187,8 @@ def render_sbs_3d_image(
         fg_pop_multiplier=fg_pop_multiplier,
         bg_push_multiplier=bg_push_multiplier,
         subject_lock_strength=subject_lock_strength,
+        subject_plane_lock_strength=subject_plane_lock_strength,
+        subject_plane_lock_width=subject_plane_lock_width,
         foreground_curvature_strength=foreground_curvature_strength,
         disable_shift_ema=disable_shift_ema,
     )
@@ -4234,7 +5231,7 @@ def render_sbs_3d_image(
             left_t,
             depth_for_eye,
             focal_depth,
-            max_sigma=dof_strength,
+            max_sigma=dof_strength_frame,
             focus_width=0.35,
         )
 
@@ -4242,47 +5239,62 @@ def render_sbs_3d_image(
             right_t,
             depth_for_eye,
             focal_depth,
-            max_sigma=dof_strength,
+            max_sigma=dof_strength_frame,
             focus_width=0.35,
         )
 
     if need_color:
         left_t = apply_color_grade(
             left_t,
-            saturation=color_saturation,
-            contrast=color_contrast,
-            brightness=color_brightness,
+            saturation=color_saturation_frame,
+            contrast=color_contrast_frame,
+            brightness=color_brightness_frame,
         )
 
         right_t = apply_color_grade(
             right_t,
-            saturation=color_saturation,
-            contrast=color_contrast,
-            brightness=color_brightness,
+            saturation=color_saturation_frame,
+            contrast=color_contrast_frame,
+            brightness=color_brightness_frame,
         )
 
-    # Convert back to OpenCV BGR numpy before sharpening/output formatting.
-    left_frame = tensor_to_frame(left_t.clamp(0.0, 1.0))
-    right_frame = tensor_to_frame(right_t.clamp(0.0, 1.0))
+    # Keep SDR formatting on GPU as long as possible.
+    left_t = left_t.clamp(0.0, 1.0)
+    right_t = right_t.clamp(0.0, 1.0)
 
-    # Sharpen and size per eye
-    left_sharp = apply_sharpening(left_frame, sharpness_factor)
-    right_sharp = apply_sharpening(right_frame, sharpness_factor)
+    # GPU sharpen
+    if sharpness_factor > 1e-6:
+        left_t = tensor_sharpen(left_t, sharpness_factor)
+        right_t = tensor_sharpen(right_t, sharpness_factor)
 
-    if output_format == "Full-SBS":
-        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
-    elif output_format == "Half-SBS":
-        left_out = cv2.resize(left_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-        right_out = cv2.resize(right_sharp, (per_eye_w, per_eye_h), interpolation=cv2.INTER_AREA)
-    elif output_format in ("VR", "Red-Cyan Anaglyph", "Passive Interlaced"):
-        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+    # GPU per-eye resize / pad
+    if output_format == "Half-SBS":
+        if left_t.shape[-2:] != (per_eye_h, per_eye_w):
+            left_t = F.interpolate(
+                left_t.unsqueeze(0),
+                size=(per_eye_h, per_eye_w),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+
+        if right_t.shape[-2:] != (per_eye_h, per_eye_w):
+            right_t = F.interpolate(
+                right_t.unsqueeze(0),
+                size=(per_eye_h, per_eye_w),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+
     else:
-        left_out = pad_to_aspect_ratio(left_sharp, per_eye_w, per_eye_h)
-        right_out = pad_to_aspect_ratio(right_sharp, per_eye_w, per_eye_h)
+        left_t = tensor_pad_to_aspect_ratio(left_t, per_eye_w, per_eye_h)
+        right_t = tensor_pad_to_aspect_ratio(right_t, per_eye_w, per_eye_h)
 
-    # Dynamic floating window, same logic as video (one frame)
+    # Dynamic floating window calculation for still images.
+    # Keep this before the tensor mask so dfw_apply is always defined.
+    dfw_apply = False
+    dfw_side = "left"
+    dfw_width = 0
+
     if use_floating_window:
         global dfw_last_side, dfw_last_width
 
@@ -4326,57 +5338,37 @@ def render_sbs_3d_image(
             + (1.0 - DFW_WIDTH_EASE) * target_width
         )
 
-        if dfw_last_width > 1:
-            if DFW_USE_FADE:
-                left_out = apply_side_mask(
-                    left_out,
-                    side=dfw_last_side,
-                    width=dfw_last_width,
-                    fade=True,
-                    solid_black=False,
-                )
-                right_out = apply_side_mask(
-                    right_out,
-                    side=dfw_last_side,
-                    width=dfw_last_width,
-                    fade=True,
-                    solid_black=False,
-                )
-            else:
-                left_out = apply_side_mask(
-                    left_out,
-                    side=dfw_last_side,
-                    width=dfw_last_width,
-                    fade=False,
-                    solid_black=True,
-                )
-                right_out = apply_side_mask(
-                    right_out,
-                    side=dfw_last_side,
-                    width=dfw_last_width,
-                    fade=False,
-                    solid_black=True,
-                )
+        dfw_side = dfw_last_side
+        dfw_width = dfw_last_width
+        dfw_apply = dfw_width > 1
 
-    # Pick eye mode and format
+    # Apply floating window mask in tensor space.
+    if dfw_apply:
+        left_t = tensor_apply_side_mask(
+            left_t,
+            side=dfw_side,
+            width=dfw_width,
+            fade=DFW_USE_FADE,
+            solid_black=(not DFW_USE_FADE),
+        )
+        right_t = tensor_apply_side_mask(
+            right_t,
+            side=dfw_side,
+            width=dfw_width,
+            fade=DFW_USE_FADE,
+            solid_black=(not DFW_USE_FADE),
+        )
+
+    # Final tensor packing. Do not fall back to left_out/right_out here.
     if eye_mode == "left":
-        final = left_out
-        target_w = left_out.shape[1]
-        target_h = left_out.shape[0]
-
+        final_t = left_t
     elif eye_mode == "right":
-        final = right_out
-        target_w = right_out.shape[1]
-        target_h = right_out.shape[0]
-
+        final_t = right_t
     else:
-        final = format_3d_output(left_out, right_out, output_format)
-        target_w = out_width
-        target_h = out_height
+        final_t = format_3d_output_torch(left_t, right_t, output_format)
 
-    # Make sure final matches desired output size without stretching the wrong mode
-    if final.shape[1] != target_w or final.shape[0] != target_h:
-        final = cv2.resize(final, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    # Convert once, right before writing.
+    final = tensor_to_frame(final_t)
 
     cv2.imwrite(output_image_path, final.astype(np.uint8))
     print(f"✅ Saved 3D image to {output_image_path}")
@@ -4508,6 +5500,8 @@ def process_video(
     fg_pop_multiplier,
     bg_push_multiplier,
     subject_lock_strength,
+    subject_plane_lock_strength,
+    subject_plane_lock_width,
     foreground_curvature_strength,
     color_saturation,
     color_contrast,
@@ -4527,6 +5521,8 @@ def process_video(
     vr180_flat_h_var=None,
     vr180_hfov_deg_var=None,
     disable_shift_ema=False,
+    keyframe_service=None,
+    edge_repair_quality=None,
 ):
 
 
@@ -4714,6 +5710,11 @@ def process_video(
             zero_parallax_strength=zero_parallax_strength.get(),
             enable_edge_masking=enable_edge_masking.get(),
             enable_feathering=enable_feathering.get(),
+            edge_repair_quality=(
+                edge_repair_quality.get()
+                if hasattr(edge_repair_quality, "get")
+                else (edge_repair_quality or "Fast")
+            ),
             skip_blank_frames=skip_blank_frames.get(),
             dof_strength=dof_strength.get(),
             original_video_width=width,
@@ -4728,6 +5729,8 @@ def process_video(
             fg_pop_multiplier=fg_pop_multiplier.get(),
             bg_push_multiplier=bg_push_multiplier.get(),
             subject_lock_strength=subject_lock_strength.get(),
+            subject_plane_lock_strength=subject_plane_lock_strength.get(),
+            subject_plane_lock_width=subject_plane_lock_width.get(),
             foreground_curvature_strength=foreground_curvature_strength.get(),
             color_saturation=(color_saturation.get() if hasattr(color_saturation, 'get') else color_saturation),
             color_contrast=(color_contrast.get() if hasattr(color_contrast, 'get') else color_contrast),
@@ -4741,6 +5744,7 @@ def process_video(
             vr180_flat_h=flat_h,
             vr180_hfov_deg=hfov,
             disable_shift_ema=disable_shift_ema,
+            keyframe_service=keyframe_service,
         )
 
     if not final_render_path:
@@ -4748,7 +5752,11 @@ def process_video(
 
     # 🔊 Inject original audio if toggle enabled
     if keep_original_audio:
-        print("🔊 Merging original audio into final render…")
+        if not is_valid_video_file(final_render_path):
+            print("Render output is missing, empty, or invalid. Skipping audio merge.")
+            return final_render_path
+
+        print("Merging original audio into final render…")
 
         base, ext = os.path.splitext(final_render_path)
         merged_output = base + "_audio" + ext  # keep .mkv/.mp4/.mov etc
@@ -4759,12 +5767,13 @@ def process_video(
             input_path,
             merged_output,
             start_s=start_s,
+            end_s=end_s,
         )
 
         if final_render_path != before_audio_merge:
-            print("🎧 Audio merge done!")
+            print("Audio merge done!")
         else:
-            print("⚠️ Audio merge skipped or failed. Keeping silent rendered video.")
+            print("Audio merge skipped or failed. Keeping silent rendered video.")
             
     return final_render_path
 
@@ -4822,17 +5831,31 @@ def render_with_ffmpeg(
     ]
 
 
-    # Codec-dependent quality flags
+    # Codec-dependent quality flags.
+    # There are two "-pix_fmt" entries in this command:
+    #   1) input raw format: bgr24
+    #   2) output format: yuv420p
+    # Insert encoder options before the output pix_fmt, not before the input pix_fmt.
+    output_pix_fmt_ix = [i for i, v in enumerate(ffmpeg_cmd) if v == "-pix_fmt"][-1]
+
     if codec_name.startswith("libx"):
-        ix = ffmpeg_cmd.index("-pix_fmt")
-        ffmpeg_cmd[ix:ix] = ["-preset", preset, "-crf", str(crf)]
+        ffmpeg_cmd[output_pix_fmt_ix:output_pix_fmt_ix] = [
+            "-preset", preset,
+            "-crf", str(crf),
+        ]
     elif "nvenc" in codec_name:
-        ix = ffmpeg_cmd.index("-pix_fmt")
-        ffmpeg_cmd[ix:ix] = ["-preset", preset, "-cq", str(nvenc_cq)]
+        ffmpeg_cmd[output_pix_fmt_ix:output_pix_fmt_ix] = [
+            "-preset", preset,
+            "-cq", str(nvenc_cq),
+        ]
         ffmpeg_cmd += ["-b:v", "0"]  # constant-quality style for NVENC
     elif codec_name in {"h264_amf", "hevc_amf", "av1_amf"}:
-        ix = ffmpeg_cmd.index("-pix_fmt")
-        ffmpeg_cmd[ix:ix] = ["-quality", "quality", "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
+        ffmpeg_cmd[output_pix_fmt_ix:output_pix_fmt_ix] = [
+            "-quality", "quality",
+            "-rc", "cqp",
+            "-qp_i", str(crf),
+            "-qp_p", str(crf),
+        ]
 
     debug_print(f"🚀 Launching FFmpeg render: {codec_name} | CRF: {crf} | NVENC CQ: {nvenc_cq} ➜ {output_path}")
 
