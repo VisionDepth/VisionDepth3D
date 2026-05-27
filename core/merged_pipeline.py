@@ -37,6 +37,38 @@ def hidden_subprocess_kwargs():
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
 
+def start_stderr_drain_thread(proc, keep_last=8000):
+    """
+    Drains proc.stderr so FFmpeg cannot block on a full stderr pipe.
+    Keeps only the last chunk for error/debug reporting.
+    """
+    chunks = []
+
+    def _reader():
+        try:
+            while True:
+                data = proc.stderr.readline()
+                if not data:
+                    break
+
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8", errors="replace")
+
+                chunks.append(data)
+
+                joined = "".join(chunks)
+                if len(joined) > keep_last:
+                    chunks[:] = [joined[-keep_last:]]
+
+        except Exception:
+            pass
+
+    if proc is not None and proc.stderr is not None:
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+
+    return chunks
+
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 progress_bar = None
@@ -108,7 +140,8 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 session_options = ort.SessionOptions()
 session_options.log_severity_level = 3
 session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-session_options.intra_op_num_threads = max(1, os.cpu_count() // 2)
+_cpu_count = os.cpu_count() or 2
+session_options.intra_op_num_threads = max(1, _cpu_count // 2)
 session_options.inter_op_num_threads = 1
 
 # ✅ ONNX Execution Provider fallback logic
@@ -237,6 +270,34 @@ def normalize_frame(img, target_size=None):
 
     return img
 
+def wait_for_ffmpeg_writer(proc, timeout=300):
+    """
+    Waits for FFmpeg to finalize the written video.
+    Prevents silent infinite hangs at 100 percent.
+    """
+    try:
+        return_code = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+        stderr_tail = "".join(getattr(proc, "_vd3d_stderr_chunks", []))[-4000:]
+        raise RuntimeError(
+            "FFmpeg writer timed out while finalizing the video.\n\n"
+            f"{stderr_tail}"
+        )
+
+    if return_code != 0:
+        stderr_tail = "".join(getattr(proc, "_vd3d_stderr_chunks", []))[-4000:]
+        raise RuntimeError(
+            f"FFmpeg writer failed with code {return_code}.\n\n"
+            f"{stderr_tail}"
+        )
+
+    return return_code
+
 def ui_set_status(widget, text):
     try:
         widget.after(0, lambda: widget.configure(text=text))
@@ -326,6 +387,34 @@ def _frame_to_bytes(frame):
     if not frame.flags['C_CONTIGUOUS']:
         frame = np.ascontiguousarray(frame)
     return frame.tobytes()
+
+def _abort_ffmpeg_writer(proc):
+    """
+    Best-effort cleanup for FFmpeg when processing fails before normal finalization.
+    """
+    try:
+        if proc is not None and proc.stdin is not None:
+            proc.stdin.close()
+    except Exception:
+        pass
+
+    try:
+        wait_for_ffmpeg_writer(proc, timeout=30)
+    except Exception as e:
+        debug_print(f"⚠️ FFmpeg abort/finalize failed: {e}")
+
+
+def _write_validated_frame(proc, frame, width, height, label="frame"):
+    ok, why = _validate_frame_bytes(frame, width, height)
+    if not ok:
+        _abort_ffmpeg_writer(proc)
+        raise RuntimeError(f"Invalid {label} for FFmpeg: {why}")
+
+    try:
+        proc.stdin.write(_frame_to_bytes(frame))
+    except Exception as e:
+        _abort_ffmpeg_writer(proc)
+        raise RuntimeError(f"Failed writing {label} to FFmpeg: {e}") from e
 
 def _frame_loader(file_list, target_size=None, max_queue=8):
     """
@@ -441,19 +530,27 @@ def select_video_and_generate_frames(set_folder_callback=None, merged_progress=N
 
         ffmpeg_exe = require_tool("ffmpeg")
         command = [
-            ffmpeg_exe, "-y",
+            ffmpeg_exe,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
             "-hwaccel", "auto",
             "-i", video_path,
             "-q:v", "2",
-            output_pattern
+            output_pattern,
         ]
+
         result = subprocess.run(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             **hidden_subprocess_kwargs(),
         )
+
+        if result.returncode != 0:
+            debug_print(f"❌ FFmpeg frame extraction failed:\n{result.stderr[-4000:]}")
+            
         if merged_progress:
             merged_progress.after(0, lambda: stop_spinner(result.returncode == 0))
 
@@ -787,11 +884,49 @@ def postprocess_esr(tensor):
     return cv2.cvtColor(tensor.astype(np.uint8), cv2.COLOR_RGB2BGR)
 
 def blend_images(original, upscaled, mode="OFF"):
+    """
+    Blend model output with the original frame.
+
+    UI meaning:
+      OFF    = 100% model output
+      LOW    = 75% model / 25% original
+      MEDIUM = 50% model / 50% original
+      HIGH   = 25% model / 75% original
+
+    The original frame is resized to match the upscaled/output frame before blending.
+    """
+    if upscaled is None:
+        return original
+
+    mode = str(mode or "OFF").upper()
+
     if mode == "OFF":
+        return normalize_frame(upscaled)
+
+    if original is None:
+        return normalize_frame(upscaled)
+
+    upscaled = normalize_frame(upscaled)
+
+    original = normalize_frame(
+        original,
+        target_size=(upscaled.shape[1], upscaled.shape[0]),
+    )
+
+    model_alpha_map = {
+        "LOW": 0.75,
+        "MEDIUM": 0.50,
+        "HIGH": 0.25,
+    }
+
+    model_alpha = model_alpha_map.get(mode, 1.0)
+
+    if model_alpha >= 1.0:
         return upscaled
-    alpha_map = {"LOW": 0.85, "MEDIUM": 0.5, "HIGH": 0.25}
-    alpha = alpha_map.get(mode.upper(), 1.0)
-    return cv2.addWeighted(upscaled, alpha, original, 1 - alpha, 0)
+
+    original_alpha = 1.0 - model_alpha
+
+    return cv2.addWeighted(upscaled, model_alpha, original, original_alpha, 0)
 
 def init_upscaler(model_path: str, enable_upscale: bool):
     """
@@ -802,7 +937,7 @@ def init_upscaler(model_path: str, enable_upscale: bool):
     model_path can be:
       - local relative path
       - local absolute path
-      - Hugging Face ref: repo_id::filename
+      - Hugging Face selector, e.g. upscale:FuryTMP/RealESR_Gx4_fp16
     """
     global esrgan_session, srresnet_model, UPSCALE_BACKEND
 
@@ -895,7 +1030,6 @@ def _run_srresnet(frame_bgr: np.ndarray, scale: int = 4) -> np.ndarray:
     sr = cv2.cvtColor(sr, cv2.COLOR_RGB2BGR)
     return sr
 
-
 def run_esrgan(frame,
                blend_mode="OFF",
                input_res_pct=100,
@@ -910,16 +1044,31 @@ def run_esrgan(frame,
       - ONNX ESRGAN (UPSCALE_BACKEND == "onnx")
       - PyTorch SRResNet (.pth) (UPSCALE_BACKEND == "srresnet")
 
-    Always returns a BGR uint8 frame matching target_size if given.
+    UI behavior preserved:
+
+      input_res_pct controls the frame size sent into the model.
+
+      Example with 1920x1080 source and x4 model:
+        100% -> model input 1920x1080 -> model output 7680x4320 -> resize to target_size
+         75% -> model input 1440x810  -> model output 5760x3240 -> resize to target_size
+         50% -> model input 960x540   -> model output 3840x2160 -> resize to target_size
+         25% -> model input 480x270   -> model output 1920x1080 -> resize to target_size
+
+    Blend behavior:
+      OFF    = full model output
+      LOW    = 75% model / 25% original
+      MEDIUM = 50% model / 50% original
+      HIGH   = 25% model / 75% original
     """
     global esrgan_session, srresnet_model, UPSCALE_BACKEND
+
     if frame is None:
         return frame
 
-    # --- helpers ---
     def _to_bgr_uint8(img):
         if img is None:
             return None
+
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         elif img.ndim == 3 and img.shape[2] == 4:
@@ -930,49 +1079,91 @@ def run_esrgan(frame,
             if img.max() <= 1.0:
                 img = img * 255.0
             img = img.astype(np.uint8)
+
         return img
 
     def _fit_size(img, wh):
         if img is None:
             return None
+
         w, h = wh
         if img.shape[1] != w or img.shape[0] != h:
             img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+
         return img
+
+    def _model_scale_from_name(name):
+        n = str(name or "").lower()
+
+        if "x2" in n or "2x" in n:
+            return 2
+        if "x3" in n or "3x" in n:
+            return 3
+        if "x4" in n or "4x" in n:
+            return 4
+
+        # Most RealESRGAN/ESRGAN models in this project are x4 unless specified.
+        return 4
 
     frame = _to_bgr_uint8(frame)
     original = frame.copy()
 
-    # No upscaler loaded
     backend_has_model = (
         (UPSCALE_BACKEND == "onnx" and esrgan_session is not None) or
         (UPSCALE_BACKEND == "srresnet" and srresnet_model is not None)
     )
+
     if not backend_has_model:
         out = original
         if target_size:
             out = _fit_size(out, target_size)
-        return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
+        return out if str(blend_mode or "OFF").upper() == "OFF" else blend_images(original, out, mode=blend_mode)
 
-    # Optional pre-scale (applies to both backends)
-    if input_res_pct != 100:
-        h, w = frame.shape[:2]
-        new_w = max(1, int(w * input_res_pct / 100))
-        new_h = max(1, int(h * input_res_pct / 100))
-        frame = cv2.resize(
-            frame,
+    # ------------------------------------------------------------
+    # Apply UI input percentage BEFORE model inference.
+    # This is the behavior your UI describes.
+    # ------------------------------------------------------------
+    frame_for_model = frame
+
+    try:
+        pct = int(input_res_pct)
+    except Exception:
+        pct = 100
+
+    pct = max(1, min(100, pct))
+
+    if pct != 100:
+        h, w = frame_for_model.shape[:2]
+        new_w = max(1, int(round(w * pct / 100.0)))
+        new_h = max(1, int(round(h * pct / 100.0)))
+
+        frame_for_model = cv2.resize(
+            frame_for_model,
             (new_w, new_h),
-            interpolation=cv2.INTER_AREA if input_res_pct < 100 else cv2.INTER_CUBIC,
+            interpolation=cv2.INTER_AREA if pct < 100 else cv2.INTER_CUBIC,
         )
 
-    # --- Actual backend inference ---
+        if is_debug_enabled():
+            debug_print(
+                f"[UPSCALE INPUT%] {pct}%: "
+                f"{w}x{h} -> model input {new_w}x{new_h}"
+            )
+
+    # ------------------------------------------------------------
+    # SRResNet branch
+    # ------------------------------------------------------------
     if UPSCALE_BACKEND == "srresnet":
-        # SRResNet path: use its native 4x output
-        upscaled = _run_srresnet(frame, scale=4)
+        try:
+            upscaled = _run_srresnet(frame_for_model, scale=4)
+            upscaled = _to_bgr_uint8(upscaled)
 
-        upscaled = _to_bgr_uint8(upscaled)
+        except Exception as e:
+            debug_print(f"❌ SRResNet failed: {e}")
+            out = original
+            if target_size:
+                out = _fit_size(out, target_size)
+            return out if str(blend_mode or "OFF").upper() == "OFF" else blend_images(original, out, mode=blend_mode)
 
-        # If a specific output size was requested, resize there directly
         if target_size:
             upscaled = _fit_size(upscaled, target_size)
             original_for_blend = _fit_size(original, target_size)
@@ -982,63 +1173,143 @@ def run_esrgan(frame,
 
         return blend_images(original_for_blend, upscaled, mode=blend_mode)
 
-    # ---- ONNX Real-ESRGAN branch ----
-    if tile:
-        upscaled = _esrgan_tiled(frame, tile, tile_pad)
-    else:
-        tensor = preprocess_esr(frame)
-        try:
-            output = esrgan_session.run(
-                None, {esrgan_session.get_inputs()[0].name: tensor}
-            )[0]
+    # ------------------------------------------------------------
+    # ONNX ESRGAN branch
+    # ------------------------------------------------------------
+    scale = _model_scale_from_name(model_name)
+
+    try:
+        if tile:
+            upscaled = _esrgan_tiled(frame_for_model, tile, tile_pad)
+        else:
+            tensor = preprocess_esr(frame_for_model)
+            input_name = esrgan_session.get_inputs()[0].name
+            output = esrgan_session.run(None, {input_name: tensor})[0]
             upscaled = postprocess_esr(output)
-        except Exception as e:
-            debug_print(f"❌ ESRGAN failed: {e}")
-            out = original
-            if target_size:
-                out = _fit_size(out, target_size)
-            return out if blend_mode == "OFF" else blend_images(original, out, mode=blend_mode)
+
+    except Exception as e:
+        debug_print(f"❌ ESRGAN failed: {e}")
+        out = original
+        if target_size:
+            out = _fit_size(out, target_size)
+        return out if str(blend_mode or "OFF").upper() == "OFF" else blend_images(original, out, mode=blend_mode)
 
     upscaled = _to_bgr_uint8(upscaled)
 
-    # 2x vs 4x heuristic for ONNX models
-    scale = 2 if "x2" in model_name.lower() else 4
-
-    h0, w0 = frame.shape[:2]
+    # Some ONNX models return full scaled output.
+    # Some exports may return same-size output. If same/smaller, force expected scale.
+    h0, w0 = frame_for_model.shape[:2]
     h1, w1 = upscaled.shape[:2]
-    if h1 >= h0 and w1 >= w0:
-        # model already scaled, don't resize here
-        pass
-    else:
-        # model returned same size, then you can upscale if you want
-        upscaled = cv2.resize(upscaled, (w0 * scale, h0 * scale), interpolation=cv2.INTER_CUBIC)
-        
+
+    if h1 <= h0 and w1 <= w0:
+        upscaled = cv2.resize(
+            upscaled,
+            (w0 * scale, h0 * scale),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+    if is_debug_enabled():
+        h2, w2 = upscaled.shape[:2]
+        debug_print(
+            f"[UPSCALE MODEL] backend={UPSCALE_BACKEND} scale_guess={scale} "
+            f"model_input={w0}x{h0} model_output={w2}x{h2} "
+            f"target={target_size if target_size else 'native'} blend={blend_mode}"
+        )
+
+    # Final output always matches the UI output resolution if target_size is provided.
     if target_size:
         upscaled = _fit_size(upscaled, target_size)
         original_for_blend = _fit_size(original, target_size)
     else:
-        original_for_blend = original
+        h_hr, w_hr = upscaled.shape[:2]
+        original_for_blend = _fit_size(original, (w_hr, h_hr))
 
     return blend_images(original_for_blend, upscaled, mode=blend_mode)
 
 
 
 def _esrgan_tiled(img, tile, pad):
+    """
+    Run ONNX ESRGAN in tiles.
+
+    Correctly handles models that return scaled output, e.g. 2x or 4x.
+    """
+    global esrgan_session
+
+    if esrgan_session is None:
+        return img
+
+    if tile is None or int(tile) <= 0:
+        return img
+
+    tile = int(tile)
+    pad = int(pad or 0)
+
     h, w = img.shape[:2]
-    out = np.zeros_like(img)
+    input_name = esrgan_session.get_inputs()[0].name
+
+    out = None
+    scale_x = None
+    scale_y = None
+
     for y in range(0, h, tile):
         for x in range(0, w, tile):
-            y0, x0 = max(0, y - pad), max(0, x - pad)
-            y1, x1 = min(h, y + tile + pad), min(w, x + tile + pad)
+            tile_h = min(tile, h - y)
+            tile_w = min(tile, w - x)
+
+            y0 = max(0, y - pad)
+            x0 = max(0, x - pad)
+            y1 = min(h, y + tile_h + pad)
+            x1 = min(w, x + tile_w + pad)
+
             crop = img[y0:y1, x0:x1]
-            t = preprocess_esr(crop)
-            pred = esrgan_session.run(None, {esrgan_session.get_inputs()[0].name: t})[0]
+            tensor = preprocess_esr(crop)
+
+            pred = esrgan_session.run(None, {input_name: tensor})[0]
             up = postprocess_esr(pred)
-            # place center region
-            yc0, xc0 = y - y0, x - x0
-            yc1, xc1 = yc0 + min(tile, h - y), xc0 + min(tile, w - x)
-            out[y:y+min(tile, h - y), x:x+min(tile, w - x)] = up[yc0:yc1, xc0:xc1]
-    return out
+
+            crop_h, crop_w = crop.shape[:2]
+            up_h, up_w = up.shape[:2]
+
+            this_scale_y = up_h / float(crop_h)
+            this_scale_x = up_w / float(crop_w)
+
+            if out is None:
+                scale_y = this_scale_y
+                scale_x = this_scale_x
+
+                out_h = max(1, int(round(h * scale_y)))
+                out_w = max(1, int(round(w * scale_x)))
+
+                out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+            # Source region inside padded crop, converted to upscaled coordinates.
+            src_y0 = int(round((y - y0) * this_scale_y))
+            src_x0 = int(round((x - x0) * this_scale_x))
+            src_y1 = int(round((y - y0 + tile_h) * this_scale_y))
+            src_x1 = int(round((x - x0 + tile_w) * this_scale_x))
+
+            # Destination region in final output.
+            dst_y0 = int(round(y * scale_y))
+            dst_x0 = int(round(x * scale_x))
+            dst_y1 = int(round((y + tile_h) * scale_y))
+            dst_x1 = int(round((x + tile_w) * scale_x))
+
+            patch = up[src_y0:src_y1, src_x0:src_x1]
+
+            expected_w = dst_x1 - dst_x0
+            expected_h = dst_y1 - dst_y0
+
+            if patch.shape[1] != expected_w or patch.shape[0] != expected_h:
+                patch = cv2.resize(
+                    patch,
+                    (expected_w, expected_h),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+
+            out[dst_y0:dst_y1, dst_x0:dst_x1] = patch
+
+    return out if out is not None else img
     
 
 def merge_audio_from_source_video(rendered_video_path, source_video_path, output_with_audio_path):
@@ -1144,7 +1415,7 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
             video.stdin.close()
         except Exception:
             pass
-        video.wait()
+        wait_for_ffmpeg_writer(video)
         return
 
     total_src = len(files)
@@ -1161,7 +1432,8 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
     else:
         prev_proc = cv2.resize(prev, target_size)
 
-    video.stdin.write(prev_proc.tobytes())
+    _write_validated_frame(video, prev_proc, width, height, "first frame")
+    
     del prev_proc
     gc.collect()
 
@@ -1218,7 +1490,7 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
                     break
                 if not _upscale_wait_if_paused():
                     break
-                video.stdin.write(f.tobytes())
+                _write_validated_frame(video, f, width, height, "interpolated frame")
 
         else:
             if enable_upscale:
@@ -1240,16 +1512,35 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
         if not _upscale_wait_if_paused():
             break
 
-        video.stdin.write(curr_proc.tobytes())
+        _write_validated_frame(video, curr_proc, width, height, "current frame")
+        
         prev = curr
 
         update_progress(i + 1, total_src, start)
+
+    if cancel_flag.is_set():
+        ui_set_status(status_label, "Stopped.")
+        try:
+            video.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            wait_for_ffmpeg_writer(video)
+        except Exception as e:
+            debug_print(f"⚠️ FFmpeg finalize after stop failed: {e}")
+
+        return
+
+    ui_set_status(status_label, "Finalizing video...")
+    ui_set_progress(progress_bar, 99.0)
 
     try:
         video.stdin.close()
     except Exception:
         pass
-    video.wait()
+
+    wait_for_ffmpeg_writer(video)
 
     final_output_path = output_path
 
@@ -1259,7 +1550,8 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
             audio_output_path = base + "_audio" + ext
 
             ui_set_status(status_label, "Merging original audio...")
-            final_output_path = merge_audio_from_source_video(
+
+            merged_path = merge_audio_from_source_video(
                 output_path,
                 settings.get("input_video_file"),
                 audio_output_path,
@@ -1267,21 +1559,22 @@ def start_merged_pipeline(settings, progress_widget, status_label_widget):
 
             # Replace silent output with audio version if possible.
             try:
-                os.replace(final_output_path, output_path)
+                os.replace(merged_path, output_path)
                 final_output_path = output_path
             except Exception:
-                pass
+                final_output_path = merged_path
 
         except Exception as exc:
             debug_print(f"⚠️ Audio merge failed: {exc}")
-            ui_set_status(status_label, f"Processing complete, but audio merge failed: {exc}")
+            ui_set_status(
+                status_label,
+                f"Processing complete, but audio merge failed: {exc}"
+            )
 
     update_progress(total_src, total_src, start)
-    try:
-        status_label.after(0, lambda: status_label.configure(text="✅ Processing Complete!"))
-    except Exception:
-        pass
-
+    ui_set_progress(progress_bar, 100.0)
+    ui_set_status(status_label, "✅ Processing Complete!")
+    
 MAX_QUEUE_SIZE = 16
 END_SEG = ("END", None, None, [])
 END_FRM = ("END", None)
@@ -1321,13 +1614,6 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
 
     cancel_flag.clear()
     suspend_flag.clear()
-
-    import torch
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    import gc
-    gc.collect()
 
     try:
         progress_bar.after(0, lambda: progress_bar.configure(
@@ -1369,7 +1655,6 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
         return
 
     if enable_up:
-        import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if not init_upscaler(model_path, enable_up):
@@ -1377,7 +1662,6 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
             return
 
     if enable_rife:
-        import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if not load_rife_model(rife_model):
@@ -1394,6 +1678,43 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
     cancel_local = threading.Event()
     END_SEG = ("END", None, None)
     END_WRITE = ("END", None)
+    
+    
+    # Write/enqueue the first source frame so threaded output matches
+    # the non-threaded pipeline timeline.
+    try:
+        first = cv2.imread(files[0], cv2.IMREAD_COLOR)
+        first = normalize_frame(first, work_size)
+
+        if enable_up:
+            first_proc = run_esrgan(
+                first,
+                blend_mode,
+                input_res_pct,
+                model_name=model_path,
+                target_size=target_size,
+            )
+        else:
+            first_proc = cv2.resize(first, target_size)
+
+        ok, why = _validate_frame_bytes(first_proc, width, height)
+        if not ok:
+            raise ValueError(f"Initial frame is invalid: {why}")
+
+        write_queue.put_nowait(("FRAME", first_proc))
+
+    except Exception as e:
+        debug_print(f"⚠️ Failed to prepare first frame: {e}")
+        ui_set_status(status_label, f"❌ Failed to prepare first frame: {e}")
+        try:
+            video.stdin.close()
+        except Exception:
+            pass
+        try:
+            wait_for_ffmpeg_writer(video)
+        except Exception:
+            pass
+        return
 
     def reader_rife_worker():
         """
@@ -1529,8 +1850,9 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
                 frame = payload
                 ok, why = _validate_frame_bytes(frame, width, height)
                 if not ok:
-                    debug_print(f"[writer] drop bad frame: {why}")
-                    continue
+                    debug_print(f"[writer] invalid frame, aborting: {why}")
+                    cancel_local.set()
+                    break
 
                 try:
                     video.stdin.write(_frame_to_bytes(frame))
@@ -1548,9 +1870,10 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
             except Exception:
                 pass
             try:
-                video.wait()
-            except Exception:
-                pass
+                wait_for_ffmpeg_writer(video)
+            except Exception as e:
+                debug_print(f"⚠️ FFmpeg writer finalize failed: {e}")
+                cancel_local.set()
 
     t_read = threading.Thread(target=reader_rife_worker, daemon=True)
     t_proc = threading.Thread(target=process_worker, daemon=True)
@@ -1568,6 +1891,19 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
         t_proc.join()
         t_wrt.join()
 
+        was_cancelled = cancel_flag.is_set()
+        failed = cancel_local.is_set() and not was_cancelled
+
+        if was_cancelled:
+            ui_set_status(status_label, "Stopped.")
+            return
+
+        if failed:
+            ui_set_status(status_label, "❌ Processing failed. See debug log for details.")
+            return
+
+        audio_warning = None
+
         if settings.get("keep_original_audio", False) and settings.get("input_video_file"):
             try:
                 base, ext = os.path.splitext(output_path)
@@ -1583,15 +1919,20 @@ def start_threaded_pipeline(settings, progress_widget, status_label_widget):
                 try:
                     os.replace(merged_path, output_path)
                 except Exception:
-                    pass
+                    # If replacement fails, at least leave the audio version on disk.
+                    audio_warning = f"Audio merged to separate file: {merged_path}"
 
             except Exception as exc:
                 debug_print(f"⚠️ Audio merge failed: {exc}")
-                ui_set_status(status_label, f"Processing complete, but audio merge failed: {exc}")
+                audio_warning = f"Processing complete, but audio merge failed: {exc}"
 
         update_progress(total_pairs, total_pairs, start)
         ui_set_progress(progress_bar, 100.0)
-        ui_set_status(status_label, "Processing Complete!")
+
+        if audio_warning:
+            ui_set_status(status_label, audio_warning)
+        else:
+            ui_set_status(status_label, "Processing Complete!")
 
     threading.Thread(target=_wait_finish, daemon=True).start()
     
@@ -1638,17 +1979,33 @@ def _encoder_args(codec: str, width: int, height: int):
 
 def start_ffmpeg_writer(output_path, width, height, fps, codec):
     ffmpeg_exe = require_tool("ffmpeg")
+
     base = [
-        ffmpeg_exe,"-y",
-        "-f","rawvideo","-vcodec","rawvideo",
-        "-pix_fmt","bgr24",
-        "-s", f"{width}x{height}",
-        "-r", str(fps),
-        "-i","-",
+        ffmpeg_exe,
+        "-hide_banner",
+        "-y",
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-s", f"{int(width)}x{int(height)}",
+        "-r", str(float(fps)),
+        "-i", "-",
+        "-an",
     ]
+
     enc = _encoder_args(codec, width, height)
-    cmd = base + enc + [output_path]
-    return subprocess.Popen(
+
+    ext = os.path.splitext(output_path)[1].lower()
+    mux_args = []
+
+    if ext in {".mp4", ".mov", ".m4v"}:
+        mux_args += ["-movflags", "+faststart"]
+
+    cmd = base + enc + mux_args + [output_path]
+
+    debug_print("[FPS UPSCALE FFMPEG CMD]", " ".join(str(x) for x in cmd))
+
+    proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
@@ -1656,3 +2013,6 @@ def start_ffmpeg_writer(output_path, width, height, fps, codec):
         bufsize=0,
         **hidden_subprocess_kwargs(),
     )
+
+    proc._vd3d_stderr_chunks = start_stderr_drain_thread(proc)
+    return proc
