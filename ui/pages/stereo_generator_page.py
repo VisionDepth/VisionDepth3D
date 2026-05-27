@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QGroupBox,
     QFormLayout,
+    QTabWidget,
 )
 from ui.widgets.file_picker_row import FilePickerRow
 from ui.widgets.parameter_card import ParameterCard
@@ -27,7 +28,12 @@ from ui.widgets.preview_panel import PreviewPanel
 from ui.styles.page_theme import apply_unified_page_theme
 
 import os
+from pathlib import Path
 
+from services.keyframe_service import (
+    KeyframeService,
+    create_default_keyframe_path,
+)
 
 ASPECT_RATIO_OPTIONS = [
     "Default (16:9)",
@@ -69,6 +75,7 @@ class StereoGeneratorPage(QWidget):
         self._last_preview_pixmap = None
         self._fullscreen_dialog = None
         self._fullscreen_label = None
+        self._keyframe_service = None
         
         self._preview_debounce = QTimer()
         self._preview_debounce.setSingleShot(True)
@@ -270,7 +277,7 @@ class StereoGeneratorPage(QWidget):
 
         self.preserve_aspect_check = self._checkbox("Preserve Original Aspect Ratio")
         self.auto_crop_check = self._checkbox("Auto Crop Black Bars")
-        self.subject_tracking_check = self._checkbox("Stabilize Zero-Parallax")
+        self.subject_tracking_check = self._checkbox("Stabilize Screen Plane")
         self.skip_blank_check = self._checkbox("Skip Blank/White Frames")
         self.edge_masking_check = self._checkbox("Enable Edge Masking")
         self.feathering_check = self._checkbox("Enable Feathering")
@@ -362,36 +369,110 @@ class StereoGeneratorPage(QWidget):
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setRange(0, 0)
         self.frame_label = QLabel(f"{self._t('Frame')}: 0 / 0")
+        self.prev_frame_btn = self._button("Previous Frame")
+        self.next_frame_btn = self._button("Next Frame")
+
+        self.frame_step_spin = QSpinBox()
+        self.frame_step_spin.setRange(1, 120)
+        self.frame_step_spin.setValue(1)
+        self.frame_step_spin.setToolTip("How many frames to move with Previous / Next")
         self.refresh_preview_btn = self._button("Refresh Preview")
         self.save_preview_btn = self._button("Save Preview Image")
         self.fullscreen_preview_btn = self._button("Fullscreen Preview")
 
         frame_card.inner_layout.addWidget(self.frame_label)
         frame_card.inner_layout.addWidget(self.frame_slider)
-        frame_card.inner_layout.addWidget(self.refresh_preview_btn)
-        frame_card.inner_layout.addWidget(self.save_preview_btn)
-        frame_card.inner_layout.addWidget(self.fullscreen_preview_btn)
 
-        frame_card.inner_layout.addSpacing(12)
+        frame_nav_layout = QGridLayout()
+        frame_nav_layout.setHorizontalSpacing(10)
+        frame_nav_layout.setVerticalSpacing(8)
 
-        preview_settings_label = self._label("Preview Settings")
-        frame_card.inner_layout.addWidget(preview_settings_label)
+        frame_nav_layout.addWidget(self.prev_frame_btn, 0, 0)
+        frame_nav_layout.addWidget(self.next_frame_btn, 0, 1)
+        frame_nav_layout.addWidget(self._label("Step"), 1, 0)
+        frame_nav_layout.addWidget(self.frame_step_spin, 1, 1)
 
-        preview_controls = QGridLayout()
-        preview_controls.setHorizontalSpacing(10)
-        preview_controls.setVerticalSpacing(8)
+        frame_card.inner_layout.addLayout(frame_nav_layout)
 
-        preview_controls.addWidget(self._label("Preview Mode"), 0, 0)
-        preview_controls.addWidget(self.preview_mode_combo, 0, 1)
+        # --- Keyframe Shot Controls ---
+        # Compact workflow:
+        # choose frame -> tune settings -> add/update keyframe.
+        frame_card.inner_layout.addSpacing(10)
 
-        preview_controls.addWidget(self.ipd_enabled_check, 1, 0, 1, 2)
+        self.keyframe_hint_label = QLabel(
+            "Keyframes control settings from this frame until the next keyframe."
+        )
+        self.keyframe_hint_label.setWordWrap(True)
+        frame_card.inner_layout.addWidget(self.keyframe_hint_label)
 
-        preview_controls.addWidget(self._label("Stereo Scaling (IPD)"), 2, 0)
-        preview_controls.addWidget(self.ipd_scale, 2, 1)
+        keyframe_layout = QGridLayout()
+        keyframe_layout.setHorizontalSpacing(10)
+        keyframe_layout.setVerticalSpacing(8)
 
-        preview_controls.addWidget(self.show_guides_check, 3, 0, 1, 2)
+        self.keyframes_enabled_check = self._checkbox("Enable 3D Keyframes")
 
-        frame_card.inner_layout.addLayout(preview_controls)
+        self.keyframes_path_edit = QLineEdit()
+        self.keyframes_path_edit.setReadOnly(True)
+        self.keyframes_path_edit.setPlaceholderText("No keyframe file selected.")
+
+        self.create_keyframes_btn = self._button("Create Keyframe File")
+        self.load_keyframes_btn = self._button("Load Keyframe File")
+        self.save_keyframes_btn = self._button("Save Keyframes")
+        self.keyframe_file_btn = self._button("Keyframe File...")
+
+        self.keyframe_label_edit = QLineEdit()
+        self.keyframe_label_edit.setPlaceholderText("Shot label, example: Close, Wide, Pan Safe")
+
+        self.keyframe_transition_spin = QSpinBox()
+        self.keyframe_transition_spin.setRange(0, 240)
+        self.keyframe_transition_spin.setValue(24)
+        self.keyframe_transition_spin.setToolTip("Frames used to blend into this keyframe. Use 0 for an instant cut.")
+
+        self.keyframe_transition_combo = QComboBox()
+        self.keyframe_transition_combo.addItems(["cut", "linear", "smoothstep"])
+        self.keyframe_transition_combo.setCurrentText("smoothstep")
+
+        self.keyframe_combo = QComboBox()
+        self.keyframe_combo.setMinimumWidth(220)
+        self.keyframe_combo.setToolTip("Shows the frame range controlled by each keyframe.")
+
+        self.add_keyframe_btn = self._button("Add / Update Current Shot")
+        self.delete_keyframe_btn = self._button("Delete")
+        self.apply_keyframe_btn = self._button("Apply")
+
+        keyframe_layout.addWidget(self.keyframes_enabled_check, 0, 0, 1, 2)
+        keyframe_layout.addWidget(self.keyframe_file_btn, 0, 2)
+
+        keyframe_layout.addWidget(self._label("Shot Label"), 1, 0)
+        keyframe_layout.addWidget(self.keyframe_label_edit, 1, 1, 1, 2)
+
+        keyframe_layout.addWidget(self._label("Blend"), 2, 0)
+        keyframe_layout.addWidget(self.keyframe_transition_spin, 2, 1)
+        keyframe_layout.addWidget(self.keyframe_transition_combo, 2, 2)
+
+        keyframe_layout.addWidget(self._label("Shot Ranges"), 3, 0)
+        keyframe_layout.addWidget(self.keyframe_combo, 3, 1, 1, 2)
+
+        keyframe_layout.addWidget(self.add_keyframe_btn, 4, 0, 1, 3)
+        keyframe_layout.addWidget(self.apply_keyframe_btn, 5, 0)
+        keyframe_layout.addWidget(self.delete_keyframe_btn, 5, 1)
+
+        frame_card.inner_layout.addLayout(keyframe_layout)
+
+        # --- Preview controls ---
+        frame_card.inner_layout.addSpacing(10)
+
+        self.preview_settings_btn = self._button("Preview Settings...")
+
+        preview_button_layout = QGridLayout()
+        preview_button_layout.setHorizontalSpacing(10)
+        preview_button_layout.setVerticalSpacing(8)
+        preview_button_layout.addWidget(self.refresh_preview_btn, 0, 0)
+        preview_button_layout.addWidget(self.save_preview_btn, 0, 1)
+        preview_button_layout.addWidget(self.fullscreen_preview_btn, 1, 0)
+        preview_button_layout.addWidget(self.preview_settings_btn, 1, 1)
+
+        frame_card.inner_layout.addLayout(preview_button_layout)
 
         # Scrollable center: preview always visible, frame card scrolls below it
         center_scroll = QScrollArea()
@@ -487,7 +568,7 @@ class StereoGeneratorPage(QWidget):
         depth_layout.addWidget(self.parallax_balance_slider, 5, 0)
         depth_layout.addWidget(self.parallax_balance_value, 5, 1)
 
-        depth_layout.addWidget(self._label("Zero Parallax Strength"), 6, 0)
+        depth_layout.addWidget(self._label("Screen Plane Offset"), 6, 0)
         depth_layout.addWidget(self.zero_parallax_slider, 7, 0)
         depth_layout.addWidget(self.zero_parallax_value, 7, 1)
 
@@ -524,7 +605,15 @@ class StereoGeneratorPage(QWidget):
         self.subject_lock_slider = QSlider(Qt.Horizontal)
         self.subject_lock_slider.setRange(0, 200)       # 0.00 to 2.00
         self.subject_lock_value = QLabel("1.00")
-        
+
+        self.subject_plane_lock_slider = QSlider(Qt.Horizontal)
+        self.subject_plane_lock_slider.setRange(0, 100)     # 0.00 to 1.00
+        self.subject_plane_lock_value = QLabel("0.00")
+
+        self.subject_plane_width_slider = QSlider(Qt.Horizontal)
+        self.subject_plane_width_slider.setRange(1, 30)     # 0.01 to 0.30
+        self.subject_plane_width_value = QLabel("0.08")
+                
         self.foreground_curvature_slider = QSlider(Qt.Horizontal)
         self.foreground_curvature_slider.setRange(0, 20)    # 0.00 to 0.20
         self.foreground_curvature_value = QLabel("0.06")
@@ -559,11 +648,19 @@ class StereoGeneratorPage(QWidget):
         pop_layout.addWidget(self.subject_lock_slider, 10, 0)
         pop_layout.addWidget(self.subject_lock_value, 10, 1)
 
-        pop_layout.addWidget(self._label("Foreground Curvature"), 11, 0)
-        pop_layout.addWidget(self.foreground_curvature_slider, 12, 0)
-        pop_layout.addWidget(self.foreground_curvature_value, 12, 1)
+        pop_layout.addWidget(self._label("Subject Plane Lock"), 11, 0)
+        pop_layout.addWidget(self.subject_plane_lock_slider, 12, 0)
+        pop_layout.addWidget(self.subject_plane_lock_value, 12, 1)
 
-        pop_layout.addWidget(self.apply_pop_entries_btn, 13, 1)
+        pop_layout.addWidget(self._label("Subject Lock Width"), 13, 0)
+        pop_layout.addWidget(self.subject_plane_width_slider, 14, 0)
+        pop_layout.addWidget(self.subject_plane_width_value, 14, 1)
+
+        pop_layout.addWidget(self._label("Foreground Curvature"), 15, 0)
+        pop_layout.addWidget(self.foreground_curvature_slider, 16, 0)
+        pop_layout.addWidget(self.foreground_curvature_value, 16, 1)
+
+        pop_layout.addWidget(self.apply_pop_entries_btn, 17, 1)
 
         pop_card.inner_layout.addLayout(pop_layout)
                 
@@ -618,12 +715,38 @@ class StereoGeneratorPage(QWidget):
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(12)
 
-        # add your cards to right_col here
-        right_col.addWidget(shift_card)
-        right_col.addWidget(depth_card)
-        right_col.addWidget(pop_card)
-        right_col.addWidget(color_card)
-        right_col.addStretch()
+        # Compact right-side tuning panel.
+        # Tabs keep the main workflow clean while preserving all advanced controls.
+        self.tuning_tabs = QTabWidget()
+        self.tuning_tabs.setDocumentMode(True)
+
+        depth_tab = QWidget()
+        depth_tab_layout = QVBoxLayout(depth_tab)
+        depth_tab_layout.setContentsMargins(0, 0, 0, 0)
+        depth_tab_layout.setSpacing(12)
+        depth_tab_layout.addWidget(shift_card)
+        depth_tab_layout.addWidget(depth_card)
+        depth_tab_layout.addStretch()
+
+        subject_tab = QWidget()
+        subject_tab_layout = QVBoxLayout(subject_tab)
+        subject_tab_layout.setContentsMargins(0, 0, 0, 0)
+        subject_tab_layout.setSpacing(12)
+        subject_tab_layout.addWidget(pop_card)
+        subject_tab_layout.addStretch()
+
+        color_tab = QWidget()
+        color_tab_layout = QVBoxLayout(color_tab)
+        color_tab_layout.setContentsMargins(0, 0, 0, 0)
+        color_tab_layout.setSpacing(12)
+        color_tab_layout.addWidget(color_card)
+        color_tab_layout.addStretch()
+
+        self.tuning_tabs.addTab(depth_tab, self._qt_text(self._t("Depth")))
+        self.tuning_tabs.addTab(subject_tab, self._qt_text(self._t("Subject")))
+        self.tuning_tabs.addTab(color_tab, self._qt_text(self._t("Color")))
+
+        right_col.addWidget(self.tuning_tabs)
 
         right_scroll.setWidget(right_container)
         
@@ -648,6 +771,8 @@ class StereoGeneratorPage(QWidget):
         
         self.encoding_dialog = self._build_encoding_dialog()
         self.processing_dialog = self._create_card_dialog(self._t("Processing Options"), processing_card, min_width=500)
+        self.keyframe_file_dialog = self._build_keyframe_file_dialog()
+        self.preview_settings_dialog = self._build_preview_settings_dialog()
 
         self._bind_events()
         self._load_initial_state()
@@ -766,6 +891,18 @@ class StereoGeneratorPage(QWidget):
                 ("Image Folder Render", "image_folder"),
             ],
         )
+
+    def _refresh_tab_labels(self):
+        """
+        Refresh labels for QTabWidget tabs.
+        These are not QLabel/QPushButton widgets, so they do not go through
+        the normal _translation_map system.
+        """
+        if hasattr(self, "tuning_tabs") and self.tuning_tabs is not None:
+            tab_keys = ["Depth", "Subject", "Color"]
+            for index, key in enumerate(tab_keys):
+                if index < self.tuning_tabs.count():
+                    self.tuning_tabs.setTabText(index, self._qt_text(self._t(key)))
 
     def _set_title_text(self, widget, text: str):
         """
@@ -1018,6 +1155,7 @@ class StereoGeneratorPage(QWidget):
             )
             
         self._refresh_combo_labels()
+        self._refresh_tab_labels()
         self._apply_render_mode_ui()
         self._update_frame_label()
         self._refresh_preview_meta()
@@ -1077,6 +1215,34 @@ class StereoGeneratorPage(QWidget):
         self.controller.set_state("render_mode", mode)
         self.controller.start_render()
 
+    def _step_preview_frame(self, direction: int):
+        """
+        Moves the preview frame backward or forward by the step size.
+        direction:
+            -1 = previous
+             1 = next
+        """
+        step = int(self.frame_step_spin.value()) if hasattr(self, "frame_step_spin") else 1
+
+        current = int(self.frame_slider.value())
+        minimum = int(self.frame_slider.minimum())
+        maximum = int(self.frame_slider.maximum())
+
+        new_value = current + (step * int(direction))
+        new_value = max(minimum, min(maximum, new_value))
+
+        if new_value == current:
+            return
+
+        self.frame_slider.setValue(new_value)
+        self.controller.set_state("preview_frame_index", new_value)
+
+        if hasattr(self, "_update_frame_label"):
+            self._update_frame_label()
+
+        if hasattr(self, "_preview_debounce"):
+            self._preview_debounce.start()
+
     def _bind_events(self):
         self.input_row.browse_clicked.connect(self._browse_input_video)
         self.depth_row.browse_clicked.connect(self._browse_depth_map)
@@ -1115,6 +1281,8 @@ class StereoGeneratorPage(QWidget):
         self.fg_pop_slider.valueChanged.connect(self._on_fg_pop_changed)
         self.bg_push_slider.valueChanged.connect(self._on_bg_push_changed)
         self.subject_lock_slider.valueChanged.connect(self._on_subject_lock_changed)
+        self.subject_plane_lock_slider.valueChanged.connect(self._on_subject_plane_lock_changed)
+        self.subject_plane_width_slider.valueChanged.connect(self._on_subject_plane_width_changed)
         self.foreground_curvature_slider.valueChanged.connect(self._on_foreground_curvature_changed)
 
         self.apply_pop_entries_btn.clicked.connect(self._apply_pop_entries)
@@ -1199,6 +1367,13 @@ class StereoGeneratorPage(QWidget):
 
         self.preview_btn.clicked.connect(self._load_preview_sources)
         self.refresh_preview_btn.clicked.connect(self.controller.update_preview)
+        self.prev_frame_btn.clicked.connect(lambda: self._step_preview_frame(-1))
+        self.next_frame_btn.clicked.connect(lambda: self._step_preview_frame(1))
+        self.prev_frame_shortcut = QShortcut(QKeySequence("Left"), self)
+        self.next_frame_shortcut = QShortcut(QKeySequence("Right"), self)
+
+        self.prev_frame_shortcut.activated.connect(lambda: self._step_preview_frame(-1))
+        self.next_frame_shortcut.activated.connect(lambda: self._step_preview_frame(1))
         self.save_preview_btn.clicked.connect(self._save_preview_image)
         self.fullscreen_preview_btn.clicked.connect(self._open_fullscreen_preview)
         self.render_btn.clicked.connect(self._start_render_clicked)
@@ -1230,6 +1405,20 @@ class StereoGeneratorPage(QWidget):
 
         self.vr180_equi_preset_combo.currentTextChanged.connect(self._on_vr180_equi_preset_changed)
         self.vr180_flat_preset_combo.currentTextChanged.connect(self._on_vr180_flat_preset_changed)
+
+        self.keyframes_enabled_check.toggled.connect(
+            lambda checked: self.controller.set_state("keyframes_enabled", checked)
+        )
+
+        self.create_keyframes_btn.clicked.connect(self._create_keyframes_file)
+        self.load_keyframes_btn.clicked.connect(self._load_keyframes_file_dialog)
+        self.save_keyframes_btn.clicked.connect(self._save_keyframes_file)
+        self.keyframe_file_btn.clicked.connect(lambda: self._show_dialog(self.keyframe_file_dialog))
+        self.preview_settings_btn.clicked.connect(lambda: self._show_dialog(self.preview_settings_dialog))
+        self.add_keyframe_btn.clicked.connect(self._add_or_update_keyframe_at_current_frame)
+        self.delete_keyframe_btn.clicked.connect(self._delete_selected_keyframe)
+        self.apply_keyframe_btn.clicked.connect(self._apply_selected_keyframe_to_sliders)
+        self.keyframe_combo.currentIndexChanged.connect(self._on_selected_keyframe_changed)
 
         self.controller.settings_loaded.connect(self._load_initial_state)
         self.controller.state_changed.connect(self._on_state_changed)
@@ -1296,8 +1485,26 @@ class StereoGeneratorPage(QWidget):
         self.bg_push_slider.setValue(int(self.controller.state.bg_push_multiplier * 100))
         self.bg_push_value.setText(f"{self.controller.state.bg_push_multiplier:.2f}")
 
-        self.subject_lock_slider.setValue(int(self.controller.state.subject_lock_strength * 100))
-        self.subject_lock_value.setText(f"{self.controller.state.subject_lock_strength:.2f}")
+        self.subject_lock_slider.setValue(
+            int(getattr(self.controller.state, "subject_lock_strength", 1.00) * 100)
+        )
+        self.subject_lock_value.setText(
+            f"{getattr(self.controller.state, 'subject_lock_strength', 1.00):.2f}"
+        )
+
+        self.subject_plane_lock_slider.setValue(
+            int(getattr(self.controller.state, "subject_plane_lock_strength", 0.00) * 100)
+        )
+        self.subject_plane_lock_value.setText(
+            f"{getattr(self.controller.state, 'subject_plane_lock_strength', 0.00):.2f}"
+        )
+
+        self.subject_plane_width_slider.setValue(
+            int(getattr(self.controller.state, "subject_plane_lock_width", 0.08) * 100)
+        )
+        self.subject_plane_width_value.setText(
+            f"{getattr(self.controller.state, 'subject_plane_lock_width', 0.08):.2f}"
+        )
 
         self.foreground_curvature_slider.setValue(
             int(getattr(self.controller.state, "foreground_curvature_strength", 0.06) * 100)
@@ -1374,6 +1581,17 @@ class StereoGeneratorPage(QWidget):
         self.frame_slider.setValue(self.controller.state.preview_frame_index)
         self._sync_vr180_equi_preset_combo()
         self._sync_vr180_flat_preset_combo()
+        self.keyframes_enabled_check.setChecked(
+            getattr(self.controller.state, "keyframes_enabled", False)
+        )
+
+        self.keyframes_path_edit.setText(
+            getattr(self.controller.state, "keyframes_path", "")
+        )
+
+        self._load_keyframe_service_from_state(silent=True)
+        self._refresh_keyframe_combo()
+        
         self._refresh_preview_meta()
 
     def _create_card_dialog(self, title, card, min_width=500):
@@ -1393,6 +1611,63 @@ class StereoGeneratorPage(QWidget):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _build_keyframe_file_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("Keyframe File"))
+        dialog.setModal(False)
+        dialog.resize(700, 220)
+        dialog.setMinimumWidth(620)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        file_group = QGroupBox()
+        self._register_title(file_group, "Keyframe File")
+        file_layout = QGridLayout(file_group)
+        file_layout.setHorizontalSpacing(10)
+        file_layout.setVerticalSpacing(8)
+
+        file_layout.addWidget(self._label("Path"), 0, 0)
+        file_layout.addWidget(self.keyframes_path_edit, 0, 1, 1, 2)
+        file_layout.addWidget(self.create_keyframes_btn, 1, 0)
+        file_layout.addWidget(self.load_keyframes_btn, 1, 1)
+        file_layout.addWidget(self.save_keyframes_btn, 1, 2)
+
+        layout.addWidget(file_group)
+        layout.addStretch()
+
+        return dialog
+
+    def _build_preview_settings_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("Preview Settings"))
+        dialog.setModal(False)
+        dialog.resize(520, 260)
+        dialog.setMinimumWidth(480)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        preview_group = QGroupBox()
+        self._register_title(preview_group, "Preview Settings")
+        preview_layout = QGridLayout(preview_group)
+        preview_layout.setHorizontalSpacing(10)
+        preview_layout.setVerticalSpacing(8)
+
+        preview_layout.addWidget(self._label("Preview Mode"), 0, 0)
+        preview_layout.addWidget(self.preview_mode_combo, 0, 1)
+        preview_layout.addWidget(self.ipd_enabled_check, 1, 0, 1, 2)
+        preview_layout.addWidget(self._label("Stereo Scaling (IPD)"), 2, 0)
+        preview_layout.addWidget(self.ipd_scale, 2, 1)
+        preview_layout.addWidget(self.show_guides_check, 3, 0, 1, 2)
+
+        layout.addWidget(preview_group)
+        layout.addStretch()
+
+        return dialog
 
     def _build_encoding_dialog(self):
         dialog = QDialog(self)
@@ -1507,6 +1782,16 @@ class StereoGeneratorPage(QWidget):
         if key in {"input_video_path", "depth_map_path", "output_path"}:
             self._refresh_preview_meta()
 
+        if key == "keyframes_path" and hasattr(self, "keyframes_path_edit"):
+            self.keyframes_path_edit.setText(str(value or ""))
+            self._load_keyframe_service_from_state(silent=True)
+            self._refresh_keyframe_combo()
+
+        if key == "keyframes_enabled" and hasattr(self, "keyframes_enabled_check"):
+            self.keyframes_enabled_check.blockSignals(True)
+            self.keyframes_enabled_check.setChecked(bool(value))
+            self.keyframes_enabled_check.blockSignals(False)
+            
     def _get_video_resolution(self, path: str):
         """
         Returns (width, height) for a video path.
@@ -1783,6 +2068,24 @@ class StereoGeneratorPage(QWidget):
         self.subject_lock_value.setText(f"{real_value:.2f}")
         self.controller.set_state("subject_lock_strength", real_value)
         self._preview_debounce.start()
+
+    def _on_subject_lock_changed(self, value):
+        real_value = value / 100.0
+        self.subject_lock_value.setText(f"{real_value:.2f}")
+        self.controller.set_state("subject_lock_strength", real_value)
+        self._preview_debounce.start()
+
+    def _on_subject_plane_lock_changed(self, value):
+        real_value = value / 100.0
+        self.subject_plane_lock_value.setText(f"{real_value:.2f}")
+        self.controller.set_state("subject_plane_lock_strength", real_value)
+        self._preview_debounce.start()
+
+    def _on_subject_plane_width_changed(self, value):
+        real_value = value / 100.0
+        self.subject_plane_width_value.setText(f"{real_value:.2f}")
+        self.controller.set_state("subject_plane_lock_width", real_value)
+        self._preview_debounce.start()
         
     def _on_foreground_curvature_changed(self, value):
         real_value = value / 100.0
@@ -1874,6 +2177,378 @@ class StereoGeneratorPage(QWidget):
         self.clip_end_edit.clear()
         self.controller.set_state("clip_start", "")
         self.controller.set_state("clip_end", "")
+
+    def _load_keyframe_service_from_state(self, silent=False):
+        path = str(getattr(self.controller.state, "keyframes_path", "") or "").strip()
+
+        if not path:
+            self._keyframe_service = KeyframeService()
+            return self._keyframe_service
+
+        try:
+            if Path(path).exists():
+                self._keyframe_service = KeyframeService.load(path)
+            else:
+                self._keyframe_service = KeyframeService()
+
+            return self._keyframe_service
+
+        except Exception as e:
+            self._keyframe_service = KeyframeService()
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    self._t("Keyframes"),
+                    self._t("Could not load keyframe file:") + f"\n{e}",
+                )
+            return self._keyframe_service
+
+
+    def _ensure_keyframe_file(self):
+        path = str(getattr(self.controller.state, "keyframes_path", "") or "").strip()
+
+        if not path:
+            path = str(create_default_keyframe_path(self.controller.state.input_video_path))
+            self.controller.set_state("keyframes_path", path)
+            self.controller.set_state("keyframes_enabled", True)
+            self.keyframes_path_edit.setText(path)
+
+        if self._keyframe_service is None:
+            self._load_keyframe_service_from_state(silent=True)
+
+        if self._keyframe_service is None:
+            self._keyframe_service = KeyframeService()
+
+        return path
+
+
+    def _create_keyframes_file(self):
+        path = str(create_default_keyframe_path(self.controller.state.input_video_path))
+
+        if Path(path).exists():
+            answer = QMessageBox.question(
+                self,
+                self._t("Keyframes"),
+                self._t("A keyframe file already exists for this source. Use it?"),
+            )
+            if answer != QMessageBox.Yes:
+                path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    self._t("Create Keyframes"),
+                    path,
+                    "VisionDepth3D Keyframes (*.json);;JSON Files (*.json);;All Files (*.*)",
+                )
+                if not path:
+                    return
+
+        self._keyframe_service = KeyframeService()
+        self._keyframe_service.save(path)
+
+        self.controller.set_state("keyframes_path", path)
+        self.controller.set_state("keyframes_enabled", True)
+
+        self.keyframes_enabled_check.setChecked(True)
+        self.keyframes_path_edit.setText(path)
+        self._refresh_keyframe_combo()
+
+        QMessageBox.information(
+            self,
+            self._t("Keyframes"),
+            self._t("Created keyframe file:") + f"\n{path}",
+        )
+
+
+    def _load_keyframes_file_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self._t("Load Keyframes"),
+            "",
+            "VisionDepth3D Keyframes (*.json);;JSON Files (*.json);;All Files (*.*)",
+        )
+
+        if not path:
+            return
+
+        try:
+            self._keyframe_service = KeyframeService.load(path)
+
+            self.controller.set_state("keyframes_path", path)
+            self.controller.set_state("keyframes_enabled", True)
+
+            self.keyframes_enabled_check.setChecked(True)
+            self.keyframes_path_edit.setText(path)
+            self._refresh_keyframe_combo()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self._t("Keyframes"),
+                self._t("Failed to load keyframe file:") + f"\n{e}",
+            )
+
+
+    def _save_keyframes_file(self):
+        path = self._ensure_keyframe_file()
+
+        try:
+            self._keyframe_service.save(path)
+            self.controller.set_state("keyframes_path", path)
+            self.controller.set_state("keyframes_enabled", True)
+
+            QMessageBox.information(
+                self,
+                self._t("Keyframes"),
+                self._t("Saved keyframes to:") + f"\n{path}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self._t("Keyframes"),
+                self._t("Failed to save keyframes:") + f"\n{e}",
+            )
+
+
+    def _capture_current_keyframe_settings(self) -> dict:
+        """
+        Captures the current UI/AppState 3D settings into the keyframe JSON format.
+        This is what makes the feature editor-like instead of manual JSON editing.
+        """
+        state = self.controller.state
+
+        return {
+            "fg_shift": float(getattr(state, "fg_shift", 0.0)),
+            "mg_shift": float(getattr(state, "mg_shift", 0.0)),
+            "bg_shift": float(getattr(state, "bg_shift", 0.0)),
+
+            "max_pixel_shift_percent": float(getattr(state, "max_pixel_shift", 0.045)),
+            "parallax_balance": float(getattr(state, "parallax_balance", 0.5)),
+            "zero_parallax_strength": float(getattr(state, "zero_parallax_strength", 0.0)),
+            "convergence_strength": float(getattr(state, "convergence_strength", 0.0)),
+
+            "dof_strength": float(getattr(state, "dof_strength", 0.0)),
+
+            "depth_pop_gamma": float(getattr(state, "depth_pop_gamma", 0.85)),
+            "depth_pop_mid": float(getattr(state, "depth_pop_mid", 0.50)),
+            "depth_stretch_lo": float(getattr(state, "depth_stretch_lo", 0.05)),
+            "depth_stretch_hi": float(getattr(state, "depth_stretch_hi", 0.95)),
+            "fg_pop_multiplier": float(getattr(state, "fg_pop_multiplier", 1.0)),
+            "bg_push_multiplier": float(getattr(state, "bg_push_multiplier", 1.0)),
+
+            "subject_lock_strength": float(getattr(state, "subject_lock_strength", 0.0)),
+            "subject_plane_lock_strength": float(getattr(state, "subject_plane_lock_strength", 0.0)),
+            "subject_plane_lock_width": float(getattr(state, "subject_plane_lock_width", 0.08)),
+            "foreground_curvature_strength": float(getattr(state, "foreground_curvature_strength", 0.0)),
+
+            "color_saturation": float(getattr(state, "saturation", 1.0)),
+            "color_contrast": float(getattr(state, "contrast", 1.0)),
+            "color_brightness": float(getattr(state, "brightness", 0.0)),
+        }
+
+
+    def _add_or_update_keyframe_at_current_frame(self):
+        path = self._ensure_keyframe_file()
+
+        frame = int(getattr(self.controller.state, "preview_frame_index", self.frame_slider.value()))
+        label = self.keyframe_label_edit.text().strip() or f"Frame {frame}"
+
+        transition_frames = int(self.keyframe_transition_spin.value())
+        transition_type = self.keyframe_transition_combo.currentText()
+
+        settings = self._capture_current_keyframe_settings()
+
+        self._keyframe_service.upsert_keyframe(
+            frame=frame,
+            label=label,
+            transition_frames=transition_frames,
+            transition_type=transition_type,
+            settings=settings,
+        )
+
+        try:
+            self._keyframe_service.save(path)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                self._t("Keyframes"),
+                self._t("Failed to save keyframe:") + f"\n{e}",
+            )
+            return
+
+        self.controller.set_state("keyframes_enabled", True)
+        self.controller.set_state("keyframes_path", path)
+        self.keyframes_enabled_check.setChecked(True)
+
+        self._refresh_keyframe_combo(select_frame=frame)
+
+        QMessageBox.information(
+            self,
+            self._t("Keyframes"),
+            self._t("Saved keyframe at frame") + f" {frame}.",
+        )
+
+
+    def _delete_selected_keyframe(self):
+        if self._keyframe_service is None:
+            self._load_keyframe_service_from_state(silent=True)
+
+        frame = self.keyframe_combo.currentData()
+
+        if frame is None:
+            QMessageBox.information(
+                self,
+                self._t("Keyframes"),
+                self._t("No keyframe selected."),
+            )
+            return
+
+        frame = int(frame)
+
+        answer = QMessageBox.question(
+            self,
+            self._t("Delete Keyframe"),
+            self._t("Delete selected keyframe?") + f"\nFrame {frame}",
+        )
+
+        if answer != QMessageBox.Yes:
+            return
+
+        removed = self._keyframe_service.remove_keyframe_at_frame(frame)
+
+        if not removed:
+            return
+
+        path = self._ensure_keyframe_file()
+        self._keyframe_service.save(path)
+        self._refresh_keyframe_combo()
+
+
+    def _refresh_keyframe_combo(self, select_frame=None):
+        if not hasattr(self, "keyframe_combo"):
+            return
+
+        if self._keyframe_service is None:
+            self._load_keyframe_service_from_state(silent=True)
+
+        self.keyframe_combo.blockSignals(True)
+        self.keyframe_combo.clear()
+
+        if self._keyframe_service is not None:
+            keyframes = sorted(
+                self._keyframe_service.keyframes,
+                key=lambda kf: int(kf.frame)
+            )
+
+            for i, kf in enumerate(keyframes):
+                start_frame = int(kf.frame)
+
+                if i + 1 < len(keyframes):
+                    end_frame = int(keyframes[i + 1].frame) - 1
+                    range_text = f"Frame {start_frame} - {end_frame}"
+                else:
+                    range_text = f"Frame {start_frame} - End"
+
+                label = kf.label or "Keyframe"
+                transition = int(kf.transition_frames or 0)
+                transition_type = str(kf.transition_type or "cut")
+
+                text = f"{range_text} | {label} ({transition}f {transition_type})"
+                self.keyframe_combo.addItem(text, start_frame)
+
+        if select_frame is not None:
+            idx = self.keyframe_combo.findData(int(select_frame))
+            if idx >= 0:
+                self.keyframe_combo.setCurrentIndex(idx)
+
+        self.keyframe_combo.blockSignals(False)
+
+
+    def _on_selected_keyframe_changed(self, *_args):
+        if self._keyframe_service is None:
+            return
+
+        frame = self.keyframe_combo.currentData()
+        if frame is None:
+            return
+
+        kf = self._keyframe_service.get_keyframe_at_frame(int(frame))
+        if kf is None:
+            return
+
+        self.keyframe_label_edit.setText(kf.label or "")
+        self.keyframe_transition_spin.setValue(int(kf.transition_frames or 0))
+
+        idx = self.keyframe_transition_combo.findText(kf.transition_type)
+        if idx >= 0:
+            self.keyframe_transition_combo.setCurrentIndex(idx)
+
+
+    def _apply_selected_keyframe_to_sliders(self):
+        """
+        Loads selected keyframe settings back into the UI sliders.
+        Useful when you want to inspect or revise an existing keyframe.
+        """
+        if self._keyframe_service is None:
+            self._load_keyframe_service_from_state(silent=True)
+
+        frame = self.keyframe_combo.currentData()
+        if frame is None:
+            QMessageBox.information(
+                self,
+                self._t("Keyframes"),
+                self._t("No keyframe selected."),
+            )
+            return
+
+        kf = self._keyframe_service.get_keyframe_at_frame(int(frame))
+        if kf is None:
+            return
+
+        settings = kf.settings or {}
+
+        self.frame_slider.setValue(int(kf.frame))
+        self.controller.set_state("preview_frame_index", int(kf.frame))
+
+        def set_slider_from_setting(key, slider, scale):
+            if key not in settings:
+                return
+            slider.setValue(int(float(settings[key]) * scale))
+
+        set_slider_from_setting("fg_shift", self.fg_shift_slider, 10)
+        set_slider_from_setting("mg_shift", self.mg_shift_slider, 10)
+        set_slider_from_setting("bg_shift", self.bg_shift_slider, 10)
+
+        set_slider_from_setting("convergence_strength", self.convergence_slider, 1000)
+        set_slider_from_setting("parallax_balance", self.parallax_balance_slider, 100)
+        set_slider_from_setting("zero_parallax_strength", self.zero_parallax_slider, 1000)
+        set_slider_from_setting("max_pixel_shift_percent", self.max_pixel_shift_slider, 1000)
+        set_slider_from_setting("dof_strength", self.dof_slider, 10)
+
+        set_slider_from_setting("depth_pop_gamma", self.depth_pop_gamma_slider, 100)
+        set_slider_from_setting("fg_pop_multiplier", self.fg_pop_slider, 100)
+        set_slider_from_setting("bg_push_multiplier", self.bg_push_slider, 100)
+        set_slider_from_setting("subject_lock_strength", self.subject_lock_slider, 100)
+        set_slider_from_setting("subject_plane_lock_strength", self.subject_plane_lock_slider, 100)
+        set_slider_from_setting("subject_plane_lock_width", self.subject_plane_width_slider, 100)
+        set_slider_from_setting("foreground_curvature_strength", self.foreground_curvature_slider, 100)
+
+        if "depth_pop_mid" in settings:
+            self.pop_mid_edit.setText(f"{float(settings['depth_pop_mid']):.2f}")
+            self.controller.set_state("depth_pop_mid", float(settings["depth_pop_mid"]))
+
+        if "depth_stretch_lo" in settings:
+            self.stretch_lo_edit.setText(f"{float(settings['depth_stretch_lo']):.2f}")
+            self.controller.set_state("depth_stretch_lo", float(settings["depth_stretch_lo"]))
+
+        if "depth_stretch_hi" in settings:
+            self.stretch_hi_edit.setText(f"{float(settings['depth_stretch_hi']):.2f}")
+            self.controller.set_state("depth_stretch_hi", float(settings["depth_stretch_hi"]))
+
+        set_slider_from_setting("color_saturation", self.saturation_slider, 100)
+        set_slider_from_setting("color_contrast", self.contrast_slider, 100)
+        set_slider_from_setting("color_brightness", self.brightness_slider, 100)
+
+        self._preview_debounce.start()
 
     def _on_preview_updated(self, result):
         self._last_preview_result = result
