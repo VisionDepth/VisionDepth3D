@@ -12,33 +12,54 @@ class AppState:
     render_mode: str = "video"
     selected_aspect_ratio: str = "Default (16:9)"
 
-    selected_codec: str = "XVID"
-    selected_ffmpeg_codec: str = "H.264 / AVC (libx264 - CPU)"
-    use_ffmpeg: bool = False
+    selected_codec: str = "mp4v"
+
+    # RTX/NVIDIA speed-friendly default.
+    # If you want safer cross-vendor default, use:
+    # "H.264 / AVC (libx264 - CPU)"
+    selected_ffmpeg_codec: str = "H.264 / AVC (NVENC - NVIDIA GPU)"
+
+    # Prefer FFmpeg writer. It is more reliable and allows GPU encoders.
+    use_ffmpeg: bool = True
+
     keep_original_audio: bool = True
     preserve_hdr10: bool = False
-    crf_value: int = 23
-    nvenc_cq_value: int = 23
+    crf_value: int = 20
+    nvenc_cq_value: int = 20
+
     fg_shift: float = -8.0
     mg_shift: float = -1.5
     bg_shift: float = 2.70
-    sharpness_factor: float = 0.2
 
-    max_pixel_shift: float = 0.45
+    # CPU sharpening in video path costs time. Default off.
+    sharpness_factor: float = 0.0
+
+    # IMPORTANT:
+    # This value is a fraction, not 45%.
+    # 0.045 = 4.5% max pixel shift.
+    max_pixel_shift: float = 0.045
+
     zero_parallax_strength: float = -0.015
     parallax_balance: float = 0.76
-    dof_strength: float = 0.6
+
+    # DOF is expensive. Default off unless user enables it.
+    dof_strength: float = 0.0
+
     convergence_strength: float = 0.0
     enable_dynamic_convergence: bool = True
-    edge_repair_quality: str = "Balanced"
 
-    depth_pop_gamma: float = 0.45
+    # Faster default. User can switch to Balanced/High/Showcase manually.
+    edge_repair_quality: str = "Fast"
+
+    depth_pop_gamma: float = 0.85
     depth_pop_mid: float = 0.50
     depth_stretch_lo: float = 0.05
     depth_stretch_hi: float = 0.95
     fg_pop_multiplier: float = 1.08
     bg_push_multiplier: float = 1.04
     subject_lock_strength: float = 0.34
+    subject_plane_lock_strength: float = 0.0
+    subject_plane_lock_width: float = 0.08
     foreground_curvature_strength: float = 0.06
 
     feather_strength: float = 0.0
@@ -60,6 +81,8 @@ class AppState:
     preview_frame_index: int = 0
     preview_width: int = 960
     preview_height: int = 540
+    keyframes_enabled: bool = False
+    keyframes_path: str = ""
     ipd_enabled: bool = True
     ipd_scale: float = 1.0
     show_convergence_guides: bool = False
