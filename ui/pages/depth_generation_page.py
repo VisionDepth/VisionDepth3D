@@ -300,8 +300,9 @@ class DepthGenerationPage(QWidget):
         self.next_preview_btn = QPushButton()
         self._register_text(self.next_preview_btn, "Next")
 
-        self.preview_index_label = QLabel("Preview 0 / 0")
+        self.preview_index_label = QLabel()
         self.preview_index_label.setAlignment(Qt.AlignCenter)
+        self._set_preview_index_label(0, 0)
 
         preview_controls_layout.addWidget(self.generate_preview_btn, 2)
         preview_controls_layout.addWidget(self.prev_preview_btn, 1)
@@ -332,7 +333,8 @@ class DepthGenerationPage(QWidget):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(12)
 
-        mode_group = QGroupBox("Processing Mode")
+        mode_group = QGroupBox()
+        self._register_title(mode_group, "Processing Mode")
         mode_inner = QHBoxLayout(mode_group)
         self.model_combo.wheelEvent = lambda event: None 
         self.mode_combo = QComboBox()
@@ -364,7 +366,8 @@ class DepthGenerationPage(QWidget):
         process_inner.addWidget(self.cancel_btn)
         bottom_layout.addWidget(process_group, 1)
 
-        self.status_label = QLabel(self._t("Ready"))
+        self.status_label = QLabel()
+        self._register_text(self.status_label, "Ready")
         self.status_label.setWordWrap(True)
         self.status_label.setObjectName("StatusLabel")
         self.status_label.setMinimumWidth(180)
@@ -419,6 +422,11 @@ class DepthGenerationPage(QWidget):
             "Loading model...": "Loading model...",
             "Model ready.": "Ready",
             "Cancelled.": "Cancel",
+            "Preview": "Preview",
+            "Generating preview samples...": "Generating preview samples...",
+            "No preview samples were generated.": "No preview samples were generated.",
+            "Depth preview samples ready.": "Depth preview samples ready.",
+            "Preview failed:": "Preview failed:",
         }
 
         if isinstance(translations, dict):
@@ -513,6 +521,14 @@ class DepthGenerationPage(QWidget):
         self.mode_combo.setCurrentIndex(restore_index)
         self.mode_combo.blockSignals(False)
 
+    def _set_preview_index_label(self, current: int = 0, total: int = 0):
+        """
+        Update the preview index label with a translatable prefix.
+        Example: Preview 1 / 5
+        """
+        if hasattr(self, "preview_index_label"):
+            self.preview_index_label.setText(f"{self._t('Preview')} {int(current)} / {int(total)}")
+
     def refresh_labels(self):
         """
         Called by MainWindow when language changes.
@@ -540,6 +556,10 @@ class DepthGenerationPage(QWidget):
         self._set_spin_prefixes()
         self._refresh_mode_combo()
         self._apply_processing_mode_ui()
+
+        total_previews = len(getattr(self, "_preview_pairs", []) or [])
+        current_preview = (getattr(self, "_preview_index", 0) + 1) if total_previews else 0
+        self._set_preview_index_label(current_preview, total_previews)
 
     def _current_processing_mode(self):
         if hasattr(self, "mode_combo"):
@@ -813,11 +833,11 @@ class DepthGenerationPage(QWidget):
         self._preview_pairs = []
         self._preview_index = 0
 
-        self.status_label.setText("Generating preview samples...")
+        self.status_label.setText(self._t("Generating preview samples..."))
         self.generate_preview_btn.setEnabled(False)
         self.prev_preview_btn.setEnabled(False)
         self.next_preview_btn.setEnabled(False)
-        self.preview_index_label.setText("Preview 0 / 0")
+        self._set_preview_index_label(0, 0)
 
         # run worker here
         self._run_depth_preview_worker()
@@ -880,7 +900,7 @@ class DepthGenerationPage(QWidget):
 
     def _set_preview_pair(self, pair_index: int):
         if not self._preview_pairs:
-            self.preview_index_label.setText("Preview 0 / 0")
+            self._set_preview_index_label(0, 0)
             return
 
         pair_index = max(0, min(pair_index, len(self._preview_pairs) - 1))
@@ -906,9 +926,7 @@ class DepthGenerationPage(QWidget):
                 )
             )
 
-        self.preview_index_label.setText(
-            f"Preview {pair_index + 1} / {len(self._preview_pairs)}"
-        )
+        self._set_preview_index_label(pair_index + 1, len(self._preview_pairs))
 
         self.prev_preview_btn.setEnabled(pair_index > 0)
         self.next_preview_btn.setEnabled(pair_index < len(self._preview_pairs) - 1)
@@ -936,11 +954,11 @@ class DepthGenerationPage(QWidget):
         self.generate_preview_btn.setEnabled(True)
 
         if not self._preview_pairs:
-            self.status_label.setText("No preview samples were generated.")
-            self.preview_index_label.setText("Preview 0 / 0")
+            self.status_label.setText(self._t("No preview samples were generated."))
+            self._set_preview_index_label(0, 0)
             return
 
-        self.status_label.setText("Depth preview samples ready.")
+        self.status_label.setText(self._t("Depth preview samples ready."))
         self._set_preview_pair(0)
         self._apply_processing_mode_ui()
 
@@ -950,7 +968,7 @@ class DepthGenerationPage(QWidget):
         self.generate_preview_btn.setEnabled(True)
         self.prev_preview_btn.setEnabled(False)
         self.next_preview_btn.setEnabled(False)
-        self.status_label.setText(f"Preview failed: {message}")
+        self.status_label.setText(f"{self._t('Preview failed:')} {message}")
         self._apply_processing_mode_ui()
 
         QMessageBox.critical(
