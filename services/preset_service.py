@@ -5,12 +5,62 @@ from dataclasses import asdict
 
 PRESET_DIR = Path("presets")
 
-# Presets should store render/settings profiles only.
-# Do not save project-specific file paths.
-PRESET_EXCLUDED_KEYS = {
-    "input_video_path",
-    "depth_map_path",
-    "output_path",
+
+# Presets should only store 3D tuning behavior.
+# Do not save:
+# - input/output paths
+# - output format
+# - encoding settings
+# - aspect ratio
+# - color grading
+# - VR180 settings
+# - preview frame/navigation
+# - keyframe file/project state
+# - language/theme
+PRESET_ALLOWED_KEYS = {
+    # Stereo shift
+    "fg_shift",
+    "mg_shift",
+    "bg_shift",
+    "sharpness_factor",
+
+    # Depth / parallax
+    "max_pixel_shift",
+    "zero_parallax_strength",
+    "parallax_balance",
+    "dof_strength",
+    "convergence_strength",
+    "enable_dynamic_convergence",
+    "edge_repair_quality",
+
+    # Depth shaping / pop
+    "depth_pop_gamma",
+    "depth_pop_mid",
+    "depth_stretch_lo",
+    "depth_stretch_hi",
+    "fg_pop_multiplier",
+    "bg_push_multiplier",
+
+    # Subject / structure controls
+    "subject_lock_strength",
+    "subject_plane_lock_strength",
+    "subject_plane_lock_width",
+    "foreground_curvature_strength",
+
+    # Edge / feather behavior
+    "feather_strength",
+    "blur_ksize",
+    "enable_edge_masking",
+    "enable_feathering",
+
+    # 3D stability behavior
+    "use_subject_tracking",
+    "use_floating_window",
+    "disable_shift_ema",
+
+    # Stereo scaling
+    "ipd_enabled",
+    "ipd_scale",
 }
 
 
@@ -28,10 +78,12 @@ class PresetService:
 
         path = self.preset_dir / filename
 
+        state_data = asdict(state)
+
         config = {
-            key: value
-            for key, value in asdict(state).items()
-            if key not in PRESET_EXCLUDED_KEYS
+            key: state_data[key]
+            for key in PRESET_ALLOWED_KEYS
+            if key in state_data
         }
 
         with path.open("w", encoding="utf-8") as f:
@@ -56,7 +108,7 @@ class PresetService:
         ignored = []
 
         for key, value in config.items():
-            if key in PRESET_EXCLUDED_KEYS:
+            if key not in PRESET_ALLOWED_KEYS:
                 ignored.append(key)
                 continue
 
