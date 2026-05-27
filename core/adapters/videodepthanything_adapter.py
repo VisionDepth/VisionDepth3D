@@ -3,7 +3,9 @@
 import re
 import torch
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
+
+from core.debug_flags import debug_print, is_debug_enabled
 
 
 def _frame_to_np(x):
@@ -18,12 +20,17 @@ def _frame_to_np(x):
 
     # PIL image
     if isinstance(x, Image.Image):
+        x = ImageOps.exif_transpose(x)
+
         if x.mode != "RGB":
             x = x.convert("RGB")
-        return np.array(x, dtype=np.uint8)
+
+        return np.asarray(x, dtype=np.uint8)
 
     # Torch tensor
     if isinstance(x, torch.Tensor):
+        # VDA adapter is CPU/NumPy input based.
+        # Avoid holding GPU tensors here.
         x = x.detach().cpu()
 
         # Remove batch dim if someone passed 1xCxHxW
@@ -48,13 +55,19 @@ def _frame_to_np(x):
         if arr.ndim == 3 and arr.shape[-1] == 1:
             arr = np.repeat(arr, 3, axis=-1)
 
-        # Float 0..1 -> uint8 0..255
+        if arr.ndim != 3 or arr.shape[-1] != 3:
+            raise ValueError(f"VDA frame must resolve to HxWx3 RGB. Got shape: {arr.shape}")
+
+        # Float 0..1 or 0..255 -> uint8.
         if np.issubdtype(arr.dtype, np.floating):
-            if arr.max() <= 1.0:
+            # This max() is CPU-side now, so it does not CUDA-sync.
+            if arr.size and float(arr.max()) <= 1.0:
                 arr = arr * 255.0
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        else:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+            arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
+
+        elif arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
 
         return np.ascontiguousarray(arr)
 
@@ -84,13 +97,14 @@ def _frame_to_np(x):
     if arr.ndim != 3 or arr.shape[-1] != 3:
         raise ValueError(f"VDA frame must resolve to HxWx3 RGB. Got shape: {arr.shape}")
 
-    # Float 0..1 -> uint8 0..255
     if np.issubdtype(arr.dtype, np.floating):
-        if arr.max() <= 1.0:
+        if arr.size and float(arr.max()) <= 1.0:
             arr = arr * 255.0
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-    else:
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+        arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
+
+    elif arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
 
     return np.ascontiguousarray(arr)
 
@@ -125,7 +139,7 @@ def _input_size_from_inference_size(inference_size=None, default=518) -> int:
     """
     Convert VisionDepth3D inference size into VDA input_size.
 
-    VDA uses a single integer input_size, usually 518.
+    VDA uses a single integer input_size, official default 518.
 
     Accepts:
         None
@@ -150,19 +164,16 @@ def _input_size_from_inference_size(inference_size=None, default=518) -> int:
         if not s or s.lower() == "original":
             return int(default)
 
-        # Match 910x518, 518x518, 1024x576, etc.
         match = re.search(r"(\d+)\s*x\s*(\d+)", s)
+
         if match:
             w = int(match.group(1))
             h = int(match.group(2))
-
-            # For VDA, use the larger side as the input size request,
-            # then snap to stable model-friendly choices below.
             requested = max(w, h)
             return _snap_vda_input_size(requested)
 
-        # Match "518 (Video Depth Anything Default)"
         match = re.search(r"^\s*(\d+)", s)
+
         if match:
             requested = int(match.group(1))
             return _snap_vda_input_size(requested)
@@ -190,10 +201,7 @@ def _snap_vda_input_size(requested: int) -> int:
     """
     Snap requested input size to safe VDA-style sizes.
 
-    VDA official default is 518.
-    Higher can be tested, but 518 is the safest baseline.
-
-    Keeping this conservative avoids weird behavior from arbitrary sizes.
+    Official default is 518 = 37 * 14.
     """
 
     requested = int(requested)
@@ -207,13 +215,10 @@ def _snap_vda_input_size(requested: int) -> int:
     if requested <= 518:
         return 518
 
-    # Allow higher testing, but keep multiples reasonable.
-    # Many transformer/depth pipelines prefer multiples around 14.
-    # 518 itself is 37 * 14.
+    # VDA/DINO-style models generally like multiples of 14.
     snapped = int(round(requested / 14) * 14)
 
-    # Clamp to avoid accidentally sending huge sizes from 1080p/4K presets.
-    # You can raise this later if you want experimental high-res VDA.
+    # Avoid accidental huge sizes from 1080p/4K presets.
     snapped = max(518, min(snapped, 1036))
 
     return snapped
@@ -233,9 +238,18 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Keeping VDA fp32 by default is safer for temporal consistency.
-    # Some depth models can get unstable or slightly different frame-to-frame in fp16.
-    fp16_ok = bool(use_fp16 and device == "cuda")
+    if device == "cuda":
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+        except Exception:
+            pass
+
+    # VDA FP16 can be tested later, but keep model weights FP32 by default for
+    # temporal stability. infer_video_depth may still use autocast internally
+    # depending on its fp32 flag.
+    fp16_requested = bool(use_fp16 and device == "cuda")
 
     metric = "metric" in (spec or "").lower()
 
@@ -248,6 +262,9 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
     print(f"[VDA] metric={metric}")
     print(f"[VDA] checkpoint={ckpt_name}")
     print(f"[VDA] device={device}")
+
+    if fp16_requested:
+        print("[VDA] FP16 requested. Keeping model weights FP32 for stability; using fp32=False at inference.")
 
     ckpt_path = hf_hub_download(
         repo_id=spec,
@@ -275,36 +292,41 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
 
     vda = VideoDepthAnything(**model_configs[encoder], metric=metric)
 
-    sd = torch.load(ckpt_path, map_location="cpu")
+    try:
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    except TypeError:
+        sd = torch.load(ckpt_path, map_location="cpu")
+
     vda.load_state_dict(sd, strict=True)
+
+    del sd
+
     vda.to(device).eval()
 
-    # I recommend leaving this off for now.
-    # If you later want speed testing, enable use_fp16 and test carefully.
-    if fp16_ok:
-        print("[VDA][WARN] fp16 requested, but keeping model in fp32 for stability.")
-        # vda.half()
+    warned_short_sequence = False
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def vda_infer(images, inference_size=None, **kw):
         """
         Run Video Depth Anything.
 
         Important:
-            VDA works best when it receives a real sequence, not tiny 4-frame or 8-frame batches.
-            If the main depth runner sends short chunks, VDA may look like it skips, pulses, or resets.
+            VDA works best when it receives a real sequence, not tiny chunks.
+            Use larger window sizes with overlap when VRAM allows.
         """
+        nonlocal warned_short_sequence
 
         if not isinstance(images, list):
             images = [images]
 
-        frames = [_frame_to_np(im) for im in images]
-
-        if len(frames) == 0:
+        if len(images) == 0:
             return []
+
+        frames = [_frame_to_np(im) for im in images]
 
         # Make sure all frames match shape.
         first_shape = frames[0].shape
+
         for i, frame in enumerate(frames):
             if frame.shape != first_shape:
                 raise ValueError(
@@ -324,26 +346,27 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
             )
         )
 
-        # Keep original video timing unless caller explicitly overrides.
         target_fps = int(kw.get("target_fps", -1))
 
-        # VDA infer_video_depth uses fp32 flag.
-        # For stability, default false unless the caller passes fp32=True.
+        # infer_video_depth uses fp32 flag.
+        # fp32=True = force full precision.
+        # fp32=False = allow faster/default path in upstream implementation.
         fp32 = bool(kw.get("fp32", False))
 
         sequence_len = frames_np.shape[0]
 
-        if sequence_len < 16:
+        if sequence_len < 16 and not warned_short_sequence:
+            warned_short_sequence = True
             print(
                 f"[VDA][WARN] Only received {sequence_len} frame(s). "
                 f"VDA may look jumpy if processed in tiny chunks. "
-                f"Try 32 to 64+ consecutive frames, ideally with overlap."
+                f"Try 32 to 64+ consecutive frames with overlap if VRAM allows."
             )
 
-        print(
-            f"[VDA] Running Video Depth Anything | "
+        debug_print(
+            f"[VDA] Running | "
             f"frames={sequence_len} | "
-            f"frame_shape={frames_np.shape[1]}x{frames_np.shape[2]} | "
+            f"frame_shape={frames_np.shape[2]}x{frames_np.shape[1]} | "
             f"input_size={input_size} | "
             f"target_fps={target_fps} | "
             f"fp32={fp32}"
@@ -372,12 +395,17 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
                 f"input={sequence_len}, output={d.shape[0]}, fps_out={fps_out}"
             )
 
+        # Return NumPy directly.
+        # render_depth._ensure_depth_np() already accepts NumPy arrays.
+        # This avoids NumPy -> Torch -> NumPy round-trips per frame.
         return [
             {
-                "predicted_depth": torch.from_numpy(d[i]).float()
+                "predicted_depth": np.ascontiguousarray(d[i], dtype=np.float32)
             }
             for i in range(d.shape[0])
         ]
+
+    vda_infer._is_vda = True
 
     caps = {
         "kind": "vda",
@@ -387,11 +415,15 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
         "is_video_model": True,
         "prefers_sequence": True,
 
-        # Helpful hints for your main runner if you decide to use them.
+        # Helpful hints for the main runner.
         "recommended_input_size": 518,
         "recommended_sequence_length": 64,
         "minimum_sequence_length": 32,
         "recommended_overlap": 16,
+
+        # Model kept FP32 by default for temporal consistency.
+        "supports_fp16": False,
+        "supports_tf32": bool(device == "cuda"),
     }
 
     return vda_infer, caps
