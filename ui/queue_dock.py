@@ -1,10 +1,13 @@
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QProgressBar,
     QSizePolicy,
+    QPushButton,
+    QApplication,
 )
 
 
@@ -13,12 +16,28 @@ class JobQueueDock(QWidget):
         super().__init__()
 
         self._translator = None
+        self.max_log_lines = 500
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
 
+        header_row = QHBoxLayout()
+
         self.title = QLabel("Job Queue")
+
+        self.copy_btn = QPushButton("Copy Log")
+        self.clear_btn = QPushButton("Clear Log")
+        self.copy_btn.setFixedHeight(26)
+        self.clear_btn.setFixedHeight(26)
+
+        self.copy_btn.clicked.connect(self.copy_log)
+        self.clear_btn.clicked.connect(self.clear_log)
+
+        header_row.addWidget(self.title)
+        header_row.addStretch()
+        header_row.addWidget(self.copy_btn)
+        header_row.addWidget(self.clear_btn)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -33,20 +52,27 @@ class JobQueueDock(QWidget):
 
         self.log_list = QListWidget()
         self.log_list.setVisible(False)
-        self.log_list.setMaximumHeight(72)
-        self.log_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        self.setMaximumHeight(170)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Bigger terminal area when debug is visible.
+        self.log_list.setMinimumHeight(150)
+        self.log_list.setMaximumHeight(260)
+        self.log_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        layout.addWidget(self.title)
+        # Let the dock grow instead of locking it tiny.
+        self.setMinimumHeight(150)
+        self.setMaximumHeight(360)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        layout.addLayout(header_row)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.status_label)
         layout.addWidget(self.telemetry_label)
-        layout.addWidget(self.log_list)
+        layout.addWidget(self.log_list, 1)
 
     def set_log_visible(self, visible: bool):
         self.log_list.setVisible(visible)
+        self.copy_btn.setVisible(visible)
+        self.clear_btn.setVisible(visible)
 
     def set_translator(self, translator):
         self._translator = translator
@@ -59,6 +85,8 @@ class JobQueueDock(QWidget):
 
     def refresh_labels(self):
         self.title.setText(self._t("Job Queue"))
+        self.copy_btn.setText(self._t("Copy Log"))
+        self.clear_btn.setText(self._t("Clear Log"))
 
         idle_words = {
             "Idle",
@@ -76,17 +104,45 @@ class JobQueueDock(QWidget):
             self.status_label.setText(self._t("Idle"))
 
     def add_message(self, text: str):
-        self.log_list.addItem(text)
+        self.log_list.addItem(str(text))
+
+        # Keep only the newest log lines so per-frame debug output
+        # does not make the queue dock or Copy Log massive.
+        while self.log_list.count() > self.max_log_lines:
+            item = self.log_list.takeItem(0)
+            del item
+
         self.log_list.scrollToBottom()
+        
+    def copy_log(self):
+        total = self.log_list.count()
+        start = max(0, total - self.max_log_lines)
+
+        lines = []
+        if total > self.max_log_lines:
+            lines.append(
+                f"[Copied last {self.max_log_lines} log lines out of {total}. "
+                f"Older lines were not included.]"
+            )
+
+        for i in range(start, total):
+            item = self.log_list.item(i)
+            if item:
+                lines.append(item.text())
+
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def clear_log(self):
+        self.log_list.clear()
 
     def set_progress(self, value: float):
         self.progress_bar.setValue(max(0, min(100, int(value))))
 
     def set_status(self, text: str):
-        self.status_label.setText(text)
+        self.status_label.setText(str(text))
 
     def set_telemetry(self, text: str):
-        self.telemetry_label.setText(text)
+        self.telemetry_label.setText(str(text))
 
     def reset_progress(self):
         self.progress_bar.setValue(0)
