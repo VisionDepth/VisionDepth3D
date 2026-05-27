@@ -27,7 +27,7 @@ from ui.dialogs.theme_creator_dialog import ThemeCreatorDialog
 from core.debug_flags import set_debug_enabled
 
 import psutil
-
+import subprocess
 
 def resource_path(relative_path):
     """
@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
 
         self.content_splitter.setStretchFactor(0, 1)
         self.content_splitter.setStretchFactor(1, 0)
-        self.content_splitter.setSizes([780, 140])
+        self.content_splitter.setSizes([700, 240])
 
         root.addWidget(self.content_splitter, 1)
 
@@ -366,15 +366,27 @@ class MainWindow(QMainWindow):
 
 
     def _update_queue_progress_line(self, payload, default_rate_label="FPS"):
+        payload = dict(payload or {})
+
         progress = float(payload.get("progress", 0.0) or 0.0)
         progress = max(0.0, min(100.0, progress))
+
+        done = payload.get("done", None)
+        total = payload.get("total", None)
 
         elapsed = payload.get("elapsed", None)
         eta = payload.get("eta", None)
         fps_like = payload.get("fps_like", None)
         rate_label = payload.get("rate_label", default_rate_label)
 
-        line_parts = [f"{progress:.2f}%"]
+        # Original unified VD3D queue format:
+        # 119/9557 | FPS: 3.10 | Elapsed: 00:00:39 | ETA: 00:50:46
+        line_parts = []
+
+        if done is not None and total is not None:
+            line_parts.append(f"{int(done)}/{int(total)}")
+        else:
+            line_parts.append(f"{progress:.2f}%")
 
         if fps_like is not None:
             try:
@@ -388,8 +400,20 @@ class MainWindow(QMainWindow):
         if eta is not None:
             line_parts.append(f"ETA: {self._format_seconds(eta)}")
 
+        status_line = " | ".join(line_parts)
+
+        # 3D render already sends a real frame-FPS status string:
+        # "12.34% | FPS: 7.21 | Elapsed: ... | ETA: ..."
+        #
+        # Prefer that over the generic fps_like field, because fps_like may be
+        # percent-per-second for progress-only updates.
+        status_text = str(payload.get("status_text") or "").strip()
+
+        if "FPS:" in status_text and ("Elapsed:" in status_text or "ETA:" in status_text):
+            status_line = status_text
+
         self.queue.set_progress(progress)
-        self.queue.set_status(" | ".join(line_parts))
+        self.queue.set_status(status_line)
         self.queue.set_telemetry(self._get_system_stats_text())
 
     # ── Progress ──
@@ -432,26 +456,123 @@ class MainWindow(QMainWindow):
                 pass
         return {"cpu": cpu, "ram": ram, "gpu": gpu, "vram": vram}
 
-    def _detect_gpu(self):
-        gpu_name = "CPU"
+    def _get_windows_system_gpu_name(self):
+        """
+        Returns the real Windows display GPU name using PowerShell/CIM.
+        This detects AMD / Intel / NVIDIA even when CUDA/NVML is unavailable.
+        """
+        if sys.platform != "win32":
+            return None
+
+        try:
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_VideoController | "
+                    "Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic Display|Remote Display|Parsec|Virtual' } | "
+                    "Select-Object -ExpandProperty Name"
+                ),
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+
+            names = [
+                line.strip()
+                for line in result.stdout.splitlines()
+                if line.strip()
+            ]
+
+            if not names:
+                return None
+
+            # Prefer real discrete GPUs when multiple adapters are listed.
+            priority = ("nvidia", "geforce", "rtx", "gtx", "radeon", "amd", "intel arc")
+            for key in priority:
+                for name in names:
+                    if key in name.lower():
+                        return name
+
+            return names[0]
+
+        except Exception:
+            return None
+
+    def _get_active_compute_backend_name(self):
+        """
+        Returns the backend VD3D/PyTorch is likely able to use.
+        This is not always the same as the physical system GPU.
+        """
         try:
             import torch
+
             if torch.cuda.is_available():
-                gpu_name = torch.cuda.get_device_name(0)
-                if hasattr(torch.version, 'hip') and torch.version.hip is not None:
-                    gpu_name += " (ROCm)"
+                if getattr(torch.version, "hip", None) is not None:
+                    return "ROCm"
+                return "CUDA"
+
+            try:
+                import torch_directml
+                dml_device = torch_directml.device()
+                _ = torch.ones(1).to(dml_device).cpu()
+                return "DirectML"
+            except Exception:
+                pass
+
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "Metal"
+
         except Exception:
             pass
-        try:
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            name = pynvml.nvmlDeviceGetName(handle)
-            if isinstance(name, bytes):
-                name = name.decode()
-            gpu_name = name
-        except Exception:
-            pass
-        self.gpu_label.setText(f"\U0001f5a5 {gpu_name}")
+
+        return "CPU"
+
+    def _detect_gpu(self):
+        system_gpu_name = None
+
+        # 1. Try Windows system GPU detection first.
+        # This catches AMD / Intel / NVIDIA even if VD3D is not using that GPU yet.
+        system_gpu_name = self._get_windows_system_gpu_name()
+
+        # 2. Try NVIDIA NVML as a fallback.
+        if not system_gpu_name and NVML_AVAILABLE:
+            try:
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode()
+                system_gpu_name = str(name)
+            except Exception:
+                pass
+
+        # 3. Try PyTorch CUDA name as another fallback.
+        if not system_gpu_name:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    system_gpu_name = torch.cuda.get_device_name(0)
+                    if getattr(torch.version, "hip", None) is not None:
+                        system_gpu_name += " (ROCm)"
+            except Exception:
+                pass
+
+        if not system_gpu_name:
+            system_gpu_name = "No dedicated GPU detected"
+
+        backend_name = self._get_active_compute_backend_name()
+
+        self.gpu_label.setText(f"\U0001f5a5 {system_gpu_name} | {backend_name}")
 
 
     def _t(self, key: str) -> str:
@@ -464,6 +585,11 @@ class MainWindow(QMainWindow):
         action.setText(self._t(key))
 
     def refresh_shell_labels(self):
+        # App title / window title
+        self.setWindowTitle(self._t("VisionDepth3D"))
+        if hasattr(self, "app_title"):
+            self.app_title.setText(self._t("VisionDepth3D"))
+
         # Top navigation
         self.btn_stereo.setText(self._t("3D Generator"))
         self.btn_depth.setText(self._t("Depth Engine"))
@@ -680,13 +806,12 @@ class MainWindow(QMainWindow):
             self,
             self._t("About VisionDepth3D"),
             (
-                f"{self._t('VisionDepth3D v4.1.1')}\n\n"
+                f"{self._t('VisionDepth3D v4.2')}\n\n"
                 f"{self._t('A hybrid 2D-to-3D conversion suite for cinema and VR.')}\n\n"
                 f"{self._t('Features:')}\n"
                 f" • {self._t('Depth map blending (multi-model)')}\n"
                 f" • {self._t('Depth-weighted parallax shifting')}\n"
                 f" • {self._t('Scene-aware stereo rendering')}\n"
-                f" • {self._t('CUDA / DirectML / ROCm acceleration')}\n"
                 f" • {self._t('Real-time preview & batch processing')}\n\n"
                 "Website: https://visiondepth.github.io/VisionDepth3D/\n"
                 "GitHub: https://github.com/VisionDepth/VisionDepth3D\n"
