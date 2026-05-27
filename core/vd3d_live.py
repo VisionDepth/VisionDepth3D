@@ -52,6 +52,49 @@ except Exception:
     TORCH_AVAILABLE = False
     CUDA_AVAILABLE = False
 
+
+def pick_live_torch_device():
+    """
+    Live_3D device picker.
+    CUDA first, DirectML second, MPS third, CPU fallback.
+    """
+    if not TORCH_AVAILABLE or torch is None:
+        return None, "Unavailable"
+
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "CUDA (NVIDIA)"
+
+    try:
+        import torch_directml
+        dml_device = torch_directml.device()
+        _ = torch.ones(1).to(dml_device).cpu()
+        return dml_device, "DirectML (AMD/Intel)"
+    except Exception as e:
+        print(f"Live_3D DirectML not available: {e}")
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps"), "Metal (Apple)"
+
+    return torch.device("cpu"), "CPU"
+
+
+LIVE_TORCH_DEVICE, LIVE_TORCH_BACKEND = pick_live_torch_device()
+DIRECTML_AVAILABLE = LIVE_TORCH_BACKEND.startswith("DirectML")
+GPU_TORCH_AVAILABLE = LIVE_TORCH_BACKEND in ("CUDA (NVIDIA)", "DirectML (AMD/Intel)", "Metal (Apple)")
+
+print(f"Live_3D Torch device: {LIVE_TORCH_BACKEND} ({LIVE_TORCH_DEVICE})")
+
+def is_live_cuda():
+    return LIVE_TORCH_DEVICE is not None and getattr(LIVE_TORCH_DEVICE, "type", None) == "cuda"
+
+
+def is_live_directml():
+    return LIVE_TORCH_DEVICE is not None and getattr(LIVE_TORCH_DEVICE, "type", None) == "privateuseone"
+
+
+def live_device_label():
+    return LIVE_TORCH_BACKEND
+
 # --- Optional virtual camera
 try:
     import pyvirtualcam
@@ -276,25 +319,34 @@ def start_latest_capture(cap):
     t = threading.Thread(target=_reader, daemon=True)
     t.start()
     return q, stop
-
+    
 def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
     """
     Uses the same model-loading path as the Depth Engine.
     Returns mode='render_depth' when successful.
     Falls back to old DA2 path if needed.
     """
+    model_callable = None
+    meta = None
+    checkpoint = model_key_or_id
+
     if HAVE_RENDER_DEPTH and render_depth is not None:
-        supported = render_depth.load_supported_models()
+        try:
+            supported = render_depth.load_supported_models()
+            checkpoint = supported.get(model_key_or_id, model_key_or_id)
 
-        checkpoint_override = getattr(model_key_or_id, "model_checkpoint", None)
-        checkpoint = supported.get(model_key_or_id, model_key_or_id)
+            print(f"🧠 Live Depth Engine loading via render_depth: {model_key_or_id} -> {checkpoint}")
 
-        print(f"🧠 Live Depth Engine loading via render_depth: {model_key_or_id} -> {checkpoint}")
+            model_callable, meta = render_depth.ensure_model_downloaded(
+                checkpoint,
+                use_fp16=bool(use_fp16 and is_live_cuda()),
+            )
 
-        model_callable, meta = render_depth.ensure_model_downloaded(
-            checkpoint,
-            use_fp16=use_fp16,
-        )
+        except Exception as e:
+            print(f"⚠️ render_depth model load failed, falling back to old DA2 live loader: {e}")
+            model_callable = None
+            meta = None
+            checkpoint = model_key_or_id
 
     if model_callable is not None:
         # Set pipe_type so _run_pipe_or_tile behaves like the main depth script.
@@ -321,7 +373,7 @@ def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
             raw_model = model_callable
             processor = meta
 
-            device = "cuda" if CUDA_AVAILABLE else "cpu"
+            device = LIVE_TORCH_DEVICE
             raw_model = raw_model.to(device).eval()
 
             def hf_live_pipe(images, inference_size=None, **kwargs):
@@ -343,13 +395,13 @@ def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
                 )
 
                 inputs = {
-                    k: v.to(device, non_blocking=True)
+                    k: v.to(device)
                     for k, v in inputs.items()
                     if hasattr(v, "to")
                 }
 
                 with torch.inference_mode():
-                    if device == "cuda" and bool(use_fp16):
+                    if is_live_cuda() and bool(use_fp16):
                         with torch.autocast("cuda", dtype=torch.float16):
                             out = raw_model(**inputs).predicted_depth
                     else:
@@ -370,7 +422,7 @@ def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
         print(f"✅ Live depth loaded through Depth Engine path: {render_depth.pipe_type}")
         return ("render_depth", render_depth.pipe, meta)
 
-        print("⚠️ render_depth model load failed, falling back to old DA2 live loader.")
+    print("⚠️ render_depth model load failed or unavailable, falling back to old DA2 live loader.")
 
     # fallback
     model, norm, device = make_da2(model_key_or_id, use_fp16)
@@ -380,19 +432,21 @@ def make_live_depth_engine(model_key_or_id: str, use_fp16: bool):
 def make_da2(model_id: str, use_fp16: bool):
     if not TORCH_AVAILABLE:
         raise RuntimeError("PyTorch is not available.")
-    device = "cuda" if CUDA_AVAILABLE else "cpu"
-    dtype = torch.float16 if (use_fp16 and CUDA_AVAILABLE) else torch.float32
 
-    if device == "cuda":
-        print(f"🧠 Loading depth model on CUDA ({model_id})...")
-    else:
-        print(f"🧠 Loading depth model on CPU ({model_id})...")
+    device = LIVE_TORCH_DEVICE
+    use_cuda_fp16 = bool(use_fp16 and is_live_cuda())
+    dtype = torch.float16 if use_cuda_fp16 else torch.float32
+
+    print(f"🧠 Loading depth model on {LIVE_TORCH_BACKEND} ({model_id})...")
 
     model = AutoModelForDepthEstimation.from_pretrained(
-        model_id, torch_dtype=dtype
+        model_id,
+        torch_dtype=dtype,
     ).to(device).eval()
+
     torch.set_grad_enabled(False)
-    if CUDA_AVAILABLE:
+
+    if is_live_cuda():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
 
@@ -400,15 +454,28 @@ def make_da2(model_id: str, use_fp16: bool):
         cfg = model.config.vision_config
         mean = torch.tensor(
             getattr(cfg, "image_mean", [0.5, 0.5, 0.5]),
-            device=device, dtype=torch.float32
+            device=device,
+            dtype=torch.float32,
         ).view(1, 3, 1, 1)
+
         std = torch.tensor(
             getattr(cfg, "image_std", [0.5, 0.5, 0.5]),
-            device=device, dtype=torch.float32
+            device=device,
+            dtype=torch.float32,
         ).view(1, 3, 1, 1)
+
     except Exception:
-        mean = torch.tensor([0.5, 0.5, 0.5], device=device, dtype=torch.float32).view(1, 3, 1, 1)
-        std = torch.tensor([0.5, 0.5, 0.5], device=device, dtype=torch.float32).view(1, 3, 1, 1)
+        mean = torch.tensor(
+            [0.5, 0.5, 0.5],
+            device=device,
+            dtype=torch.float32,
+        ).view(1, 3, 1, 1)
+
+        std = torch.tensor(
+            [0.5, 0.5, 0.5],
+            device=device,
+            dtype=torch.float32,
+        ).view(1, 3, 1, 1)
 
     return model, (mean, std), device
 
@@ -416,9 +483,9 @@ def make_da2(model_id: str, use_fp16: bool):
 _STAGING = {"inp": None, "rgb_small": None}
 
 
-def depth_from_frame_fast(model, norm, device: str,
+def depth_from_frame_fast(model, norm, device,
                           frame_bgr: np.ndarray,
-                          inference_size: Tuple[int, int]) -> np.ndarray:
+                          inference_size: Tuple[int, int]) -> torch.Tensor:
     iw, ih = inference_size
     h, w = frame_bgr.shape[:2]
 
@@ -437,7 +504,7 @@ def depth_from_frame_fast(model, norm, device: str,
     t_inp = (t_inp / 255.0 - mean) / std
 
     with torch.inference_mode():
-        if device == "cuda":
+        if getattr(device, "type", None) == "cuda":
             model_dtype = next(model.parameters()).dtype
             with torch.autocast(device_type="cuda", dtype=model_dtype):
                 out = model(pixel_values=t_inp).predicted_depth
@@ -510,8 +577,7 @@ def depth_from_frame_depth_engine(
     else:
         depth01 = out_arr.astype(np.float32) / 255.0
 
-    device = "cuda" if CUDA_AVAILABLE else "cpu"
-    return torch.from_numpy(depth01).to(device=device, dtype=torch.float32)
+    return torch.from_numpy(depth01).to(device=LIVE_TORCH_DEVICE, dtype=torch.float32)
 
 # -------------------- Utilities -------------------- #
 def sbs_pack_gpu_rgb(left_t: torch.Tensor, right_t: torch.Tensor) -> np.ndarray:
@@ -605,7 +671,7 @@ def run_live(args, external_stop: threading.Event | None = None):
             pass
         raise RuntimeError("No frames arriving from capture")
 
-    print(f"🔥 CUDA available: {CUDA_AVAILABLE} | Using {'cuda' if CUDA_AVAILABLE else 'cpu'}")
+    print(f"🔥 Live_3D device: {LIVE_TORCH_BACKEND} | torch device: {LIVE_TORCH_DEVICE}")
 
     model_key = getattr(args, "model", "Depth Anything v2 Small")
     model_checkpoint = getattr(args, "model_checkpoint", None) or model_key
@@ -1008,7 +1074,7 @@ class LiveGUI:
         self.model_var = tk.StringVar(
             value="depth-anything/Depth-Anything-V2-Large-hf"
         )
-        self.fp16_var = tk.BooleanVar(value=CUDA_AVAILABLE)
+        self.fp16_var = tk.BooleanVar(value=is_live_cuda())
         self.infer_w_var = tk.IntVar(value=320)
         self.infer_h_var = tk.IntVar(value=180)
         self.depth_fps_var = tk.DoubleVar(value=5.0)
