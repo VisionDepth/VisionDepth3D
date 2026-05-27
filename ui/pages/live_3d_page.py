@@ -292,6 +292,8 @@ class Live3DPage(QWidget):
         self.bg_shift = self._double_spin(4.0, -50.0, 50.0, decimals=2, step=0.10)
         self.max_shift = self._double_spin(0.035, 0.001, 0.20, decimals=3, step=0.001)
         self.parallax_balance = self._double_spin(1.00, 0.0, 2.0, decimals=2, step=0.05)
+        self.zero_parallax = self._double_spin(-0.008, -0.10, 0.10, decimals=4, step=0.001)
+        self.convergence_strength = self._double_spin(0.00, -2.0, 2.0, decimals=3, step=0.01)
         self.depth_pop_gamma = self._double_spin(0.85, 0.10, 3.0, decimals=2, step=0.05)
 
         self.subject_tracking_check = self._checkbox("Use Subject Tracking")
@@ -324,14 +326,20 @@ class Live3DPage(QWidget):
         stereo_grid.addWidget(self._label("Parallax Balance"), 4, 0)
         stereo_grid.addWidget(self.parallax_balance, 4, 1)
 
-        stereo_grid.addWidget(self._label("Depth Pop Gamma"), 5, 0)
-        stereo_grid.addWidget(self.depth_pop_gamma, 5, 1)
+        stereo_grid.addWidget(self._label("Zero Parallax Strength"), 5, 0)
+        stereo_grid.addWidget(self.zero_parallax, 5, 1)
 
-        stereo_grid.addWidget(self.subject_tracking_check, 6, 0, 1, 2)
-        stereo_grid.addWidget(self.edge_masking_check, 7, 0, 1, 2)
-        stereo_grid.addWidget(self.feathering_check, 8, 0, 1, 2)
-        stereo_grid.addWidget(self.dynamic_convergence_check, 9, 0, 1, 2)
-        stereo_grid.addWidget(self.floating_window_check, 10, 0, 1, 2)
+        stereo_grid.addWidget(self._label("Convergence Strength"), 6, 0)
+        stereo_grid.addWidget(self.convergence_strength, 6, 1)
+
+        stereo_grid.addWidget(self._label("Depth Pop Gamma"), 7, 0)
+        stereo_grid.addWidget(self.depth_pop_gamma, 7, 1)
+
+        stereo_grid.addWidget(self.subject_tracking_check, 8, 0, 1, 2)
+        stereo_grid.addWidget(self.edge_masking_check, 9, 0, 1, 2)
+        stereo_grid.addWidget(self.feathering_check, 10, 0, 1, 2)
+        stereo_grid.addWidget(self.dynamic_convergence_check, 11, 0, 1, 2)
+        stereo_grid.addWidget(self.floating_window_check, 12, 0, 1, 2)
 
         center.addWidget(stereo_group)
 
@@ -472,8 +480,8 @@ class Live3DPage(QWidget):
 
             max_pixel_shift_percent=self.max_shift.value(),
             parallax_balance=self.parallax_balance.value(),
-            zero_parallax_strength=0.0,
-            convergence_strength=0.0,
+            zero_parallax_strength=self.zero_parallax.value(),
+            convergence_strength=self.convergence_strength.value(),
             dof_strength=0.0,
 
             depth_pop_gamma=self.depth_pop_gamma.value(),
