@@ -11,11 +11,16 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QStackedWidget,
     QMessageBox,
     QLabel,
     QPushButton,
     QSplitter,
+    QDialog,
+    QScrollArea,
+    QTextEdit,
+    QFrame,
 )
 
 from ui.pages.depth_generation_page import DepthGenerationPage
@@ -835,12 +840,7 @@ class MainWindow(QMainWindow):
 
         try:
             report = gpu_diagnostics(return_text=True)
-
-            QMessageBox.information(
-                self,
-                self._t("GPU Diagnostics"),
-                report,
-            )
+            self._show_gpu_diagnostics_dialog(report)
 
         except Exception as e:
             QMessageBox.warning(
@@ -848,6 +848,252 @@ class MainWindow(QMainWindow):
                 self._t("GPU Diagnostics"),
                 self._t("Could not detect GPU:") + f"\n{e}"
             )
+
+    def _parse_gpu_report(self, report: str) -> dict:
+        data = {}
+
+        for line in str(report or "").splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                data[key.strip()] = value.strip()
+
+        return data
+
+    def _diag_badge_style(self, value: str) -> str:
+        v = str(value or "").strip().lower()
+
+        if v in ("yes", "true", "ok") or " ok in " in v:
+            bg = "#065f46"
+            fg = "#d1fae5"
+        elif v in ("no", "false", "none", "(not found)", "missing", "not checked"):
+            bg = "#7f1d1d"
+            fg = "#fee2e2"
+        elif "failed" in v or "not found" in v or "missing" in v:
+            bg = "#7f1d1d"
+            fg = "#fee2e2"
+        elif "maybe" in v or "unavailable" in v:
+            bg = "#78350f"
+            fg = "#fef3c7"
+        else:
+            bg = "#374151"
+            fg = "#e5e7eb"
+
+        return (
+            f"background-color: {bg};"
+            f"color: {fg};"
+            "border-radius: 8px;"
+            "padding: 5px 8px;"
+            "font-weight: 700;"
+        )
+
+    def _add_gpu_diag_card(self, parent_layout, title: str, rows: list, data: dict):
+        card = QFrame()
+        card.setObjectName("GpuDiagCard")
+        card.setStyleSheet("""
+            QFrame#GpuDiagCard {
+                background-color: #1f2937;
+                border: 1px solid #374151;
+                border-radius: 14px;
+            }
+        """)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
+
+        title_label = QLabel(self._t(title))
+        title_label.setStyleSheet("""
+            color: #f9fafb;
+            font-size: 15px;
+            font-weight: 800;
+        """)
+        layout.addWidget(title_label)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+
+        for row, key in enumerate(rows):
+            value = data.get(key, self._t("Not checked"))
+
+            name_label = QLabel(self._t(key))
+            name_label.setStyleSheet("color: #d1d5db; font-size: 12px;")
+            name_label.setMinimumWidth(170)
+
+            value_label = QLabel(str(value))
+            value_label.setWordWrap(True)
+            value_label.setStyleSheet(self._diag_badge_style(str(value)))
+
+            grid.addWidget(name_label, row, 0)
+            grid.addWidget(value_label, row, 1)
+
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+
+        parent_layout.addWidget(card)
+    def _show_gpu_diagnostics_dialog(self, report: str):
+        data = self._parse_gpu_report(report)
+        active_backend = data.get("Active VD3D backend", "Unknown")
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("GPU Diagnostics"))
+        dialog.resize(860, 760)
+        dialog.setMinimumSize(760, 560)
+
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #0f172a;
+                color: #e5e7eb;
+            }
+
+            QScrollArea {
+                background-color: #0f172a;
+                border: none;
+            }
+
+            QTextEdit {
+                background-color: #020617;
+                color: #d1d5db;
+                border: 1px solid #374151;
+                border-radius: 10px;
+                padding: 8px;
+                font-family: Consolas;
+                font-size: 10pt;
+            }
+
+            QPushButton {
+                background-color: #374151;
+                color: #ffffff;
+                border: none;
+                border-radius: 9px;
+                padding: 9px 14px;
+                font-weight: 700;
+            }
+
+            QPushButton:hover {
+                background-color: #4b5563;
+            }
+
+            QPushButton#PrimaryButton {
+                background-color: #2563eb;
+            }
+
+            QPushButton#PrimaryButton:hover {
+                background-color: #1d4ed8;
+            }
+        """)
+
+        root_layout = QVBoxLayout(dialog)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet("background-color: #020617;")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(18, 16, 18, 14)
+        header_layout.setSpacing(6)
+
+        title = QLabel(self._t("VisionDepth3D GPU Diagnostics"))
+        title.setStyleSheet("color: #f8fafc; font-size: 22px; font-weight: 900;")
+        header_layout.addWidget(title)
+
+        backend = QLabel(f"{self._t('Active Backend:')} {active_backend}")
+        backend.setStyleSheet("color: #93c5fd; font-size: 13px; font-weight: 800;")
+        header_layout.addWidget(backend)
+
+        root_layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 12)
+        content_layout.setSpacing(10)
+
+        self._add_gpu_diag_card(content_layout, "Backend Summary", [
+            "GPU Diagnostics version",
+            "Active VD3D backend",
+            "PyTorch",
+        ], data)
+
+        self._add_gpu_diag_card(content_layout, "CUDA / NVIDIA", [
+            "CUDA available",
+            "torch.version.cuda",
+            "Device count",
+            "Device 0",
+            "cuDNN enabled",
+            "CUDA matmul OK in",
+            "NVIDIA driver",
+            "NVENC encoders listed",
+        ], data)
+
+        self._add_gpu_diag_card(content_layout, "DirectML", [
+            "DirectML available",
+            "DirectML device",
+            "DirectML matmul OK in",
+            "DirectML error",
+        ], data)
+
+        self._add_gpu_diag_card(content_layout, "FFmpeg Tools", [
+            "FFmpeg found",
+            "FFmpeg source",
+            "FFmpeg executable test",
+            "FFprobe found",
+            "FFprobe source",
+            "FFprobe executable test",
+        ], data)
+
+        self._add_gpu_diag_card(content_layout, "Install Paths", [
+            "App base",
+            "Bundle base",
+            "FFmpeg path",
+            "FFprobe path",
+        ], data)
+
+        raw_label = QLabel(self._t("Raw Diagnostic Log"))
+        raw_label.setStyleSheet("color: #f9fafb; font-size: 15px; font-weight: 800; margin-top: 8px;")
+        content_layout.addWidget(raw_label)
+
+        raw = QTextEdit()
+        raw.setReadOnly(True)
+        raw.setPlainText(report or "")
+        raw.setMinimumHeight(180)
+        content_layout.addWidget(raw)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+
+        root_layout.addWidget(scroll, 1)
+
+        button_bar = QWidget()
+        button_bar.setStyleSheet("background-color: #020617;")
+        button_layout = QHBoxLayout(button_bar)
+        button_layout.setContentsMargins(18, 12, 18, 12)
+
+        copy_btn = QPushButton(self._t("Copy Report"))
+        copy_btn.setObjectName("PrimaryButton")
+
+        close_btn = QPushButton(self._t("Close"))
+       
+
+        def copy_report():
+            clipboard = QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(report or "")
+
+        copy_btn.clicked.connect(copy_report)
+        close_btn.clicked.connect(dialog.accept)
+
+        button_layout.addWidget(copy_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(close_btn)
+
+        root_layout.addWidget(button_bar)
+
+        dialog.exec()
+
     def _on_language_changed(self, code: str):
         # Update checked state in the language menu
         for c, action in self._lang_actions.items():
