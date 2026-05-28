@@ -1277,7 +1277,13 @@ def estimate_subject_depth(depth_tensor: torch.Tensor) -> torch.Tensor:
     denom = w_sorted.sum() + 1e-8
     cdf = torch.cumsum(w_sorted, dim=0) / denom
 
-    idx = torch.searchsorted(cdf, torch.tensor(0.35, device=device, dtype=dtype))
+    # 35th percentile in white-near convention
+    target = torch.tensor(0.35, device=device, dtype=vals_sorted.dtype)
+
+    # DirectML does not support torch.searchsorted well.
+    # Count how many CDF values are below the target.
+    # This matches searchsorted(cdf, target) without forcing DML CPU fallback.
+    idx = (cdf < target).to(torch.int64).sum()
     idx = torch.clamp(idx, 0, vals_sorted.numel() - 1)
 
     return vals_sorted[idx]
