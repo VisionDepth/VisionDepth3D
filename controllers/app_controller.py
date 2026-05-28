@@ -10,6 +10,9 @@ from services.depth_service import DepthService, DepthCancelled
 
 from services.language_service import LanguageService
 from core.vd3d_live import run_live
+from core.debug_flags import debug_print, is_debug_enabled
+
+import copy
 
 class _DepthVar:
     """Minimal Tkinter Variable-compatible wrapper for depth pipeline args."""
@@ -40,13 +43,29 @@ class RenderWorker(QObject):
 
     def run(self):
         try:
+            debug_print(
+                "[RENDER WORKER STATE]",
+                f"format={getattr(self.state, 'output_format', None)}",
+                f"stereo_mode={getattr(self.state, 'stereo_mode', None)}",
+                f"use_ffmpeg={getattr(self.state, 'use_ffmpeg', None)}",
+                f"codec={getattr(self.state, 'selected_ffmpeg_codec', None)}",
+                f"dof_strength={getattr(self.state, 'dof_strength', None)}",
+                f"edge_repair_quality={getattr(self.state, 'edge_repair_quality', None)}",
+                f"enable_edge_masking={getattr(self.state, 'enable_edge_masking', None)}",
+                f"enable_feathering={getattr(self.state, 'enable_feathering', None)}",
+                f"use_subject_tracking={getattr(self.state, 'use_subject_tracking', None)}",
+                f"use_floating_window={getattr(self.state, 'use_floating_window', None)}",
+                f"sharpness={getattr(self.state, 'sharpness_factor', None)}",
+                f"preserve_hdr10={getattr(self.state, 'preserve_hdr10', None)}",
+            )
+
             outputs = self.render_service.start_3d_render(self.state)
             self.finished.emit(outputs)
+
         except RenderCancelled:
             self.failed.emit("__CANCELLED__")
         except Exception as e:
             self.failed.emit(str(e))
-
 
 class DepthWorker(QObject):
     finished = Signal(str)
@@ -187,10 +206,18 @@ class AppController(QObject):
         self.render_service.set_progress_callback(
             lambda payload: self.render_progress.emit(payload)
         )
+
+        # Freeze settings for this render.
+        # Prevents UI changes from mutating AppState while render thread is active.
+        try:
+            render_state = copy.deepcopy(self.state)
+        except Exception:
+            render_state = copy.copy(self.state)
+
         self.render_started.emit()
 
         self.render_thread = QThread()
-        self.render_worker = RenderWorker(self.render_service, self.state)
+        self.render_worker = RenderWorker(self.render_service, render_state)
         self.render_worker.moveToThread(self.render_thread)
 
         self.render_thread.started.connect(self.render_worker.run)

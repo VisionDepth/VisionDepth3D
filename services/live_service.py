@@ -5,7 +5,6 @@ import traceback
 from argparse import Namespace
 
 from PySide6.QtCore import QObject, Signal
-from core.vd3d_live import run_live
 
 class LiveWorker(QObject):
     started = Signal()

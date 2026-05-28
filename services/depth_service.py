@@ -1,9 +1,12 @@
 import threading
 import time
 import re
+import logging
 from pathlib import Path
 
 from models.depth_state import DepthState
+
+logger = logging.getLogger(__name__)
 
 
 class DepthCancelled(Exception):
@@ -21,13 +24,7 @@ class VarAdapter:
         self._value = value
 
     def strip(self):
-        s = str(self._value).strip()
-        if s.isdigit():
-            return int(s)
-        try:
-            return float(s)
-        except ValueError:
-            return s
+        return str(self._value).strip()
 
     def __str__(self):
         return str(self._value)
@@ -36,8 +33,10 @@ class VarAdapter:
         return bool(self._value)
 
     def __eq__(self, other):
+        if isinstance(other, VarAdapter):
+            return self._value == other._value
         return self._value == other
-
+        
     def __hash__(self):
         return hash(self._value)
 
@@ -65,6 +64,13 @@ class DepthProgressProxy:
         if key == "maximum":
             return self._maximum
         return None
+        
+    def cget(self, key):
+        if key == "value":
+            return self.value
+        if key == "maximum":
+            return self._maximum
+        return None
 
     def config(self, **kwargs):
         if "maximum" in kwargs:
@@ -79,6 +85,30 @@ class DepthProgressProxy:
 
     def configure(self, **kwargs):
         self.config(**kwargs)
+
+    def cget(self, key):
+        if key == "text":
+            return self.text
+        return None
+
+    def after(self, delay_ms, callback=None, *args):
+        """
+        Tk-compatible .after() replacement for the PySide6 worker bridge.
+
+        Important:
+        Do NOT spawn threading.Timer per frame. The depth worker already runs
+        in a background QThread, and config() emits a Qt signal safely through
+        the controller callback.
+        """
+        if callback is None:
+            return None
+
+        try:
+            callback(*args)
+        except Exception:
+            logger.exception("Depth progress proxy after() callback failed")
+
+        return None
 
     def update(self):
         pass
@@ -116,12 +146,30 @@ class DepthProgressLabelProxy:
     def winfo_toplevel(self):
         return self
 
-    def after(self, delay_ms, callback):
-        import threading as _threading
-        timer = _threading.Timer(delay_ms / 1000.0, callback)
-        timer.daemon = True
-        timer.start()
+    def after(self, delay_ms, callback=None, *args):
+        """
+        Tk-compatible .after() replacement for the PySide6 worker bridge.
 
+        Important:
+        The old version spawned threading.Timer for every status update.
+        process_video2 can call this every frame, which creates massive
+        overhead and can make depth rendering crawl.
+
+        We execute immediately in the depth worker thread. The callback calls
+        config(), which emits progress through the service callback/Qt signal.
+        """
+        if callback is None:
+            return None
+
+        try:
+            callback(*args)
+        except Exception:
+            logger.exception("Depth progress label after() callback failed")
+
+        return None
+
+    def after_cancel(self, timer):
+        return None
 
 class DepthService:
     """Service that wraps the legacy render_depth.process_video2 function
@@ -140,6 +188,30 @@ class DepthService:
     def set_progress_callback(self, callback):
         self.progress_callback = callback
 
+    def _call_legacy_control(self, function_name):
+        try:
+            import core.render_depth as render_depth
+            function = getattr(render_depth, function_name, None)
+            if callable(function):
+                function()
+        except Exception:
+            logger.debug("Failed to call core.render_depth.%s", function_name, exc_info=True)
+
+    def _set_legacy_event(self, event_name, action):
+        try:
+            import core.render_depth as render_depth
+            event = getattr(render_depth, event_name, None)
+            method = getattr(event, action, None)
+            if callable(method):
+                method()
+        except Exception:
+            logger.debug(
+                "Failed to %s core.render_depth.%s",
+                action,
+                event_name,
+                exc_info=True,
+            )
+
     def _parse_hms(self, text):
         try:
             parts = str(text).strip().split(":")
@@ -153,7 +225,6 @@ class DepthService:
             pass
 
         return None
-
 
     def _parse_depth_status_text(self, text):
         """
@@ -244,55 +315,64 @@ class DepthService:
             remaining_units = max(0.0, total_units - completed_units)
             eta = remaining_units / fps_like
 
-        self.progress_callback({
+        payload = {
             "progress": percent,
             "status_text": active_status_text,
             "elapsed": elapsed,
             "eta": eta,
             "fps_like": fps_like,
             "rate_label": "FPS",
-        })
+        }
+
+        try:
+            self.progress_callback(payload)
+        except Exception:
+            logger.exception("Depth progress callback failed")
         
     def request_suspend(self):
-        try:
-            from core.render_depth import request_depth_pause
-            request_depth_pause()
-        except Exception:
-            pass
+        self._call_legacy_control("request_depth_pause")
         self.suspend_flag.set()
-        import core.render_depth
-        core.render_depth.suspend_flag.set()
+        self._set_legacy_event("suspend_flag", "set")
 
     def request_resume(self):
-        try:
-            from core.render_depth import request_depth_resume
-            request_depth_resume()
-        except Exception:
-            pass
+        self._call_legacy_control("request_depth_resume")
         self.suspend_flag.clear()
-        import core.render_depth
-        core.render_depth.suspend_flag.clear()
+        self._set_legacy_event("suspend_flag", "clear")
 
     def request_cancel(self):
-        try:
-            from core.render_depth import request_depth_cancel
-            request_depth_cancel()
-        except Exception:
-            pass
+        self._call_legacy_control("request_depth_cancel")
         self.cancel_flag.set()
-        import core.render_depth
-        core.render_depth.cancel_flag.set()
-        core.render_depth.cancel_requested.set()
+        self._set_legacy_event("cancel_flag", "set")
+        self._set_legacy_event("cancel_requested", "set")
 
     def reset_flags(self):
         self.suspend_flag.clear()
         self.cancel_flag.clear()
+
+        # Important: core.render_depth uses module-level flags too.
+        # If these are not cleared, a new depth job can immediately cancel.
+        self._set_legacy_event("suspend_flag", "clear")
+        self._set_legacy_event("cancel_flag", "clear")
+        self._set_legacy_event("cancel_requested", "clear")
 
     def start_depth_processing(self, state: DepthState) -> str:
         if not state.input_video_path:
             raise ValueError("No input video selected.")
         if not state.output_dir:
             raise ValueError("No output directory selected.")
+        
+        input_path = Path(state.input_video_path)
+        if not input_path.is_file():
+            raise ValueError(f"Input video does not exist: {input_path}")
+
+        output_dir_path = Path(state.output_dir)
+        if output_dir_path.exists() and not output_dir_path.is_dir():
+            raise ValueError(f"Output path is not a directory: {output_dir_path}")
+
+        try:
+            output_dir_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise ValueError(f"Could not create output directory: {output_dir_path}") from e
 
         self.reset_flags()
         self.start_time = time.time()
@@ -302,23 +382,32 @@ class DepthService:
         from core.render_depth import process_video2
         import cv2
 
-        # Get the real frame count for progress display
-        cap = cv2.VideoCapture(state.input_video_path)
-        real_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 1
-        cap.release()
+        # Get the real frame count for progress display.
+        # Fail early if OpenCV cannot open the video; otherwise progress is misleading.
+        cap = cv2.VideoCapture(str(input_path))
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"Could not open input video: {input_path}")
+
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            real_total = int(frame_count) if frame_count and frame_count > 0 else 1
+        finally:
+            cap.release()
         
         self.progress["maximum"] = max(1, real_total)
         self.progress["value"] = 0
 
         batch_size_value = state.batch_size
         try:
-            if hasattr(batch_size_value, 'get'):
+            if hasattr(batch_size_value, "get"):
                 batch_size = int(batch_size_value.get())
             else:
                 batch_size = int(batch_size_value)
         except (ValueError, TypeError):
             batch_size = 4
-        output_dir = VarAdapter(state.output_dir)
+
+        batch_size = max(1, batch_size)
+        output_dir = VarAdapter(str(output_dir_path))
         inference_res_text = VarAdapter(state.inference_resolution)
         status_label = self.progress_label
         progress_bar = self.progress
@@ -334,8 +423,8 @@ class DepthService:
         disable_scene_normalization = getattr(state, "disable_scene_normalization", False)
 
         try:
-            process_video2(
-                file_path=state.input_video_path,
+            result_path = process_video2(
+                file_path=str(input_path),
                 total_frames_all=real_total,
                 frames_processed_all=0,
                 batch_size=batch_size,
@@ -356,12 +445,15 @@ class DepthService:
             )
         except Exception as e:
             if self.cancel_flag.is_set():
-                raise DepthCancelled("Depth processing cancelled.")
-            raise RuntimeError(f"Depth processing failed: {e}")
+                raise DepthCancelled("Depth processing cancelled.") from e
+            raise RuntimeError(f"Depth processing failed: {e}") from e
 
         if self.cancel_flag.is_set():
             raise DepthCancelled("Depth processing cancelled.")
 
-        input_stem = Path(state.input_video_path).stem
-        output_path = Path(state.output_dir) / f"{input_stem}_depth.mkv"
+        if isinstance(result_path, (str, Path)) and result_path:
+            return str(result_path)
+
+        input_stem = input_path.stem
+        output_path = output_dir_path / f"{input_stem}_depth.mkv"
         return str(output_path)

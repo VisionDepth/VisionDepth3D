@@ -1,8 +1,24 @@
 # DB.py — Depth Blender with path pickers + frames OR videos + Live Preview & Frame Scrubber
-import os, gc, cv2, math, time, numpy as np, threading, queue, tkinter as tk
+import os, gc, cv2, numpy as np, threading, queue, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 
+# PyTorch's expandable_segments CUDA allocator option is not supported on
+# some platforms/builds, especially Windows. If inherited from the launcher
+# environment, remove only that option before importing torch.
+if os.name == "nt":
+    conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    if "expandable_segments" in conf:
+        kept = [
+            part.strip()
+            for part in conf.split(",")
+            if part.strip() and not part.strip().startswith("expandable_segments")
+        ]
+        if kept:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(kept)
+        else:
+            os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+            
 # --- Universal PyTorch device selector ---
 try:
     import torch
@@ -29,18 +45,20 @@ def detect_white_threshold(image, percentile=95):
     return np.percentile(image, percentile)
 
 def create_soft_white_mask(image, threshold, softness=0.1):
-    normalized = (image - threshold) / (255 * softness)
-    mask = 1 / (1 + np.exp(-normalized))
-    return (mask * 255).astype(np.uint8)
+    softness = max(float(softness), 1e-6)
+    normalized = (image.astype(np.float32) - float(threshold)) / (255.0 * softness)
+    normalized = np.clip(normalized, -60.0, 60.0)
+    mask = 1.0 / (1.0 + np.exp(-normalized))
+    return (mask * 255.0).astype(np.uint8)
 
 def boost_whites(image, threshold, boost_percent=30):
     wmask = create_soft_white_mask(image, threshold)
     boosted = image * (1 + (boost_percent / 100.0) * (wmask / 255.0))
     return np.clip(boosted, 0, 255).astype(np.uint8)
 
-def blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=35, white_strength=1.0):
+def blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=35, white_strength=1.0, threshold=None):
     k = int(blur_kernel_size) | 1
-    thr = detect_white_threshold(v2_map)
+    thr = detect_white_threshold(v2_map) if threshold is None else float(threshold)
     v1_w = create_soft_white_mask(v1_map, thr)
     v2_w = create_soft_white_mask(v2_map, thr)
     v1_unique_mask = cv2.subtract(v1_w, v2_w)
@@ -52,9 +70,16 @@ def blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=35, white_strength=
     return blended
 
 def normalize_to_v2(blended_map, v2_map):
-    v2_mean, v2_std = float(np.mean(v2_map)), float(np.std(v2_map))
-    b_mean, b_std   = float(np.mean(blended_map)), float(np.std(blended_map)) or 1.0
-    out = (blended_map - b_mean) * (v2_std / b_std) + v2_mean
+    v2_mean, v2_std = cv2.meanStdDev(v2_map)
+    b_mean, b_std = cv2.meanStdDev(blended_map)
+
+    v2_mean = float(v2_mean[0, 0])
+    v2_std = float(v2_std[0, 0])
+    b_mean = float(b_mean[0, 0])
+    b_std = max(float(b_std[0, 0]), 1e-6)
+
+    out = blended_map.astype(np.float32)
+    out = (out - b_mean) * (v2_std / b_std) + v2_mean
     return np.clip(out, 0, 255).astype(np.uint8)
 
 # ------------ Torch helpers ------------
@@ -66,11 +91,20 @@ def _from_torch_u8_gray(t):
     t = t.clamp(0, 1).squeeze().detach().cpu().numpy()
     return (t * 255.0 + 0.5).astype(np.uint8)
 
-def _gauss_kernel_1d(sig, radius=None, device="cpu", dtype=torch.float32):
+def _gauss_kernel_1d(sig, radius=None, device="cpu", dtype=None):
+    if torch is None:
+        raise RuntimeError("PyTorch is not available.")
+
+    if dtype is None:
+        dtype = torch.float32
+
+    sig = max(float(sig), 1e-6)
+
     if radius is None:
         radius = int(max(3, round(3.0 * sig)))
+
     x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
-    k = torch.exp(-(x**2) / (2 * sig**2))
+    k = torch.exp(-(x ** 2) / (2 * sig ** 2))
     k = (k / k.sum()).view(1, 1, -1)
     return k, radius
 
@@ -91,27 +125,48 @@ def _sigmoid_soft_mask_torch(img_u8, threshold_u8, softness=0.1, device="cpu"):
     s = max(float(softness), 1e-4)
     m = torch.sigmoid((t - thr) / s)
     return m
+    
+def _sigmoid_soft_mask_from_torch(t, threshold_u8, softness=0.1):
+    thr = float(threshold_u8) / 255.0
+    s = max(float(softness), 1e-4)
+    return torch.sigmoid((t - thr) / s)
 
-def _blend_whites_torch(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0, device="cpu"):
-    thr = np.percentile(v2_u8, 95)
-    m1 = _sigmoid_soft_mask_torch(v1_u8, thr, 0.10, device=device)
-    m2 = _sigmoid_soft_mask_torch(v2_u8, thr, 0.10, device=device)
-    m_unique = (m1 - m2).clamp(0, 1)
+def _blend_whites_torch_tensor(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0,
+                               device="cpu", threshold=None):
+    thr = np.percentile(v2_u8, 95) if threshold is None else float(threshold)
 
     v1 = _to_torch_u8_gray(v1_u8).to(device)
     v2 = _to_torch_u8_gray(v2_u8).to(device)
+
+    m1 = _sigmoid_soft_mask_from_torch(v1, thr, 0.10)
+    m2 = _sigmoid_soft_mask_from_torch(v2, thr, 0.10)
+    m_unique = (m1 - m2).clamp(0, 1)
 
     cap = float(thr) / 255.0
     v1_cap = torch.minimum(v1, torch.tensor(cap, device=device, dtype=v1.dtype))
 
     trans = _gaussian_blur_torch(m_unique, sigma=float(blur_sigma), device=device).clamp(0, 1)
     out = v2 * (1.0 - trans) + v1_cap * (trans * float(white_strength))
+
+    return out, v2
+
+
+def _blend_whites_torch(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0,
+                        device="cpu", threshold=None):
+    out, _ = _blend_whites_torch_tensor(
+        v1_u8,
+        v2_u8,
+        blur_sigma=blur_sigma,
+        white_strength=white_strength,
+        device=device,
+        threshold=threshold
+    )
     return _from_torch_u8_gray(out)
 
-def _median_blur_torch(t, kernel=3, device="cpu"):
-    """Fast approximate median blur using average pool as proxy (GPU)."""
+def _average_blur_torch(t, kernel=3):
+    """Fast GPU average blur used as an approximation for smoothing."""
     pad = kernel // 2
-    t_pad = F.pad(t, (pad, pad, pad, pad), mode='reflect')
+    t_pad = F.pad(t, (pad, pad, pad, pad), mode="reflect")
     return F.avg_pool2d(t_pad, kernel, stride=1)
 
 def _normalize_to_v2_torch_gpu(blended_t, v2_t):
@@ -143,25 +198,32 @@ def lighten_beta(v1_map, v2_map,
 
     # --- GPU path: keep everything on GPU ---
     if use_gpu and (device is not None and device.type != "cpu"):
-        sigma = max(1.0, (int(blur_k) - 1) / 6.0)
-        blended = _blend_whites_torch(v1_map, v2_map, blur_sigma=sigma,
-                                      white_strength=float(white_strength), device=device)
-        blended_t = _to_torch_u8_gray(blended).to(device)
+        with torch.inference_mode():
+            sigma = max(1.0, (int(blur_k) - 1) / 6.0)
 
-        # GPU percentile stretch (CLAHE proxy)
-        lo = torch.quantile(blended_t, 0.02)
-        hi = torch.quantile(blended_t, 0.98)
-        if hi - lo > 1e-6:
-            blended_t = (blended_t - lo) / (hi - lo)
-        blended_t = blended_t.clamp(0, 1)
+            blended_t, v2_t = _blend_whites_torch_tensor(
+                v1_map,
+                v2_map,
+                blur_sigma=sigma,
+                white_strength=float(white_strength),
+                device=device,
+                threshold=thr
+            )
 
-        # GPU edge-aware blur (bilateral proxy)
-        blended_t = _median_blur_torch(blended_t, kernel=3, device=device)
+            # GPU percentile stretch, CLAHE proxy
+            lo = torch.quantile(blended_t, 0.02)
+            hi = torch.quantile(blended_t, 0.98)
+            if hi - lo > 1e-6:
+                blended_t = (blended_t - lo) / (hi - lo)
+            blended_t = blended_t.clamp(0, 1)
 
-        # GPU normalize to V2
-        v2_t = _to_torch_u8_gray(v2_map).to(device)
-        blended_t = _normalize_to_v2_torch_gpu(blended_t, v2_t)
-        blended = _from_torch_u8_gray(blended_t)
+            # GPU smoothing proxy
+            blended_t = _average_blur_torch(blended_t, kernel=3)
+
+            # GPU normalize to V2
+            blended_t = _normalize_to_v2_torch_gpu(blended_t, v2_t)
+
+            blended = _from_torch_u8_gray(blended_t)
 
         blended = boost_whites(blended, thr, boost_percent=30)
         return blended
@@ -170,8 +232,13 @@ def lighten_beta(v1_map, v2_map,
     h, w = v2_map.shape
     tg = (min(tile_grid[0], w), min(tile_grid[1], h))
 
-    blended = blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=int(blur_k),
-                                      white_strength=float(white_strength))
+    blended = blend_whites_seamlessly(
+        v1_map,
+        v2_map,
+        blur_kernel_size=int(blur_k),
+        white_strength=float(white_strength),
+        threshold=thr
+    )
     clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tg)
     blended = clahe.apply(blended)
     blended = cv2.bilateralFilter(blended, int(d), float(sC), float(sS))
@@ -202,22 +269,34 @@ class FramesWorker(threading.Thread):
             if not v1_files or not v2_files:
                 self.log("No PNG frames found in one of the folders.")
                 return
-            n = min(len(v1_files), len(v2_files))
-            if n == 0:
-                self.log("No matching frames to process.")
+            common_files = sorted(set(v1_files) & set(v2_files))
+            if not common_files:
+                self.log("No matching PNG filenames found between V1 and V2 folders.")
                 return
+
+            if len(common_files) != len(v1_files) or len(common_files) != len(v2_files):
+                self.log(
+                    f"Warning: processing {len(common_files)} matching frames; "
+                    f"V1 has {len(v1_files)}, V2 has {len(v2_files)}."
+                )
+
+            n = len(common_files)
 
             if self.out_mode == "output_folder":
                 os.makedirs(self.out_path, exist_ok=True)
 
             self.prog(0, n)
             done = 0
+            stopped = False
+
             for i in range(n):
                 if self.stop_evt.is_set():
+                    stopped = True
                     self.log("Stopped by user.")
                     break
-                v1p = os.path.join(self.v1_dir, v1_files[i])
-                v2p = os.path.join(self.v2_dir, v2_files[i])
+                fname = common_files[i]
+                v1p = os.path.join(self.v1_dir, fname)
+                v2p = os.path.join(self.v2_dir, fname)
                 v1 = cv2.imread(v1p, cv2.IMREAD_GRAYSCALE)
                 v2 = cv2.imread(v2p, cv2.IMREAD_GRAYSCALE)
                 if v1 is None or v2 is None:
@@ -241,16 +320,22 @@ class FramesWorker(threading.Thread):
                     blended = cv2.resize(blended, (self.out_w, self.out_h), interpolation=cv2.INTER_LANCZOS4)
 
                 if self.out_mode == "overwrite_v2":
-                    cv2.imwrite(v2p, blended)
+                    dest = v2p
                 else:
-                    cv2.imwrite(os.path.join(self.out_path, v2_files[i]), blended)
+                    dest = os.path.join(self.out_path, fname)
+
+                if not cv2.imwrite(dest, blended):
+                    self.log(f"Failed to write frame: {dest}")
 
                 done += 1
                 self.prog(done, n)
                 del v1, v2, blended
-                if (i+1) % 500 == 0:
+                if (i + 1) % 1000 == 0:
                     gc.collect()
-            self.log("Done.")
+            if stopped:
+                self.log(f"Stopped. Processed {done}/{n} frames.")
+            else:
+                self.log("Done.")
         except Exception as e:
             self.log(f"Error: {e}")
 
@@ -268,6 +353,10 @@ class VideosWorker(threading.Thread):
     def prog(self, done, total): self.qprog.put((done, total))
 
     def run(self):
+        cap1 = None
+        cap2 = None
+        writer = None
+
         try:
             cap1, cap2 = cv2.VideoCapture(self.v1_file), cv2.VideoCapture(self.v2_file)
             if not cap1.isOpened() or not cap2.isOpened():
@@ -281,7 +370,7 @@ class VideosWorker(threading.Thread):
             ok1, fr1 = cap1.read()
             if not ok1 or not ok2:
                 self.log("Could not read first frames.")
-                cap1.release(); cap2.release(); return
+                return
 
             v1g = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
             v2g = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
@@ -294,7 +383,10 @@ class VideosWorker(threading.Thread):
 
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             os.makedirs(os.path.dirname(self.out_file) or ".", exist_ok=True)
-            writer = cv2.VideoWriter(self.out_file, fourcc, fps, (out_w, out_h), isColor=False)
+            writer = cv2.VideoWriter(self.out_file, fourcc, fps, (out_w, out_h), isColor=True)
+            if not writer.isOpened():
+                self.log(f"Could not open video writer: {self.out_file}")
+                return
 
             done = 0
             self.prog(0, total if total > 0 else 1)
@@ -318,13 +410,16 @@ class VideosWorker(threading.Thread):
 
             # Process first frame
             blended = process_pair(v1g, v2g)
-            writer.write(blended)
+            writer.write(cv2.cvtColor(blended, cv2.COLOR_GRAY2BGR))
             done += 1
             self.prog(done, total if total > 0 else done)
 
             # Process remaining frames
+            stopped = False
+
             while True:
                 if self.stop_evt.is_set():
+                    stopped = True
                     self.log("Stopped by user.")
                     break
                 ok1, fr1 = cap1.read()
@@ -338,17 +433,27 @@ class VideosWorker(threading.Thread):
                     v2g = cv2.resize(v2g, (v1g.shape[1], v1g.shape[0]), interpolation=cv2.INTER_AREA)
 
                 blended = process_pair(v1g, v2g)
-                writer.write(blended)
+                writer.write(cv2.cvtColor(blended, cv2.COLOR_GRAY2BGR))
 
                 done += 1
-                if done % 100 == 0:
+                if done % 1000 == 0:
                     gc.collect()
                 self.prog(done, total if total > 0 else done)
 
-            writer.release(); cap1.release(); cap2.release()
-            self.log(f"Done. Saved: {self.out_file}")
+            if stopped:
+                self.log(f"Stopped. Partial video saved: {self.out_file}")
+            else:
+                self.log(f"Done. Saved: {self.out_file}")
         except Exception as e:
             self.log(f"Error: {e}")
+
+        finally:
+            if writer is not None:
+                writer.release()
+            if cap1 is not None:
+                cap1.release()
+            if cap2 is not None:
+                cap2.release()
 
 
 # ---- small helpers for preview visuals ----
@@ -406,6 +511,7 @@ class App(tk.Tk):
 
         self.qlog = queue.Queue()
         self.qprog = queue.Queue()
+        self.qpreview = queue.Queue(maxsize=1)
         self.stop_evt = threading.Event()
         self.worker = None
         self.after(100, self._poll)
@@ -467,8 +573,11 @@ class App(tk.Tk):
                                         variable=self.overwrite_v2, command=self._toggle_out_controls)
         self.chk_over.grid(row=0, column=0, sticky="w", padx=6)
         ttk.Label(outf, text="Output path/file:").grid(row=1, column=0, sticky="e")
-        ttk.Entry(outf, textvariable=self.out_path, width=40).grid(row=1, column=1, sticky="we", padx=6)
-        ttk.Button(outf, text="Browse…", command=self._browse_out).grid(row=1, column=2, padx=4)
+        self.out_entry = ttk.Entry(outf, textvariable=self.out_path, width=40)
+        self.out_entry.grid(row=1, column=1, sticky="we", padx=6)
+
+        self.out_browse_btn = ttk.Button(outf, text="Browse…", command=self._browse_out)
+        self.out_browse_btn.grid(row=1, column=2, padx=4)
 
         sizef = ttk.LabelFrame(parent, text="Final Size (optional)")
         sizef.pack(fill="x", padx=6, pady=6)
@@ -507,6 +616,30 @@ class App(tk.Tk):
         self.btn_preview.grid(row=0, column=0, padx=4)
         self.btn_start.grid(row=0, column=1, padx=4)
         self.btn_stop.grid(row=0, column=2, padx=4)
+
+    def _preview_snapshot(self):
+        v1p = self.v1_path.get().strip()
+        v2p = self.v2_path.get().strip()
+
+        if not v1p or not v2p:
+            return None
+
+        return {
+            "mode": self.mode.get(),
+            "v1p": v1p,
+            "v2p": v2p,
+            "idx": int(self.preview_index.get()),
+            "use_gpu": bool(self.use_gpu.get()),
+            "params": {
+                "white_strength": float(self.white_strength.get()),
+                "blur_k": int(self.blur_k.get()),
+                "clip_limit": float(self.clip_limit.get()),
+                "tile_grid": int(self.tile_grid.get()),
+                "bf_d": int(self.bf_d.get()),
+                "bf_sigmaColor": int(self.bf_sigmaColor.get()),
+                "bf_sigmaSpace": int(self.bf_sigmaSpace.get()),
+            },
+        }
 
     def _add_slider(self, parent, label, mn, mx, var, row):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=6)
@@ -587,7 +720,12 @@ class App(tk.Tk):
         self._schedule_preview(0)
 
     def _toggle_out_controls(self):
-        pass
+        if self.mode.get() == "frames" and self.overwrite_v2.get():
+            self.out_entry.state(["disabled"])
+            self.out_browse_btn.state(["disabled"])
+        else:
+            self.out_entry.state(["!disabled"])
+            self.out_browse_btn.state(["!disabled"])
 
     def _nudge_preview(self, delta):
         cur = int(self.preview_index.get())
@@ -602,9 +740,10 @@ class App(tk.Tk):
         if self.mode.get() == "frames":
             v1p, v2p = self.v1_path.get().strip(), self.v2_path.get().strip()
             try:
-                n1 = len([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
-                n2 = len([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
-                mx = max(0, min(n1, n2) - 1)
+                v1_files = {f for f in os.listdir(v1p) if f.lower().endswith(".png")}
+                v2_files = {f for f in os.listdir(v2p) if f.lower().endswith(".png")}
+                common_files = v1_files & v2_files
+                mx = max(0, len(common_files) - 1)
             except Exception:
                 mx = 0
         else:
@@ -627,8 +766,29 @@ class App(tk.Tk):
             messagebox.showerror("Missing paths", "Please select both V1 and V2 paths.")
             return
 
-        out_w = int(self.w_var.get()) if self.w_var.get().strip().isdigit() else None
-        out_h = int(self.h_var.get()) if self.h_var.get().strip().isdigit() else None
+        w_txt = self.w_var.get().strip()
+        h_txt = self.h_var.get().strip()
+
+        if bool(w_txt) != bool(h_txt):
+            messagebox.showerror("Invalid size", "Enter both width and height, or leave both blank.")
+            return
+
+        out_w = out_h = None
+        if w_txt and h_txt:
+            if not w_txt.isdigit() or not h_txt.isdigit():
+                messagebox.showerror("Invalid size", "Width and height must be positive integers.")
+                return
+
+            out_w = int(w_txt)
+            out_h = int(h_txt)
+
+            if out_w <= 0 or out_h <= 0:
+                messagebox.showerror("Invalid size", "Width and height must be greater than zero.")
+                return
+
+            if mode == "videos" and (out_w % 2 != 0 or out_h % 2 != 0):
+                messagebox.showerror("Invalid video size", "Video width and height should be even numbers.")
+                return
 
         params = {
             "white_strength": float(self.white_strength.get()),
@@ -686,62 +846,93 @@ class App(tk.Tk):
         with self._preview_lock:
             if self._preview_thread and self._preview_thread.is_alive():
                 return
-            self._preview_thread = threading.Thread(target=self._compute_preview, daemon=True)
+
+            snapshot = self._preview_snapshot()
+            if snapshot is None:
+                return
+
+            self._preview_thread = threading.Thread(
+                target=self._compute_preview,
+                args=(snapshot,),
+                daemon=True
+            )
             self._preview_thread.start()
 
-    def _compute_preview(self):
+    def _compute_preview(self, snapshot):
         try:
-            mode = self.mode.get()
-            v1p, v2p = self.v1_path.get().strip(), self.v2_path.get().strip()
-            if not v1p or not v2p:
-                return
-            idx = int(self.preview_index.get())
+            mode = snapshot["mode"]
+            v1p = snapshot["v1p"]
+            v2p = snapshot["v2p"]
+            idx = snapshot["idx"]
             if mode == "frames":
                 v1_files = sorted([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
                 v2_files = sorted([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
-                if not v1_files or not v2_files: return
-                idx = max(0, min(idx, min(len(v1_files), len(v2_files)) - 1))
-                v1 = cv2.imread(os.path.join(v1p, v1_files[idx]), cv2.IMREAD_GRAYSCALE)
-                v2 = cv2.imread(os.path.join(v2p, v2_files[idx]), cv2.IMREAD_GRAYSCALE)
+                common_files = sorted(set(v1_files) & set(v2_files))
+                if not common_files:
+                    return
+
+                idx = max(0, min(idx, len(common_files) - 1))
+                fname = common_files[idx]
+
+                v1 = cv2.imread(os.path.join(v1p, fname), cv2.IMREAD_GRAYSCALE)
+                v2 = cv2.imread(os.path.join(v2p, fname), cv2.IMREAD_GRAYSCALE)
                 if v1 is None or v2 is None: return
                 if v1.shape != v2.shape:
                     v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
             else:
-                cap1, cap2 = cv2.VideoCapture(v1p), cv2.VideoCapture(v2p)
-                if not cap1.isOpened() or not cap2.isOpened():
-                    if cap1: cap1.release()
-                    if cap2: cap2.release()
-                    return
-                cap1.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ok1, fr1 = cap1.read(); ok2, fr2 = cap2.read()
-                cap1.release(); cap2.release()
-                if not ok1 or not ok2: return
-                v1 = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
-                v2 = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
-                if v1.shape != v2.shape:
-                    v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
+                cap1 = None
+                cap2 = None
 
-            params = {
-                "white_strength": float(self.white_strength.get()),
-                "blur_k": int(self.blur_k.get()),
-                "clip_limit": float(self.clip_limit.get()),
-                "tile_grid": int(self.tile_grid.get()),
-                "bf_d": int(self.bf_d.get()),
-                "bf_sigmaColor": int(self.bf_sigmaColor.get()),
-                "bf_sigmaSpace": int(self.bf_sigmaSpace.get()),
-            }
-            out = lighten_beta(v1, v2, use_gpu=self.use_gpu.get(), **params)
+                try:
+                    cap1, cap2 = cv2.VideoCapture(v1p), cv2.VideoCapture(v2p)
+                    if not cap1.isOpened() or not cap2.isOpened():
+                        return
+
+                    cap1.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
+
+                    ok1, fr1 = cap1.read()
+                    ok2, fr2 = cap2.read()
+
+                    if not ok1 or not ok2:
+                        return
+
+                    v1 = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
+                    v2 = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
+
+                    if v1.shape != v2.shape:
+                        v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
+
+                finally:
+                    if cap1 is not None:
+                        cap1.release()
+                    if cap2 is not None:
+                        cap2.release()
+
+            out = lighten_beta(
+                v1,
+                v2,
+                use_gpu=snapshot["use_gpu"],
+                **snapshot["params"]
+            )
             vis_v2 = cv2.cvtColor(v2, cv2.COLOR_GRAY2BGR)
             vis_out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
             panel = np.hstack([_put_label(vis_v2, "V2 Base"), _put_label(vis_out, f"Blended Preview (idx {idx})")])
             panel = _resize_max(panel, max_w=840, max_h=520)
-            im = Image.fromarray(cv2.cvtColor(panel, cv2.COLOR_BGR2RGB))
-            imgtk = ImageTk.PhotoImage(im)
-            self._preview_imgtk = imgtk
-            self.preview_canvas.after(0, lambda: self._redraw_preview(imgtk))
-        except Exception:
-            pass
+            rgb = cv2.cvtColor(panel, cv2.COLOR_BGR2RGB)
+
+            try:
+                while True:
+                    self.qpreview.get_nowait()
+            except queue.Empty:
+                pass
+
+            try:
+                self.qpreview.put_nowait(rgb)
+            except queue.Full:
+                pass
+        except Exception as e:
+            self.qlog.put(f"Preview error: {e}")
 
     def _set_prog(self, done, total):
         self.prog["maximum"] = max(total, 1)
@@ -766,6 +957,17 @@ class App(tk.Tk):
                 self._set_prog(d, t)
         except queue.Empty:
             pass
+            
+        latest_rgb = None
+        try:
+            while True:
+                latest_rgb = self.qpreview.get_nowait()
+        except queue.Empty:
+            pass
+
+        if latest_rgb is not None:
+            imgtk = ImageTk.PhotoImage(Image.fromarray(latest_rgb))
+            self._redraw_preview(imgtk)
         if self.worker and not self.worker.is_alive():
             self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
         self.after(100, self._poll)

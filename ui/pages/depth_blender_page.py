@@ -9,13 +9,14 @@ from PySide6.QtWidgets import (
 )
 
 from ui.styles.page_theme import apply_unified_page_theme
+from core.debug_flags import debug_print
 
 import cv2
 import numpy as np
 import threading
 import queue
 import os
-
+import time
 
 class DepthBlenderPage(QWidget):
     progress_updated = Signal(dict)
@@ -68,6 +69,7 @@ class DepthBlenderPage(QWidget):
 
         # Worker
         self._last_progress = 0
+        self._blend_start_time = None
         self.qlog = queue.Queue()
         self.qprog = queue.Queue()
         self.stop_evt = threading.Event()
@@ -686,7 +688,19 @@ class DepthBlenderPage(QWidget):
         self.stop_evt.clear()
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        
+        self._last_progress = 0
+        self._blend_start_time = time.monotonic()
 
+        self.progress_updated.emit({
+            "progress": 0,
+            "done": 0,
+            "total": 0,
+            "fps_like": 0.0,
+            "elapsed": 0,
+            "eta": None,
+            "rate_label": "FPS",
+        })
 
         if self.mode == "image":
             v1 = cv2.imread(self.v1_path, cv2.IMREAD_GRAYSCALE)
@@ -804,19 +818,33 @@ class DepthBlenderPage(QWidget):
             self._log("Stopping requested...")
 
     def _log(self, msg):
-        print(f"[Depth Blender] {msg}")
+        from core.debug_flags import debug_print
+        debug_print(f"[Depth Blender] {msg}")
+
+
+    def _set_prog(self, done, total):
+        total = max(int(total or 1), 1)
+        done = max(0, min(int(done or 0), total))
+
+        self._last_progress = (done / total) * 100.0
+
+        start = self._blend_start_time or time.monotonic()
+        elapsed = max(0.001, time.monotonic() - start)
+        fps = done / elapsed if done > 0 else 0.0
+
+        remaining = max(0, total - done)
+        eta = (remaining / fps) if fps > 0 else None
+
         self.progress_updated.emit({
             "progress": self._last_progress,
-            "status_text": msg,
+            "done": done,
+            "total": total,
+            "fps_like": fps,
+            "elapsed": elapsed,
+            "eta": eta,
+            "rate_label": "FPS",
         })
         
-    def _set_prog(self, done, total):
-        self._last_progress = (done / max(total, 1)) * 100
-        self.progress_updated.emit({
-            "progress": self._last_progress,
-            "status_text": f"Blending: {done}/{total}",
-        })
-
     def _start_poller(self):
         self._poller = QTimer()
         self._poller.timeout.connect(self._poll)
@@ -832,10 +860,10 @@ class DepthBlenderPage(QWidget):
         try:
             while True:
                 d, t = self.qprog.get_nowait()
-                self._last_progress = (d / max(t, 1)) * 100
-                self._log(f"Blending: {d}/{t}")
+                self._set_prog(d, t)
         except queue.Empty:
             pass
+            
         if self.worker and not self.worker.is_alive():
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)

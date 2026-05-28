@@ -1,12 +1,14 @@
+import copy
+import os
+import subprocess
 import threading
 import time
 from pathlib import Path
 
 from core.ffmpeg_utils import require_tool
 from models.app_state import AppState
+from core.debug_flags import debug_print, is_debug_enabled
 
-import copy
-import os
 
 from core.render_3d import (
     process_video,
@@ -17,7 +19,11 @@ from core.render_3d import (
     hidden_subprocess_kwargs,
 )
 
-import subprocess
+try:
+    from services.keyframe_service import KeyframeService
+except ImportError:
+    KeyframeService = None
+
 class RenderCancelled(Exception):
     pass
     
@@ -28,46 +34,53 @@ def apply_3d_suffix(base_out: str, output_format: str, eye_mode: str) -> str:
     path = Path(base_out)
     base = str(path.with_suffix(""))
     ext = path.suffix
-    
-    fmt = output_format.strip().lower()
-    mode = eye_mode.strip().lower()
 
-    suffix = ""
+    fmt = (output_format or "").strip().lower()
+    mode = (eye_mode or "").strip().lower()
 
-    # --- VR180 (DeoVR compliant naming) ---
+    format_suffix = ""
+
+    # --- VR180 / packed format naming ---
     if fmt == "vr180 equirect (tb)":
-        suffix = "_TB_180"
+        format_suffix = "_TB_180"
     elif fmt == "vr180 equirect (sbs)":
-        suffix = "_SBS_180"
+        format_suffix = "_SBS_180"
 
-    # --- Standard Stereo ---
-    elif mode == "sbs":
+    eye_suffix = ""
+
+    if mode == "sbs":
         if fmt == "full-sbs":
-            suffix = "_LR_Full_SBS"
+            format_suffix = "_LR_Full_SBS"
         elif fmt == "half-sbs":
-            suffix = "_LR_Half_SBS"
+            format_suffix = "_LR_Half_SBS"
         elif fmt == "vr":
-            suffix = "_VR"
+            format_suffix = "_VR"
         elif fmt == "red-cyan anaglyph":
-            suffix = "_Anaglyph"
+            format_suffix = "_Anaglyph"
         elif fmt == "passive interlaced":
-            suffix = "_Interlaced"
+            format_suffix = "_Interlaced"
 
     elif mode == "left":
-        suffix = "_LR_Left"
+        eye_suffix = "_LR_Left"
 
     elif mode == "right":
-        suffix = "_LR_Right"
+        eye_suffix = "_LR_Right"
 
     elif mode == "both":
-        pass  # handled elsewhere if you later split outputs
+        pass
+
+    suffix = f"{format_suffix}{eye_suffix}"
 
     if not suffix:
         return base_out
 
-    # Avoid doubling suffix if user re-renders to a previously suffixed path
+    # Avoid doubling the full suffix.
     if base.endswith(suffix):
         return f"{base}{ext}"
+
+    # If user selected a pre-suffixed packed VR180 path, avoid doubling the format suffix.
+    if format_suffix and eye_suffix and base.endswith(format_suffix):
+        return f"{base}{eye_suffix}{ext}"
 
     return f"{base}{suffix}{ext}"
 
@@ -144,32 +157,87 @@ class RenderService:
     def set_progress_callback(self, callback):
         self.progress_callback = callback
 
+    def _parse_fps_from_status_text(self, status_text):
+        """
+        Extracts real render FPS from strings like:
+        '12.34% | FPS: 7.21 | Elapsed: 00:01:20 | ETA: 01:40:00'
+
+        Returns float or None.
+        """
+        if not status_text:
+            return None
+
+        text = str(status_text)
+        marker = "FPS:"
+
+        if marker not in text:
+            return None
+
+        try:
+            tail = text.split(marker, 1)[1].strip()
+            value_text = tail.split("|", 1)[0].strip()
+            value_text = value_text.split()[0].strip()
+            return float(value_text)
+        except Exception:
+            return None
+
     def _emit_progress_update(self, progress=None, status_text=None):
         if not self.progress_callback:
             return
 
         now = time.time()
         elapsed = 0.0
-        fps = 0.0
+        fps_like = 0.0
         eta = None
+        rate_label = "FPS"
 
         if self.render_start_time is not None:
             elapsed = now - self.render_start_time
 
         current_progress = self.progress.value if progress is None else progress
+        callback_progress = float(current_progress)
 
-        if elapsed > 0 and current_progress > 0:
+        if self._batch_total is not None and self._batch_index is not None:
+            total = max(1, int(self._batch_total))
+            index = max(1, int(self._batch_index))
+
+            inner_progress = max(0.0, min(100.0, float(current_progress))) / 100.0
+            completed_items = max(0.0, (index - 1) + inner_progress)
+
+            callback_progress = max(0.0, min(100.0, (completed_items / total) * 100.0))
+
+            if self._batch_start_time is not None:
+                elapsed = now - self._batch_start_time
+
+            if elapsed > 0 and completed_items > 0:
+                fps_like = completed_items / elapsed
+                remaining_items = max(0.0, total - completed_items)
+                eta = remaining_items / fps_like if fps_like > 0 else None
+
+            rate_label = self._batch_rate_label or "FPS"
+
+        elif elapsed > 0 and current_progress > 0:
             fps_like = current_progress / elapsed
-            fps = fps_like
             remaining = max(0.0, 100.0 - current_progress)
             eta = (remaining / current_progress) * elapsed if current_progress > 0 else None
 
+        final_status_text = status_text if status_text is not None else self.progress_label.text
+
+        # The render backend already formats real frame FPS into status_text.
+        # Do not display percent-per-second as FPS.
+        parsed_render_fps = self._parse_fps_from_status_text(final_status_text)
+
+        if parsed_render_fps is not None:
+            fps_like = parsed_render_fps
+            rate_label = "FPS"
+
         self.progress_callback({
-            "progress": float(current_progress),
-            "status_text": status_text if status_text is not None else self.progress_label.text,
+            "progress": float(callback_progress),
+            "status_text": final_status_text,
             "elapsed": elapsed,
             "eta": eta,
-            "fps_like": fps,
+            "fps_like": fps_like,
+            "rate_label": rate_label,
         })
 
     def request_suspend(self):
@@ -184,6 +252,37 @@ class RenderService:
     def reset_flags(self):
         self.suspend_flag.clear()
         self.cancel_flag.clear()
+        
+    def _load_keyframe_service(self, state: AppState):
+        """
+        Loads 3D render keyframes from AppState when enabled.
+        Returns None when keyframes are disabled or no valid keyframe file is set.
+        """
+        if not getattr(state, "keyframes_enabled", False):
+            return None
+
+        keyframes_path = str(getattr(state, "keyframes_path", "") or "").strip()
+
+        if not keyframes_path:
+            print("[3D KEYFRAME] Keyframes enabled, but no keyframe file path was set.")
+            return None
+
+        if KeyframeService is None:
+            raise RuntimeError("Keyframes are enabled, but services.keyframe_service could not be imported.")
+
+        path = Path(keyframes_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Keyframe file does not exist: {keyframes_path}")
+
+        service = KeyframeService.load(path)
+
+        if not service.has_keyframes():
+            print(f"[3D KEYFRAME] Keyframe file loaded but contains no keyframes: {keyframes_path}")
+            return None
+
+        print(f"[3D KEYFRAME] Loaded {len(service.keyframes)} keyframe(s): {keyframes_path}")
+        return service
 
     def _get_aspect_ratios(self):
         return {
@@ -227,7 +326,7 @@ class RenderService:
             if depth_stem == f"{source_stem}_depth":
                 return depth_file
 
-            if depth_stem.replace("_depth", "") == source_stem:
+            if depth_stem.endswith("_depth") and depth_stem[:-len("_depth")] == source_stem:
                 return depth_file
 
         return None
@@ -278,6 +377,15 @@ class RenderService:
         finally:
             cap.release()
 
+    def _validate_split_eye_output_format(self, output_format: str):
+        fmt = str(output_format or "").strip().lower()
+
+        if fmt in {"red-cyan anaglyph", "passive interlaced"}:
+            raise ValueError(
+                f"Stereo Output left/right/both is not supported for {output_format}. "
+                "Use Full-SBS, Half-SBS, VR, or VR180 SBS/TB."
+            )
+
     def _split_sbs_filter(self, *, side: str, output_format: str, width: int, height: int) -> str:
         fmt = str(output_format).strip().lower()
 
@@ -320,6 +428,8 @@ class RenderService:
         cmd = [
             ffmpeg_exe,
             "-hide_banner",
+            "-nostats",
+            "-loglevel", "error",
             "-y",
             "-i", input_path,
             "-vf", vf,
@@ -363,19 +473,55 @@ class RenderService:
 
         print("[SPLIT EYE CMD]", " ".join(str(x) for x in cmd))
 
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             **hidden_subprocess_kwargs(),
         )
 
-        if result.returncode != 0:
+        stderr = ""
+
+        while True:
+            if self.cancel_flag.is_set():
+                process.kill()
+                _, stderr = process.communicate()
+                stderr = stderr or ""
+
+                try:
+                    if output.exists():
+                        output.unlink()
+                except Exception as exc:
+                    print(f"[SPLIT EYE] Could not delete partial output after cancel: {exc}")
+
+                raise RenderCancelled("Render cancelled while splitting eye output.")
+
+            try:
+                _, stderr = process.communicate(timeout=0.25)
+                stderr = stderr or ""
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        if process.returncode != 0:
+            try:
+                if output.exists():
+                    output.unlink()
+            except Exception as exc:
+                print(f"[SPLIT EYE] Could not delete failed split output: {exc}")
+
             raise RuntimeError(
-                f"Failed to split eye output:\n{output_path}\n\n{result.stderr[-4000:]}"
+                f"Failed to split eye output:\n{output_path}\n\n{stderr[-4000:]}"
             )
 
         if not output.exists() or output.stat().st_size <= 1000:
+            try:
+                if output.exists():
+                    output.unlink()
+            except Exception as exc:
+                print(f"[SPLIT EYE] Could not delete invalid split output: {exc}")
+
             raise RuntimeError(f"Split eye output was not created correctly: {output_path}")
 
         return str(output)
@@ -386,19 +532,37 @@ class RenderService:
 
         start_s = parse_timecode(getattr(state, "clip_start", ""))
 
-        base, ext = os.path.splitext(video_path)
-        output_with_audio = base + "_audio" + ext
+        video = Path(video_path)
+        temp_audio_output = str(video.with_name(f"{video.stem}.__vd3d_audio_merge{video.suffix}"))
 
-        print(f"🔊 Merging original audio into split eye output: {Path(video_path).name}")
-        merged = merge_audio_from_source(
+        print(f"🔊 Merging original audio into split eye output: {video.name}")
+
+        merged_path = merge_audio_from_source(
             video_path,
             state.input_video_path,
-            output_with_audio,
+            temp_audio_output,
             start_s=start_s,
         )
-        print("🎧 Split eye audio merge done!")
 
-        return merged
+        merged = Path(merged_path or temp_audio_output)
+
+        if not merged.exists() or merged.stat().st_size <= 1000:
+            raise RuntimeError(f"Audio merge failed or produced an invalid file: {merged}")
+
+        # Keep the user's expected output path. Replace the silent crop with the audio-merged file.
+        if merged.resolve() != video.resolve():
+            os.replace(str(merged), str(video))
+
+        # Best-effort cleanup if merge_audio_from_source created something extra.
+        try:
+            temp_path = Path(temp_audio_output)
+            if temp_path.exists() and temp_path.resolve() != video.resolve():
+                temp_path.unlink()
+        except Exception as exc:
+            print(f"[SPLIT EYE] Could not clean audio temp file: {exc}")
+
+        print("🎧 Split eye audio merge done!")
+        return str(video)
 
     def _start_split_eye_video_render(self, state: AppState, requested_eye_mode: str) -> list[str]:
         """
@@ -407,41 +571,50 @@ class RenderService:
         Instead of rendering left and right as separate full render passes,
         render one normal SBS temp file, then split the finished SBS into
         left/right mono-eye videos.
-        """
+        """       
+        output_format = getattr(state, "output_format", "Full-SBS")
+        self._validate_split_eye_output_format(output_format)
+        
         temp_output = self._temp_sbs_output_path(state.output_path)
+        temp_done = None
 
         temp_state = copy.copy(state)
         temp_state.stereo_mode = "sbs"
         temp_state.keep_original_audio = False
 
-        self.progress_label.config(
-            text="Rendering temporary SBS for eye split..."
-        )
-
-        temp_done = self._run_process_video(
-            state=temp_state,
-            eye_mode="sbs",
-            resolved_output_path=temp_output,
-        )
-
-        if isinstance(temp_done, (list, tuple)):
-            temp_done = temp_done[0]
-
-        width, height = self._get_video_size(temp_done)
-
-        left_output, right_output = self._split_eye_output_paths(
-            state.output_path,
-            state.output_format,
-        )
-
         outputs = []
 
         try:
+            self.progress_label.config(
+                text="Rendering temporary SBS for eye split..."
+            )
+
+            temp_done = self._run_process_video(
+                state=temp_state,
+                eye_mode="sbs",
+                resolved_output_path=temp_output,
+            )
+
+            if isinstance(temp_done, (list, tuple)):
+                temp_done = temp_done[0]
+
+            width, height = self._get_video_size(temp_done)
+
+            left_output, right_output = self._split_eye_output_paths(
+                state.output_path,
+                output_format,
+            )
+
+            if requested_eye_mode == "both" and Path(left_output) == Path(right_output):
+                raise RuntimeError(
+                    f"Left and right split-eye outputs resolved to the same path: {left_output}"
+                )
+                
             if requested_eye_mode in ("left", "both"):
                 self.progress_label.config(text="Splitting left eye output...")
                 vf_left = self._split_sbs_filter(
                     side="left",
-                    output_format=state.output_format,
+                    output_format=output_format,
                     width=width,
                     height=height,
                 )
@@ -461,7 +634,7 @@ class RenderService:
                 self.progress_label.config(text="Splitting right eye output...")
                 vf_right = self._split_sbs_filter(
                     side="right",
-                    output_format=state.output_format,
+                    output_format=output_format,
                     width=width,
                     height=height,
                 )
@@ -587,8 +760,14 @@ class RenderService:
         zero_parallax_strength = VarAdapter(getattr(state, "zero_parallax_strength", 0.0))
         enable_edge_masking = VarAdapter(getattr(state, "enable_edge_masking", True))
         enable_feathering = VarAdapter(getattr(state, "enable_feathering", True))
+
+        # Make sure the UI edge repair dropdown reaches render_sbs_3d().
+        edge_repair_quality = VarAdapter(getattr(state, "edge_repair_quality", "Fast"))
+
         skip_blank_frames = VarAdapter(getattr(state, "skip_blank_frames", False))
-        dof_strength = VarAdapter(getattr(state, "dof_strength", 2.0))
+
+        # Default DOF must be OFF unless explicitly enabled.
+        dof_strength = VarAdapter(getattr(state, "dof_strength", 0.0))
         convergence_strength = VarAdapter(getattr(state, "convergence_strength", 0.0))
         enable_dynamic_convergence = VarAdapter(getattr(state, "enable_dynamic_convergence", True))
         disable_shift_ema = VarAdapter(getattr(state, "disable_shift_ema", False))
@@ -600,10 +779,17 @@ class RenderService:
         fg_pop_multiplier = VarAdapter(getattr(state, "fg_pop_multiplier", 1.20))
         bg_push_multiplier = VarAdapter(getattr(state, "bg_push_multiplier", 1.10))
         subject_lock_strength = VarAdapter(getattr(state, "subject_lock_strength", 1.00))
+
+        subject_plane_lock_strength = VarAdapter(
+            getattr(state, "subject_plane_lock_strength", 0.0)
+        )
+        subject_plane_lock_width = VarAdapter(
+            getattr(state, "subject_plane_lock_width", 0.08)
+        )
+
         foreground_curvature_strength = VarAdapter(
             getattr(state, "foreground_curvature_strength", 0.06)
         )
-
         color_saturation = VarAdapter(getattr(state, "saturation", 1.0))
         color_contrast = VarAdapter(getattr(state, "contrast", 1.0))
         color_brightness = VarAdapter(getattr(state, "brightness", 0.0))
@@ -622,6 +808,23 @@ class RenderService:
         vr180_hfov_deg = VarAdapter(getattr(state, "vr180_hfov_deg", 110.0))
 
         aspect_ratios = self._get_aspect_ratios()
+        keyframe_service = self._load_keyframe_service(state)        
+
+        debug_print(
+            "[3D SETTINGS]",
+            f"format={getattr(state, 'output_format', None)}",
+            f"eye_mode={eye_mode}",
+            f"use_ffmpeg={getattr(state, 'use_ffmpeg', None)}",
+            f"codec={getattr(state, 'selected_ffmpeg_codec', None)}",
+            f"dof_strength={getattr(state, 'dof_strength', None)}",
+            f"edge_repair_quality={getattr(state, 'edge_repair_quality', None)}",
+            f"enable_edge_masking={getattr(state, 'enable_edge_masking', None)}",
+            f"enable_feathering={getattr(state, 'enable_feathering', None)}",
+            f"use_subject_tracking={getattr(state, 'use_subject_tracking', None)}",
+            f"use_floating_window={getattr(state, 'use_floating_window', None)}",
+            f"sharpness={getattr(state, 'sharpness_factor', None)}",
+            f"preserve_hdr10={getattr(state, 'preserve_hdr10', None)}",
+        )
 
         out_path_done = process_video(
             input_video_path,
@@ -666,6 +869,8 @@ class RenderService:
             fg_pop_multiplier,
             bg_push_multiplier,
             subject_lock_strength,
+            subject_plane_lock_strength,
+            subject_plane_lock_width,
             foreground_curvature_strength,
             color_saturation,
             color_contrast,
@@ -682,6 +887,8 @@ class RenderService:
             vr180_flat_h_var=vr180_flat_h,
             vr180_hfov_deg_var=vr180_hfov_deg,
             disable_shift_ema=disable_shift_ema,
+            keyframe_service=keyframe_service,
+            edge_repair_quality=edge_repair_quality,
         )
 
         if self.cancel_flag.is_set():
@@ -754,6 +961,8 @@ class RenderService:
             fg_pop_multiplier=getattr(state, "fg_pop_multiplier", 1.20),
             bg_push_multiplier=getattr(state, "bg_push_multiplier", 1.10),
             subject_lock_strength=getattr(state, "subject_lock_strength", 1.00),
+            subject_plane_lock_strength=getattr(state, "subject_plane_lock_strength", 0.0),
+            subject_plane_lock_width=getattr(state, "subject_plane_lock_width", 0.08),
             foreground_curvature_strength=getattr(state, "foreground_curvature_strength", 0.06),
             color_saturation=getattr(state, "saturation", 1.0),
             color_contrast=getattr(state, "contrast", 1.0),
@@ -778,6 +987,11 @@ class RenderService:
         self.render_start_time = time.time()
         self.progress.value = 0
         self.progress_label.text = ""
+
+        self._batch_total = None
+        self._batch_index = None
+        self._batch_start_time = None
+        self._batch_rate_label = "FPS"
 
         if mode == "image":
             return self._start_single_image_render(state)
@@ -890,35 +1104,51 @@ class RenderService:
         outputs = []
         total = len(video_files)
 
-        for index, video_file in enumerate(video_files, start=1):
-            if self.cancel_flag.is_set():
-                raise RenderCancelled("Render cancelled.")
+        self._batch_total = total
+        self._batch_index = 1
+        self._batch_start_time = time.time()
+        self._batch_rate_label = "Videos/s"
 
-            depth_file = self._find_matching_depth_file(video_file, depth_files)
+        try:
+            for index, video_file in enumerate(video_files, start=1):
+                if self.cancel_flag.is_set():
+                    raise RenderCancelled("Render cancelled.")
 
-            if depth_file is None:
-                print(f"[Batch 3D] Skipping, no matching depth map: {video_file.name}")
-                continue
+                self._batch_index = index
 
-            base_output = output_dir / f"{video_file.stem}.mp4"
+                depth_file = self._find_matching_depth_file(video_file, depth_files)
 
-            job_state = self._clone_state_for_job(
-                state,
-                input_path=video_file,
-                depth_path=depth_file,
-                output_path=base_output,
-            )
+                if depth_file is None:
+                    print(f"[Batch 3D] Skipping, no matching depth map: {video_file.name}")
+                    continue
 
-            self.progress_label.config(
-                text=f"Batch video {index}/{total}: {video_file.name}"
-            )
+                base_output = output_dir / f"{video_file.stem}.mp4"
 
-            outputs.extend(self._start_single_video_render(job_state))
+                job_state = self._clone_state_for_job(
+                    state,
+                    input_path=video_file,
+                    depth_path=depth_file,
+                    output_path=base_output,
+                )
 
-        if not outputs:
-            raise RuntimeError("Batch video render finished, but no files were created.")
+                self.progress_label.config(
+                    text=f"Batch video {index}/{total}: {video_file.name}"
+                )
 
-        return outputs
+                outputs.extend(self._start_single_video_render(job_state))
+
+            if not outputs:
+                raise RuntimeError("Batch video render finished, but no files were created.")
+
+            self._batch_index = total
+            self._set_manual_progress(100, "Batch video render complete.")
+            return outputs
+
+        finally:
+            self._batch_total = None
+            self._batch_index = None
+            self._batch_start_time = None
+            self._batch_rate_label = "FPS"
 
     def _start_image_folder_render(self, state: AppState) -> list[str]:
         input_dir = Path(state.input_video_path)

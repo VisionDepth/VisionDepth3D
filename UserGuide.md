@@ -19,63 +19,99 @@ This user guide walks you through the complete VisionDepth3D workflow, including
 
 By the end of this guide, you’ll be able to confidently create smooth, comfortable, and high-quality 3D content using VD3D from start to finish.
 
+
 ---
+
+## Where to Start: Recommended VD3D Workflow
+
+If you are new to VisionDepth3D, start here before jumping into every feature.
+
+The cleanest workflow is:
+
+1. **Prepare your source video**  
+   Check the source resolution, frame rate, aspect ratio, and whether it has black bars. If your video changes aspect ratio during the movie, split it into separate sections first.
+
+2. **Generate a depth map**  
+   Go to the [Depth Estimation Tab](#depth-estimation-tab) and render a matching depth video from your source. For most users, a Depth Anything V2 model is a good starting point.
+
+3. **Use Depth Normalization when stability matters**  
+   In the [Depth Estimation Tab](#depth-normalization), keep Depth Normalization enabled when you want smoother frame-to-frame depth stability. Disable it only when you need faster rendering and can accept more depth breathing.
+
+4. **Optionally blend depth maps**  
+   If one depth model gives better subjects and another gives better backgrounds, use the [Depth Blender Tab](#depth-blender-tab) to combine them.
+
+5. **Load the source and depth video into the 3D Generator**  
+   Go to the [3D Generator Tab](#3d-generator-tab), load the original video, load the matching depth video, and choose your output format.
+
+6. **Tune the stereo effect in preview first**  
+   Use [Preview Modes](#preview-modes), especially **Anaglyph**, **Shift Heatmap**, and **Overlay Arrows**, before running a full render.
+
+7. **Set the screen plane and subject behavior**  
+   Use [Screen Plane Offset](#screen-plane-offset-formerly-zero-parallax), [Subject Lock](#subject-lock), and [Dynamic Convergence](#dynamic-convergence) to keep the scene comfortable and stable.
+
+8. **Choose edge repair quality**  
+   Use [Edge Repair Quality](#edge-repair-quality) to balance render speed against cleaner edges and disocclusion repair.
+
+9. **Use VR180 settings only when making VR180 output**  
+   If you are creating VR180 content, configure [VR180 Output Settings](#vr180-output-settings) after choosing the VR180 output format.
+
+10. **Render a short test clip first**  
+    Use [Clip Range Rendering](#clip-range-rendering) to test 10 to 20 seconds before committing to a full movie.
+
+11. **Render the final video**  
+    Once the preview and test clip look good, render the full video using your chosen codec and quality settings.
+
+---
+
+## Quick Feature Map
+
+| Goal | Start Here |
+|---|---|
+| Make a depth map | [Depth Estimation Tab](#depth-estimation-tab) |
+| Stabilize depth over time | [Depth Normalization](#depth-normalization) |
+| Combine two depth sources | [Depth Blender Tab](#depth-blender-tab) |
+| Convert 2D video to 3D | [3D Generator Tab](#3d-generator-tab) |
+| Tune stereo depth safely | [Preview Modes](#preview-modes) and [Depth and Parallax Controls](#depth-and-parallax-controls) |
+| Control where the screen plane sits | [Screen Plane Offset](#screen-plane-offset-formerly-zero-parallax) |
+| Keep subjects stable | [Subject Lock](#subject-lock) |
+| Add rounded foreground shape | [Foreground Curvature](#foreground-curvature) |
+| Reduce edge artifacts | [Edge Repair Quality](#edge-repair-quality) |
+| Create VR180 output | [VR180 Output Settings](#vr180-output-settings) |
+| Improve FPS or upscale | [FPS / Upscale Enhancer](#fps--upscale-enhancer) |
+| Use real-time 3D | [VD3D Live](#vd3d-live-real-time-2d-to-3d) |
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [FPS / Upscale Enhancer](#fps--upscale-enhancer)
-   - [Extract Frames from Video](#1-extract-frames-from-video)
-   - [Configure Output Video](#2-configure-output-video)
-   - [Set Output Resolution](#3-set-output-resolution)
-   - [Set Original FPS](#4-set-original-fps)
-   - [Configure FPS Interpolation (RIFE)](#5-configure-fps-interpolation-rife)
-   - [Choose Video Codec](#6-choose-video-codec)
-   - [ESRGAN Upscaling Settings](#7-esrgan-upscaling-settings)
-   - [Choosing a Processing Mode](#choosing-a-processing-mode)
-
-3. [Depth Estimation Tab](#depth-estimation-tab)
+2. [Where to Start: Recommended VD3D Workflow](#where-to-start-recommended-vd3d-workflow)
+3. [Quick Feature Map](#quick-feature-map)
+4. [FPS / Upscale Enhancer](#fps--upscale-enhancer)
+5. [Depth Estimation Tab](#depth-estimation-tab)
    - [Quick Start: Render Your First Depth Map](#quick-start-render-your-first-depth-map)
+   - [Depth Normalization](#depth-normalization)
    - [Adjusting Quality and Performance](#adjusting-quality-and-performance)
    - [Output Formats](#output-formats)
-
-4. [Depth Blender Tab](#depth-blender-tab)
-   - [Quick Start](#quick-start)
-   - [Blend Parameters](#blend-parameters)
-   - [Running a Batch](#running-a-batch)
-
-5. [3D Generator Tab](#3d-generator-tab)
-   - [Getting Started](#getting-started-1)
-   - [Using Preview Modes for Tuning](#using-preview-modes-for-tuning)
-   - [Sliders and Settings](#sliders-and-settings)
-   - [Optional Advanced Controls](#optional-advanced-controls)
-   - [Clip Range (Optional)](#clip-range-optional)
-
-6. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
-   - [Quick Start: Live Screen 3D](#quick-start-live-screen-3d)
-   - [Live Preview Controls (Hotkeys)](#live-preview-controls-hotkeys)
-   - [What Each Capture Setting Does](#what-each-capture-setting-does)
-   - [External Output Options](#external-output-options)
-   - [Audio Device (Optional Monitor)](#audio-device-optional-monitor)
-   - [Recommended Settings for Screen Live 3D](#recommended-settings-for-screen-live-3d)
-   - [Troubleshooting](#troubleshooting)
-
-7. [Recommended Workflow Summary](#recommended-workflow-summary)
-8. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
-9. [Hardware / Backend Support](#hardware--backend-support)
-   - [NVIDIA CUDA, Recommended](#nvidia-cuda-recommended)
-   - [AMD / Intel on Windows, DirectML](#amd--intel-on-windows-directml)
-   - [AMD on Linux, ROCm](#amd-on-linux-rocm)
-   - [CPU Fallback](#cpu-fallback)
-   - [FFmpeg Hardware Encoders](#ffmpeg-hardware-encoders)
-   - [Recommended Setup by User Type](#recommended-setup-by-user-type)
-   - [Backend Troubleshooting](#backend-troubleshooting)
-   - [VD3D Live v4.0 Shift Value Update](#vd3d-live-v40-shift-value-update)
-10. [Performance Optimization Tips](#performance-optimization-tips)
-11. [Common Issues & Fixes](#common-issues--fixes)
-12. [When to Use Depth Blending](#when-to-use-depth-blending)
-13. [Support & Updates](#support--updates)
-14. [End of User Manual](#end-of-user-manual)
+6. [Depth Blender Tab](#depth-blender-tab)
+7. [3D Generator Tab](#3d-generator-tab)
+   - [Important: New VisionDepth3D Shift Direction](#important-new-visiondepth3d-shift-direction)
+   - [Getting Started](#getting-started)
+   - [VR180 Output Settings](#vr180-output-settings)
+   - [Preview Modes](#preview-modes)
+   - [Depth and Parallax Controls](#depth-and-parallax-controls)
+   - [Screen Plane Offset](#screen-plane-offset-formerly-zero-parallax)
+   - [Subject Lock](#subject-lock)
+   - [Foreground Curvature](#foreground-curvature)
+   - [Edge Repair Quality](#edge-repair-quality)
+   - [Clip Range Rendering](#clip-range-rendering)
+8. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
+9. [Recommended Workflow Summary](#recommended-workflow-summary)
+10. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
+11. [Hardware / Backend Support](#hardware--backend-support)
+12. [Performance Optimization Tips](#performance-optimization-tips)
+13. [Common Issues & Fixes](#common-issues--fixes)
+14. [When to Use Depth Blending](#when-to-use-depth-blending)
+15. [Support & Updates](#support--updates)
+16. [End of User Manual](#end-of-user-manual)
 
 
 ---
@@ -355,6 +391,23 @@ If you run out of memory, reduce this first.
 Flips near and far values.
 
 Enable this if foreground objects appear darker when they should be closer.
+
+---
+
+### Depth Normalization
+
+Depth Normalization stabilizes the depth range across video frames.
+
+When enabled, VD3D analyzes the depth output and keeps the near/far range more consistent over time. This helps reduce depth flicker, sudden depth jumps, and frame-to-frame breathing during video depth generation.
+
+Recommended behavior:
+
+| Setting | Best For |
+|---|---|
+| Depth Normalization On | Full movies, smoother depth, better 3D stability |
+| Depth Normalization Off | Faster depth rendering, quick tests, users who want maximum speed |
+
+Depth Normalization can cost some render speed depending on the model, resolution, and hardware. If you need the fastest possible depth render, disable it. If you want smoother depth for final 3D conversion, leave it enabled.
 
 ---
 
@@ -796,6 +849,57 @@ NVENC H.264 or NVENC H.265 is recommended for NVIDIA users who want faster encod
 
 ---
 
+## VR180 Output Settings
+
+VR180 output is used when creating stereoscopic video for VR headsets.
+
+VisionDepth3D supports VR180-style output modes such as:
+
+- **VR180 Equirect Top-Bottom**
+- **VR180 Equirect Side-by-Side**
+
+Use these modes when you want the final render to be viewed as immersive VR180 content instead of a normal flat SBS video.
+
+### VR180 Equirect Presets
+
+VR180 equirect presets control the final per-eye equirectangular output size.
+
+Common presets include:
+
+| Preset | Use Case |
+|---|---|
+| 2048×1024 per eye | Faster tests, lower VRAM use |
+| 3072×1536 per eye | Balanced VR output |
+| 3840×1920 per eye | High-quality VR output |
+| 4096×2048 per eye | Very high quality |
+| 5760×2880 per eye | Heavy showcase renders |
+
+Higher VR180 resolutions create sharper headset output, but require more GPU memory, longer render time, and larger files.
+
+### VR180 Flat Working Presets
+
+Flat working presets control the internal flat stereo render before it is warped into VR180.
+
+Common working presets include:
+
+| Preset | Use Case |
+|---|---|
+| 1280×720 | Fast tests |
+| 1920×1080 | Balanced quality |
+| 2560×1440 | Cleaner source before VR warp |
+
+If the VR180 output looks soft, increase the flat working size first. If rendering is too slow, reduce the flat working size or choose a lower VR180 equirect preset.
+
+### VR180 Tips
+
+- Start with a lower preset for testing.
+- Use short clip ranges before full VR180 renders.
+- Keep Max Pixel Shift moderate for headset comfort.
+- Avoid extreme pop-out close to the frame edges.
+- Use Floating Window and Edge Repair when strong foreground objects approach the side borders.
+
+---
+
 ### 4. Configure Processing Options
 
 Use **Processing Options** to control stereo stability, edge behavior, and render safety.
@@ -808,7 +912,7 @@ Common recommended options:
 - **Auto Crop Black Bars**  
   Detects and removes letterbox bars before stereo generation when appropriate.
 
-- **Stabilize Zero-Parallax**  
+- **Stabilize Screen Plane**  
   Helps keep the subject or dominant depth region closer to the screen plane.
 
 - **Skip Blank / White Frames**  
@@ -819,6 +923,9 @@ Common recommended options:
 
 - **Enable Feathering**  
   Softens transitions between shifted regions.
+
+- **Edge Repair Quality**  
+  Lets you choose Off, Fast, Balanced, High, or Showcase edge repair depending on whether you want faster rendering or cleaner disocclusion repair.
 
 - **Enable Dynamic Convergence**  
   Smooths convergence changes across scenes.
@@ -1067,18 +1174,23 @@ For aggressive pop-out testing, reduce convergence strength or disable dynamic c
 
 ---
 
-### Zero Parallax Strength
+### Screen Plane Offset (formerly Zero Parallax)
 
-Fine-tunes the depth level that sits at the screen surface.
+Screen Plane Offset replaces the older **Zero Parallax** naming.
+
+This control fine-tunes where the stereo screen plane sits. The screen plane is the depth position where the left and right eyes line up with no perceived pop-out or recession.
 
 Use this when:
 
-- the scene feels too far forward
-- the scene feels pushed too far backward
+- the whole scene feels too far forward
+- the whole scene feels pushed too far backward
 - subjects are not sitting where expected
 - the stereo field feels offset
+- you want to move the perceived screen surface without fully changing FG / MG / BG shift values
 
-Zero parallax is a precision control. Small changes can have a noticeable effect.
+Small changes can have a noticeable effect. For comfort, adjust this slowly and preview several frames before rendering.
+
+If the scene already feels comfortable, leave Screen Plane Offset near the default value.
 
 ---
 
@@ -1344,6 +1456,36 @@ Recommended range:
 
 ---
 
+### Foreground Curvature
+
+Foreground Curvature adds a subtle rounded depth shape to near foreground regions.
+
+This helps foreground subjects feel less flat by gently pushing the center of near objects forward while keeping the edges softer. It is useful for faces, bodies, and larger foreground objects that can otherwise look like flat cardboard cutouts.
+
+Higher values:
+
+- make foreground subjects feel more rounded
+- increase perceived volume
+- can improve face/body depth
+- may exaggerate foreground shape if pushed too far
+
+Lower values:
+
+- keep the original depth map closer to unchanged
+- reduce artificial rounding
+- are safer for difficult depth maps or thin objects
+
+Recommended use:
+
+```text
+Low to moderate values for final renders
+Higher values only for testing or stylized depth
+```
+
+Foreground Curvature works best when the depth map already has clear foreground separation. It should be used as a shape enhancement, not as a replacement for a good depth map.
+
+---
+
 ### Subject Lock
 
 Controls how strongly the pipeline anchors the detected subject depth.
@@ -1383,7 +1525,7 @@ VisionDepth3D separates stereo design into multiple stages:
 - tracked subject depth
 - shaped disparity depth
 - near / mid / far weighting
-- subject-aware zero parallax
+- subject-aware screen plane
 - dynamic convergence
 - edge-aware repair
 - floating-window safety
@@ -1462,7 +1604,7 @@ For aggressive pop-out testing, disable Dynamic Convergence temporarily to make 
 
 ### Stabilize Zero-Parallax
 
-Keeps the zero-parallax plane aligned with the dominant or tracked depth range.
+Keeps the screen plane aligned with the dominant or tracked depth range.
 
 When enabled:
 
@@ -1471,6 +1613,26 @@ When enabled:
 - reduces eye strain during scene changes
 
 This can improve comfort, but high subject locking can reduce strong pop-out.
+
+---
+
+### Edge Repair Quality
+
+Edge Repair Quality controls how much disocclusion and edge cleanup the 3D Generator applies around shifted stereo edges.
+
+This dropdown lets users balance render speed against cleaner edges.
+
+| Mode | Behavior |
+|---|---|
+| Off | Fastest. No extra edge repair. More edge artifacts may appear. |
+| Fast | Lighter repair for faster rendering. Good for tests or slower GPUs. |
+| Balanced | Recommended default. Good speed and quality balance. |
+| High | Stronger repair with slower render speed. Better for final clips. |
+| Showcase | Strongest edge cleanup. Slowest mode. Best for demos or difficult scenes. |
+
+Use **Fast** or **Balanced** for most full-length renders. Use **High** or **Showcase** when edge artifacts are very noticeable and render speed is less important.
+
+If you are testing maximum FPS, set Edge Repair Quality to **Off** or **Fast**.
 
 ---
 
@@ -1778,7 +1940,7 @@ Foreground, midground, and background controls now work together with:
 - depth normalization
 - pop-control depth shaping
 - structured near / mid / far weighting
-- subject-aware zero parallax
+- subject-aware screen plane
 - dynamic convergence
 - edge-aware shift limiting
 - contour-safe repair
@@ -1862,10 +2024,10 @@ In **3D / Pixel Shift**:
   - **MG shift** (mid depth layering)
   - **BG shift** (background push)
 
-Typical starter values:
-- FG shift: `6 to 10`
-- MG shift: `1 to 3`
-- BG shift: `-3 to -6`
+Typical starter values using the current VD3D shift direction:
+- FG shift: `-5 to -10`
+- MG shift: `-0.5 to -2`
+- BG shift: `+2 to +5`
 
 These are live controls, so you can tune while watching.
 
@@ -1976,7 +2138,7 @@ Comfort + stability preset:
 - Depth FPS: `5`
 - Smooth: ON
 - EMA α: `0.35`
-- FG/MG/BG: `8 / 2 / -4`
+- FG/MG/BG: `-6 / -0.8 / +2.2`
 
 If you need more depth detail:
 - Raise Infer size first (example: `512 × 288`)
@@ -2305,7 +2467,7 @@ Floating Window: Off for testing, On if edge violations appear
 ### Jitter Between Scenes
 
 - Enable **Dynamic Convergence**  
-- Enable **Stabilize Zero-Parallax**  
+- Enable **Stabilize Screen Plane**  
 - Reduce Convergence Strength  
 
 ---
@@ -2351,4 +2513,3 @@ Regular updates continue improving depth quality, speed, and stability.
 ---
 
 End of User Manual
-
