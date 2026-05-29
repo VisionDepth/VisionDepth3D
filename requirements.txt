@@ -26,6 +26,7 @@ hf_xet
 
 # Video / scene tools
 scenedetect
+imageio
 imageio-ffmpeg
 mss
 
