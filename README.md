@@ -1,10 +1,9 @@
 <p align="center">
-  <img width="450" height="263" alt="VisionDepth3D900x527" src="https://github.com/user-attachments/assets/eaae16ce-57ff-48f8-8dbd-1aca699b8724" />
+  <img width="800" height="400" alt="NewVD3D-Logo" src="https://github.com/user-attachments/assets/d2a9e18f-08f9-498e-b023-5243aa0af639" />
   <br>
 </p>
 
 <h2 align="center">The All-in-One 3D Suite for Creators</h2>
-
 
 <p align="center">
   <em>This is Hybrid 3D.<br>
