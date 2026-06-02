@@ -108,29 +108,124 @@ def _depths_to_tensor(depths) -> torch.Tensor:
 
     return depths_t.contiguous()
 
+def _resolve_torch_device(device=None, use_directml: bool = False):
+    """
+    Resolve the torch device for DA3.
 
-def load_da3_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
+    Priority:
+      1. Explicit device passed by main app
+      2. DirectML if requested
+      3. CUDA if available
+      4. CPU fallback
+    """
+    if device is not None:
+        if isinstance(device, str):
+            return torch.device(device)
+        return device
+
+    if use_directml:
+        try:
+            import torch_directml
+
+            if hasattr(torch_directml, "is_available"):
+                try:
+                    if not torch_directml.is_available():
+                        raise RuntimeError("torch_directml.is_available() returned False")
+                except Exception:
+                    # Some torch-directml versions may not behave consistently here.
+                    pass
+
+            dml_device = torch_directml.device()
+
+            # Quick sanity check.
+            _ = torch.ones(1).to(dml_device).cpu()
+
+            return dml_device
+
+        except Exception as e:
+            print(f"⚠️ DA3 DirectML requested but unavailable: {e}")
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+
+    return torch.device("cpu")
+
+
+def _device_backend_name(device) -> str:
+    t = getattr(device, "type", str(device))
+
+    if t == "cuda":
+        if getattr(torch.version, "hip", None) is not None:
+            return "rocm"
+        return "cuda"
+
+    if t == "privateuseone":
+        return "directml"
+
+    if t == "mps":
+        return "mps"
+
+    return "cpu"
+
+def load_da3_adapter(
+    spec: str,
+    cache_dir: str,
+    use_fp16: bool = False,
+    use_directml: bool = False,
+    device=None,
+):
     from core.models.depth_anything_3.api import DepthAnything3
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_amp = bool(device == "cuda" and use_fp16)
+    device = _resolve_torch_device(device=device, use_directml=use_directml)
 
-    if device == "cuda":
+    device_type = getattr(device, "type", str(device))
+    is_cuda = device_type == "cuda"
+    is_directml = device_type == "privateuseone"
+
+    # Keep FP16 CUDA-only.
+    # DirectML FP16 can be unstable depending on GPU/driver/op support.
+    use_amp = bool(is_cuda and use_fp16)
+
+    if is_cuda:
         try:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+
+            try:
+                torch.set_float32_matmul_precision("high")
+            except Exception:
+                pass
+
         except Exception:
             pass
+
+    print(
+        f"[DA3] Loading {spec} on device={device} "
+        f"backend={_device_backend_name(device)} fp16={use_amp}"
+    )
 
     model = DepthAnything3.from_pretrained(spec, cache_dir=cache_dir)
 
     # Move the whole wrapper so processors + model are consistent.
-    model.to(device)
+    #
+    # CUDA: normal .to(cuda)
+    # DirectML: .to(privateuseone:0)
+    # CPU: .to(cpu)
+    try:
+        model.to(device)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to move DA3 model to {device} "
+            f"backend={_device_backend_name(device)}. "
+            f"If this is DirectML, this DA3 build may use unsupported ops. "
+            f"Original error: {e}"
+        ) from e
+
     model.eval()
 
     try:
-        model.device = torch.device(device)
+        model.device = device
     except Exception:
         pass
 
@@ -249,12 +344,19 @@ def load_da3_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
 
     da3_infer._is_da3 = True
 
+    da3_infer._device = str(device)
+    da3_infer._backend = _device_backend_name(device)
+    da3_infer._is_directml = bool(is_directml)
+
     caps = {
         "kind": "da3",
         "has_builtin_processor": True,
         "supports_multi_view": True,
         "supports_metric_models": True,
-        "supports_fp16": bool(device == "cuda"),
+        "supports_fp16": bool(is_cuda),
+        "device": str(device),
+        "backend": _device_backend_name(device),
+        "is_directml": bool(is_directml),
     }
 
     return da3_infer, caps
