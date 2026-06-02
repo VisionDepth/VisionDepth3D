@@ -17,6 +17,7 @@ from core.render_3d import (
     apply_color_grade,
 )
 from core.preview_utils import generate_preview_image
+from core.debug_flags import debug_print, is_debug_enabled
 
 
 @dataclass
@@ -232,14 +233,22 @@ class PreviewService:
             mg_val *= ipd_scale
             bg_val *= ipd_scale
 
-        # Apply the same ShiftSmoother the render path uses so preview matches render output
-        from core.render_3d import ShiftSmoother
-        if not hasattr(self, '_preview_smoother'):
-            self._preview_smoother = ShiftSmoother(alpha=0.5)
-        fg_val, mg_val, bg_val = self._preview_smoother.smooth(fg_val, mg_val, bg_val)
+        # For live preview, do NOT smooth slider movement.
+        # The video render can smooth across frames, but preview needs instant feedback.
+        debug_print(
+            f"[PREVIEW] "
+            f"fg={fg_val:.2f} "
+            f"mg={mg_val:.2f} "
+            f"bg={bg_val:.2f} "
+            f"balance={state.parallax_balance:.3f} "
+            f"max_shift={state.max_pixel_shift:.4f} "
+            f"subject_lock={getattr(state, 'subject_lock_strength', 0.0):.2f} "
+            f"plane_lock={getattr(state, 'subject_plane_lock_strength', 0.0):.2f} "
+            f"plane_width={getattr(state, 'subject_plane_lock_width', 0.08):.2f} "
+            f"subject_zero_lock={getattr(state, 'subject_screen_plane', 0.0):.3f} "
+            f"curvature={getattr(state, 'foreground_curvature_strength', 0.06):.2f}"
+        )
 
-        print(f"[PREVIEW] fg={fg_val:.2f} mg={mg_val:.2f} bg={bg_val:.2f} balance={state.parallax_balance:.3f} max_shift={state.max_pixel_shift:.4f}")
-        
         left_tensor, right_tensor, shift_meta = pixel_shift_cuda(
             frame_tensor,
             depth_tensor,
@@ -248,24 +257,43 @@ class PreviewService:
             fg_val,
             mg_val,
             bg_val,
+
+            blur_ksize=getattr(state, "blur_ksize", 1),
+            feather_strength=getattr(state, "feather_strength", 0.0),
+
             return_shift_map=True,
-            use_subject_tracking=state.use_subject_tracking,
-            enable_floating_window=state.use_floating_window,
-            max_pixel_shift_percent=state.max_pixel_shift,
-            zero_parallax_strength=state.zero_parallax_strength,
-            parallax_balance=state.parallax_balance,
-            enable_edge_masking=state.enable_edge_masking,
-            enable_feathering=state.enable_feathering,
-            dof_strength=state.dof_strength,
-            convergence_strength=state.convergence_strength,
-            enable_dynamic_convergence=state.enable_dynamic_convergence,
-            depth_pop_gamma=state.depth_pop_gamma,
-            depth_pop_mid=state.depth_pop_mid,
-            depth_stretch_lo=state.depth_stretch_lo,
-            depth_stretch_hi=state.depth_stretch_hi,
-            fg_pop_multiplier=state.fg_pop_multiplier,
-            bg_push_multiplier=state.bg_push_multiplier,
-            subject_lock_strength=state.subject_lock_strength,
+            return_meta=True,
+            return_tensors=True,
+
+            use_subject_tracking=getattr(state, "use_subject_tracking", False),
+            enable_floating_window=getattr(state, "use_floating_window", False),
+
+            max_pixel_shift_percent=getattr(state, "max_pixel_shift", 0.045),
+            zero_parallax_strength=getattr(state, "zero_parallax_strength", 0.0),
+            parallax_balance=getattr(state, "parallax_balance", 0.8),
+
+            enable_edge_masking=getattr(state, "enable_edge_masking", True),
+            enable_feathering=getattr(state, "enable_feathering", True),
+            edge_repair_quality=getattr(state, "edge_repair_quality", "Fast"),
+
+            dof_strength=getattr(state, "dof_strength", 0.0),
+            convergence_strength=getattr(state, "convergence_strength", 0.0),
+            enable_dynamic_convergence=getattr(state, "enable_dynamic_convergence", True),
+
+            depth_pop_gamma=getattr(state, "depth_pop_gamma", 0.85),
+            depth_pop_mid=getattr(state, "depth_pop_mid", 0.50),
+            depth_stretch_lo=getattr(state, "depth_stretch_lo", 0.05),
+            depth_stretch_hi=getattr(state, "depth_stretch_hi", 0.95),
+
+            fg_pop_multiplier=getattr(state, "fg_pop_multiplier", 1.08),
+            bg_push_multiplier=getattr(state, "bg_push_multiplier", 1.04),
+            subject_lock_strength=getattr(state, "subject_lock_strength", 0.34),
+
+            subject_plane_lock_strength=getattr(state, "subject_plane_lock_strength", 0.0),
+            subject_plane_lock_width=getattr(state, "subject_plane_lock_width", 0.08),
+            subject_screen_plane=getattr(state, "subject_screen_plane", 0.0),
+            foreground_curvature_strength=getattr(state, "foreground_curvature_strength", 0.06),
+
             disable_shift_ema=getattr(state, "disable_shift_ema", False),
         )
 
