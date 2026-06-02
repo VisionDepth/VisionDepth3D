@@ -14,9 +14,9 @@ import uuid
 import json
 import threading
 import subprocess
-import tkinter as tk
 from tkinter import filedialog, messagebox
 import gc
+import inspect
 
 # --- add these near your imports ---
 from pathlib import Path
@@ -73,27 +73,16 @@ os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(_VD3D_WEIGHTS, "datasets
 # Optional: silence symlink warning on Windows
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+from transformers import AutoProcessor, AutoModelForDepthEstimation, AutoImageProcessor
 
-
-from transformers import AutoProcessor, AutoModelForDepthEstimation, AutoImageProcessor, pipeline
-from diffusers import EulerDiscreteScheduler, AutoencoderKL
-
-from safetensors.torch import load_file
-
-# Custom modules
-from diffusers.configuration_utils import ConfigMixin
-from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
-
-from core.adapters.depthanything_adapter import load_da_v2_adapter
-from core.adapters.depthanything3_adapter import load_da3_adapter
-from core.adapters.videodepthanything_adapter import load_vda_adapter
-from core.adapters.lbm_adapter import load_lbm_adapter
 #from core.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
 from core.models.depth_anything_v2.dpt import DepthAnythingV2
 
 global pipe
 pipe = None
-pipe_type = None 
+pipe_type = None
+pipe_lock = threading.RLock()
+
 suspend_flag = threading.Event()
 cancel_flag = threading.Event()
 cancel_requested = threading.Event()
@@ -103,6 +92,31 @@ torch.set_grad_enabled(False)
 
 # near other globals
 PIPE_EXTRA_ARGS = {}
+
+def get_active_pipe_snapshot():
+    """
+    Thread-safe snapshot of the active model callable, type, and extra args.
+    """
+    with pipe_lock:
+        extra = PIPE_EXTRA_ARGS.copy() if isinstance(PIPE_EXTRA_ARGS, dict) else {}
+        return pipe, pipe_type, extra
+
+
+def set_active_pipe(new_pipe, new_pipe_type):
+    """
+    Thread-safe active model replacement.
+    """
+    global pipe, pipe_type
+    with pipe_lock:
+        pipe = new_pipe
+        pipe_type = new_pipe_type
+
+
+def clear_active_pipe():
+    """
+    Thread-safe active model clear.
+    """
+    set_active_pipe(None, None)
 
 FFMPEG_CODEC_MAP = {
     # Software (CPU) Encoders
@@ -201,7 +215,10 @@ def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
     )
 
     # Drain stderr in the background so FFmpeg cannot block if it emits logs/errors.
+    # Keep only a bounded amount for diagnostics.
     proc._stderr_chunks = []
+    proc._stderr_bytes = 0
+    proc._stderr_max_bytes = 1_000_000  # 1 MB is enough for useful error output.
 
     def _drain_stderr():
         try:
@@ -209,7 +226,12 @@ def start_ffmpeg_writer(output_path, fps, w, h, ffmpeg_codec):
                 chunk = proc.stderr.read(65536)
                 if not chunk:
                     break
-                proc._stderr_chunks.append(chunk)
+
+                remaining = proc._stderr_max_bytes - proc._stderr_bytes
+                if remaining > 0:
+                    kept = chunk[:remaining]
+                    proc._stderr_chunks.append(kept)
+                    proc._stderr_bytes += len(kept)
         except Exception:
             pass
 
@@ -257,30 +279,59 @@ def wait_if_paused(status_label=None):
                 pass
         time.sleep(0.2)
 
-def device_display_name():
-    name = globals().get("torch_backend_name", None)
-    if name:
-        return name
-
-    t = torch_device.type
-    if t == "cuda":
-        if getattr(torch.version, "hip", None) is not None:
-            return "ROCm (AMD)"
-        return "CUDA (NVIDIA)"
-    if t == "privateuseone":
-        return "DirectML (AMD/Intel)"
-    if t == "mps":
-        return "Metal (Apple)"
-    return "CPU"
-
 def set_pipe_extra_args(d: dict | None):
     global PIPE_EXTRA_ARGS
-    PIPE_EXTRA_ARGS = d or {}
+    with pipe_lock:
+        PIPE_EXTRA_ARGS = d or {}
+
+
+def _try_get_directml_device():
+    """
+    Returns a usable torch-directml device, or None.
+
+    torch-directml devices expose as type='privateuseone'.
+    """
+    try:
+        import torch_directml
+
+        if hasattr(torch_directml, "is_available"):
+            try:
+                if not torch_directml.is_available():
+                    return None
+            except Exception:
+                pass
+
+        dml_device = torch_directml.device()
+
+        # Quick sanity test. Catches broken DirectML installs early.
+        _ = torch.ones(1).to(dml_device).cpu()
+
+        return dml_device
+
+    except Exception as e:
+        print(f"Depth Estimation: DirectML not available: {e}")
+        return None
+
 
 def pick_torch_device():
     global torch_backend_name
 
-    # NVIDIA CUDA or ROCm/HIP builds that expose as cuda
+    # Optional override.
+    # Useful if the machine has CUDA but you want to test DirectML:
+    #   set VD3D_FORCE_DIRECTML=1
+    force_dml = os.environ.get("VD3D_FORCE_DIRECTML", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+    if force_dml:
+        dml_device = _try_get_directml_device()
+        if dml_device is not None:
+            torch_backend_name = "DirectML (AMD/Intel)"
+            print(f"Depth Estimation: DirectML forced: {dml_device}")
+            return dml_device
+        print("⚠️ VD3D_FORCE_DIRECTML was set, but DirectML was not usable. Falling back.")
+
+    # CUDA / ROCm-HIP exposed as cuda.
     if torch.cuda.is_available():
         try:
             hip_ver = getattr(torch.version, "hip", None)
@@ -295,48 +346,72 @@ def pick_torch_device():
         print("Depth Estimation: CUDA")
         return torch.device("cuda")
 
-    # AMD / Intel / any DirectX 12 GPU through DirectML
-    try:
-        import torch_directml
-        dml_device = torch_directml.device()
-
-        # Quick device test
-        _ = torch.ones(1).to(dml_device).cpu()
-
+    # DirectML fallback.
+    dml_device = _try_get_directml_device()
+    if dml_device is not None:
         torch_backend_name = "DirectML (AMD/Intel)"
         print(f"Depth Estimation: DirectML detected: {dml_device}")
         return dml_device
 
-    except Exception as e:
-        print(f"Depth Estimation: DirectML not available: {e}")
-
-    # Apple Metal
+    # Apple Metal.
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch_backend_name = "Metal (Apple)"
         print("Depth Estimation: MPS detected")
         return torch.device("mps")
 
-    # CPU fallback
     torch_backend_name = "CPU"
     print("⚠️ No GPU detected — using CPU")
     return torch.device("cpu")
-    
-def is_cuda_device(device=None):
+
+
+def torch_device_type(device=None) -> str:
     d = device if device is not None else globals().get("torch_device", None)
-    return getattr(d, "type", None) == "cuda"
+    return str(getattr(d, "type", "cpu"))
+
+
+def is_cuda_device(device=None):
+    return torch_device_type(device) == "cuda"
 
 
 def is_directml_device(device=None):
-    d = device if device is not None else globals().get("torch_device", None)
-    return getattr(d, "type", None) == "privateuseone"
+    return torch_device_type(device) == "privateuseone"
+
+
+def is_mps_device(device=None):
+    return torch_device_type(device) == "mps"
+
+
+def is_torch_accelerator_device(device=None):
+    return is_cuda_device(device) or is_directml_device(device) or is_mps_device(device)
 
 
 def can_use_fp16_on_device(device=None):
-    # Keep FP16 only for CUDA for now.
-    # DirectML can be picky depending on model/op support.
+    # Keep FP16 CUDA-only for now.
+    # DirectML FP16 is device/op/driver dependent and can cause unsupported-op
+    # errors or slow fallback paths.
     return is_cuda_device(device)
 
+
+def device_display_name():
+    name = globals().get("torch_backend_name", None)
+    if name:
+        return name
+
+    t = torch_device_type()
+    if t == "cuda":
+        if getattr(torch.version, "hip", None) is not None:
+            return "ROCm (AMD)"
+        return "CUDA (NVIDIA)"
+    if t == "privateuseone":
+        return "DirectML (AMD/Intel)"
+    if t == "mps":
+        return "Metal (Apple)"
+    return "CPU"
+
+
 def offload_available():
+    # accelerate CPU/GPU offload is CUDA-centric here.
+    # Do not enable this for DirectML.
     try:
         import accelerate
         return is_cuda_device()
@@ -351,14 +426,120 @@ TILE_DEBUG      = False   # set True to print tile debug info
 
 assert TILE_SIZE > 2*TILE_PAD, "TILE_SIZE must be larger than 2*TILE_PAD"
 
-
-
 _EXPECTED_WEIGHT_FILENAMES = {
     "pytorch_model.bin", "model.safetensors", "tf_model.h5", "model.ckpt", "flax_model.msgpack"
 }
 
+# Known Hugging Face Depth Anything V2 repos -> optimized safetensors adapter specs.
+#
+# This makes normal menu entries like:
+#   "Depth Anything v2 Large": "depth-anything/Depth-Anything-V2-Large-hf"
+#
+# automatically load through core/adapters/depthanything_adapter.py instead of the
+# slower generic Hugging Face Transformers path.
+#
+# CUDA + FP16 checkbox:
+#   Large -> vitl_fp16
+#
+# CUDA without FP16 / DirectML / CPU:
+#   Large -> vitl_fp32
+#
+# Metric variants currently map to FP32 safetensors.
+_DAV2_HF_REPO_TO_ADAPTER_SPEC = {
+    "depth-anything/depth-anything-v2-small-hf": {
+        "fp16": "vits_fp16",
+        "fp32": "vits_fp32",
+    },
+    "depth-anything/depth-anything-v2-base-hf": {
+        "fp16": "vitb_fp16",
+        "fp32": "vitb_fp32",
+    },
+    "depth-anything/depth-anything-v2-large-hf": {
+        "fp16": "vitl_fp16",
+        "fp32": "vitl_fp32",
+    },
+
+    # Metric DA-V2 Large variants.
+    # Kijai safetensors available here are FP32.
+    "depth-anything/depth-anything-v2-metric-indoor-large-hf": {
+        "fp16": "metric_hypersim_vitl_fp32",
+        "fp32": "metric_hypersim_vitl_fp32",
+    },
+    "depth-anything/depth-anything-v2-metric-outdoor-large-hf": {
+        "fp16": "metric_vkitti_vitl_fp32",
+        "fp32": "metric_vkitti_vitl_fp32",
+    },
+}
+
 torch_backend_name = "CPU"
 torch_device = pick_torch_device()
+
+def active_torch_dtype(use_fp16: bool = False):
+    """
+    Runtime dtype for active torch backend.
+    FP16 is CUDA-only for now.
+    """
+    return torch.float16 if (bool(use_fp16) and can_use_fp16_on_device(torch_device)) else torch.float32
+
+
+def model_load_dtype(use_fp16: bool = False):
+    """
+    dtype passed to from_pretrained().
+
+    DirectML should load as default/FP32.
+    CUDA can load FP16 when requested.
+    """
+    return torch.float16 if (bool(use_fp16) and is_cuda_device(torch_device)) else None
+
+
+def cleanup_torch_runtime():
+    """
+    Cleanup for CUDA + DirectML + CPU.
+    """
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+    if is_directml_device(torch_device):
+        try:
+            import torch_directml
+            empty_cache = getattr(torch_directml, "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+        except Exception:
+            pass
+
+    gc.collect()
+
+
+def call_with_supported_kwargs(fn, *args, **kwargs):
+    """
+    Calls loader functions while only passing kwargs they support.
+
+    This lets main.py pass:
+      device=torch_device
+      use_directml=True/False
+
+    without breaking older adapters that do not accept those args yet.
+    """
+    try:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        accepts_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in params.values()
+        )
+
+        if not accepts_kwargs:
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
+
+    except Exception:
+        pass
+
+    return fn(*args, **kwargs)
 
 def find_onnx_model_dir(base_dir: str) -> str | None:
     """
@@ -400,35 +581,32 @@ def _ensure_expected_weight_name(local_dir: str | Path) -> str:
 
 
 def _is_depthcrafter():
-    return (globals().get("pipe_type", None) == "depthcrafter") or getattr(globals().get("pipe", None), "_is_depthcrafter", False)
+    local_pipe, local_pipe_type, _ = get_active_pipe_snapshot()
+    return (local_pipe_type == "depthcrafter") or getattr(local_pipe, "_is_depthcrafter", False)
     
-    
-def get_vda_window_settings(batch_size):
+def get_vda_window_settings(batch_size, user_overlap=None):
     """
     Native PyTorch VDA window settings.
 
-    Respect the user-selected batch/window size exactly for testing.
-    Do not hard-code Large/Small limits here.
-
-    ONNX VDA is handled separately because ONNX models may require fixed
-    temporal length and fixed input dimensions.
+    batch_size controls the VDA window size.
+    user_overlap controls how many frames are reused between windows.
     """
     try:
         requested = int(batch_size or 8)
     except Exception:
         requested = 8
 
-    # Keep a tiny sanity floor so VDA is not accidentally fed 0/1 frames.
-    # But do not cap the user's requested upper value.
     window_size = max(2, requested)
 
-    # Faster default: about 12.5 percent overlap.
-    # This reduces duplicated VDA inference while keeping some temporal blending.
-    overlap = max(1, window_size // 8)
+    if user_overlap is None:
+        overlap = max(1, window_size // 8)
+    else:
+        try:
+            overlap = int(user_overlap)
+        except Exception:
+            overlap = max(1, window_size // 8)
 
-    # Make sure overlap never equals/exceeds the window.
     overlap = max(0, min(overlap, window_size - 1))
-
     stride = max(1, window_size - overlap)
 
     return window_size, overlap, stride
@@ -439,11 +617,12 @@ def _is_vda_runtime():
     - native PyTorch Video Depth Anything adapter
     - fixed ONNX Video Depth Anything model
     """
+    local_pipe, local_pipe_type, _ = get_active_pipe_snapshot()
     return (
-        globals().get("pipe_type", None) == "vda"
+        local_pipe_type == "vda"
         or (
-            globals().get("pipe_type", None) == "onnx"
-            and getattr(globals().get("pipe", None), "_is_vda_onnx", False)
+            local_pipe_type == "onnx"
+            and getattr(local_pipe, "_is_vda_onnx", False)
         )
     )
 
@@ -600,8 +779,16 @@ def normalize_depth(depth_f, out_size, invert=False, pclip=(1.0, 99.0), bit_dept
     if not np.isfinite(d).all():
         d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # percentile stretch to 0..1
-    lo = np.percentile(d, pclip[0]); hi = np.percentile(d, pclip[1])
+    # Percentile stretch to 0..1.
+    # For very large maps, estimate percentiles from a smaller sample to reduce CPU time.
+    sample = d
+    if d.size > 512 * 512 and d.shape[0] > 0 and d.shape[1] > 0:
+        sample_w = 512
+        sample_h = max(1, int(round(512 * d.shape[0] / max(1, d.shape[1]))))
+        sample = cv2.resize(d, (sample_w, sample_h), interpolation=cv2.INTER_AREA)
+
+    lo = np.percentile(sample, pclip[0])
+    hi = np.percentile(sample, pclip[1])
     if hi - lo < 1e-6:
         dmin, dmax = float(d.min()), float(d.max())
         if dmax - dmin < 1e-6:
@@ -643,13 +830,10 @@ def _run_pipe_or_tile(images_pil, inference_size=None, **kwargs):
     """
     global pipe, pipe_type, PIPE_EXTRA_ARGS
 
-    local_pipe = pipe
-    local_pipe_type = pipe_type
+    local_pipe, local_pipe_type, extra_global = get_active_pipe_snapshot()
 
     if local_pipe is None:
         raise RuntimeError("No depth model is loaded. Please select and load a model first.")
-
-    extra_global = PIPE_EXTRA_ARGS.copy() if isinstance(PIPE_EXTRA_ARGS, dict) else {}
 
     # --- ONNX special handling: force the warm-up proven size ---
     if local_pipe_type == "onnx":
@@ -683,7 +867,7 @@ def _run_pipe_or_tile(images_pil, inference_size=None, **kwargs):
             return outs
 
     # ✅ VDA is sequence-based; never tile it
-    use_tiled = bool(USE_TILED_DEPTH) and (local_pipe_type not in ("vda",))
+    use_tiled = bool(USE_TILED_DEPTH) and (local_pipe_type not in ("vda", "vigeo"))
     if use_tiled:
         preds = []
         for img in images_pil:
@@ -700,7 +884,7 @@ def _run_pipe_or_tile(images_pil, inference_size=None, **kwargs):
     call_kwargs.update(kwargs)
 
     # Some pipes accept kwargs, HF depth-estimation often doesn't
-    forward_ok = local_pipe_type in ("vda", "da3", "depthcrafter", "onnx")
+    forward_ok = local_pipe_type in ("vda", "vigeo", "da3", "dav2", "depthcrafter", "onnx")
     
     # Log what the pipeline is actually receiving
     if inference_size:
@@ -859,9 +1043,9 @@ def apply_offload_if_supported(model_callable, caps, mode: str):
     if not (caps.get("is_diffusion") and caps.get("supports_offload", False)):
         return
 
-    if not torch.cuda.is_available():
+    if not is_cuda_device(torch_device):
         return
-
+        
     try:
         # These are diffusers helpers that rely on accelerate
         if mode == "sequential":
@@ -1260,6 +1444,9 @@ def load_supported_models():
     models = {
         "  -- Select Model -- ": "  -- Select Model -- ",
 
+        # ViGeo
+        "ViGeo": "vigeo:pkqbajng/ViGeo",
+
         # Marigold
         "Marigold Depth v1.1 (Diffusers)": "diffusers:prs-eth/marigold-depth-v1-1",
         "Marigold Depth v1.0":             "diffusers:prs-eth/marigold-depth-v1-0",
@@ -1292,13 +1479,12 @@ def load_supported_models():
         "DA3NESTED-GIANT-LARGE-1.1":              "da3:depth-anything/DA3NESTED-GIANT-LARGE-1.1",
         
 
-        # Depth Anything v2
+        # Depth Anything v2 - Hugging Face Transformers path
         "Depth Anything v2 Large":                 "depth-anything/Depth-Anything-V2-Large-hf",
         "Depth Anything v2 Base":                  "depth-anything/Depth-Anything-V2-Base-hf",
         "Depth Anything v2 Small":                 "depth-anything/Depth-Anything-V2-Small-hf",
         "Depth Anything v2 Metric Indoor (Large)": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
         "Depth Anything v2 Metric Outdoor (Large)":"depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-        "Depth Anything v2 Giant (safetensors)": "dav2:vitg_fp32",
 
         # Depth Anything v1
         "Depth Anything v1 Large":    "LiheYoung/depth-anything-large-hf",
@@ -1382,15 +1568,18 @@ def _load_flexible_processor(model_dir, cache_dir=None, prefer_fast=True):
 def preferred_onnx_provider():
     available = ort.get_available_providers()
 
-    if torch.cuda.is_available():
+    # Match selected torch backend where possible.
+    if is_cuda_device(torch_device):
         for p in ("CUDAExecutionProvider", "ROCMExecutionProvider"):
             if p in available:
                 return p
 
-    if is_directml_device() and "DmlExecutionProvider" in available:
-        return "DmlExecutionProvider"
+    if is_directml_device(torch_device):
+        if "DmlExecutionProvider" in available:
+            return "DmlExecutionProvider"
+        print("⚠️ DirectML torch backend selected, but ONNX DmlExecutionProvider is not available.")
 
-    if getattr(torch_device, "type", None) == "mps" and "CoreMLExecutionProvider" in available:
+    if is_mps_device(torch_device) and "CoreMLExecutionProvider" in available:
         return "CoreMLExecutionProvider"
 
     if "OpenVINOExecutionProvider" in available:
@@ -1404,31 +1593,144 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
     and local/remote ONNX directories. Also normalizes non-standard HF weight names.
     """
 
-    # Decide a torch dtype once at the top
-    use_fp16 = bool(use_fp16)
-    if torch.cuda.is_available() and use_fp16:
-        dtype = torch.float16
-    else:
-        dtype = torch.float32
+    if isinstance(checkpoint, os.PathLike):
+        checkpoint = os.fspath(checkpoint)
+
+    if not isinstance(checkpoint, str) or not checkpoint.strip():
+        print(f"❌ Invalid checkpoint: {checkpoint!r}")
+        return None, None
+
+    checkpoint = checkpoint.strip()
+
+    if checkpoint.startswith("-- Select"):
+        print("❌ No model selected.")
+        return None, None
+
+    # Decide dtype once at the top.
+    # FP16 is CUDA-only. DirectML uses FP32 for compatibility.
+    use_fp16 = bool(use_fp16) and can_use_fp16_on_device(torch_device)
+    dtype = active_torch_dtype(use_fp16)
+    load_dtype = model_load_dtype(use_fp16)
+
+    # --- ViGeo adapter: vigeo:<hf_repo> ---
+    if isinstance(checkpoint, str) and checkpoint.startswith("vigeo:"):
+        from core.adapters.vigeo_adapter import load_vigeo_adapter
+
+        spec = checkpoint.split(":", 1)[1].strip()
+
+        print(f"🧩 Loading ViGeo adapter for: {spec}")
+
+        try:
+            return call_with_supported_kwargs(
+                load_vigeo_adapter,
+                spec,
+                cache_dir=local_model_dir,
+                use_fp16=use_fp16,
+                use_directml=is_directml_device(torch_device),
+                device=torch_device,
+            )
+        except Exception as e:
+            print(f"❌ ViGeo adapter failed: {e}")
+            return None, None
 
     # --- DepthAnything v2 adapter: dav2:<spec> or path to *.safetensors ---
     if isinstance(checkpoint, str) and (checkpoint.startswith("dav2:") or checkpoint.endswith(".safetensors")):
         from core.adapters.depthanything_adapter import load_da_v2_adapter
+
         spec = checkpoint.split(":", 1)[1].strip() if checkpoint.startswith("dav2:") else checkpoint
-        print(f"🧩 Loading DA-V2 adapter for: {spec}")
+
+        use_dml = is_directml_device(torch_device)
+        use_cuda_fp16 = bool(use_fp16) and can_use_fp16_on_device(torch_device)
+
+        print(
+            f"🧩 Loading DA-V2 adapter for: {spec} | "
+            f"device={device_display_name()} | fp16={use_cuda_fp16} | directml={use_dml}"
+        )
+
         try:
-            return load_da_v2_adapter(spec, cache_dir=local_model_dir)
+            return call_with_supported_kwargs(
+                load_da_v2_adapter,
+                spec,
+                cache_dir=local_model_dir,
+                use_fp16=use_cuda_fp16,
+                use_directml=use_dml,
+                device=torch_device,
+            )
         except Exception as e:
             print(f"❌ DA-V2 adapter failed: {e}")
             return None, None
-            
+
+    # --- Fast-path redirect: Hugging Face DA-V2 repos -> optimized safetensors adapter ---
+    #
+    # Without this, these menu entries:
+    #   depth-anything/Depth-Anything-V2-Large-hf
+    #   depth-anything/Depth-Anything-V2-Base-hf
+    #   depth-anything/Depth-Anything-V2-Small-hf
+    #
+    # go through the generic Hugging Face Transformers path.
+    #
+    # This redirect loads the equivalent Kijai safetensors checkpoint through
+    # core/adapters/depthanything_adapter.py instead, which is generally faster
+    # and uses the DA-V2 batching/preprocess path.
+    #
+    # Optional escape hatch:
+    #   set VD3D_DISABLE_DAV2_FAST_REDIRECT=1
+    #
+    # if you ever want to compare against the pure HF path.
+    if isinstance(checkpoint, str):
+        disable_dav2_redirect = os.environ.get(
+            "VD3D_DISABLE_DAV2_FAST_REDIRECT",
+            ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+        ck_norm = checkpoint.strip().lower()
+        dav2_redirect = None if disable_dav2_redirect else _DAV2_HF_REPO_TO_ADAPTER_SPEC.get(ck_norm)
+
+        if dav2_redirect is not None:
+            from core.adapters.depthanything_adapter import load_da_v2_adapter
+
+            use_dml = is_directml_device(torch_device)
+            use_cuda_fp16 = bool(use_fp16) and can_use_fp16_on_device(torch_device)
+
+            # DirectML uses FP32 for compatibility.
+            precision_key = "fp16" if use_cuda_fp16 else "fp32"
+            spec = dav2_redirect[precision_key]
+
+            print(
+                f"🚀 Redirecting HF DA-V2 repo to optimized DA-V2 adapter | "
+                f"repo={checkpoint} | spec={spec} | "
+                f"device={device_display_name()} | fp16={use_cuda_fp16} | directml={use_dml}"
+            )
+
+            try:
+                return call_with_supported_kwargs(
+                    load_da_v2_adapter,
+                    spec,
+                    cache_dir=local_model_dir,
+                    use_fp16=use_cuda_fp16,
+                    use_directml=use_dml,
+                    device=torch_device,
+                )
+            except Exception as e:
+                print(f"❌ HF DA-V2 fast adapter redirect failed: {e}")
+                return None, None
+
+    # --- DepthAnything v3 adapter: da3:<hf_repo_or_preset> ---
+    
     # --- DepthAnything v3 adapter: da3:<hf_repo_or_preset> ---
     if isinstance(checkpoint, str) and checkpoint.startswith(("da3:", "dav3:")):
         from core.adapters.depthanything3_adapter import load_da3_adapter
         spec = checkpoint.split(":", 1)[1].strip()
         print(f"🧩 Loading DA3 adapter for: {spec}")
         try:
-            return load_da3_adapter(spec, cache_dir=local_model_dir, use_fp16=use_fp16)
+            return call_with_supported_kwargs(
+                load_da3_adapter,
+                spec,
+                cache_dir=local_model_dir,
+                use_fp16=use_fp16,
+                use_directml=is_directml_device(torch_device),
+                device=torch_device,
+            )
         except Exception as e:
             print(f"❌ DA3 adapter failed: {e}")
             return None, None
@@ -1439,7 +1741,14 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         spec = checkpoint.split(":", 1)[1].strip()
         print(f"🧩 Loading VDA adapter for: {spec}")
         try:
-            return load_vda_adapter(spec, cache_dir=local_model_dir, use_fp16=use_fp16)
+            return call_with_supported_kwargs(
+                load_vda_adapter,
+                spec,
+                cache_dir=local_model_dir,
+                use_fp16=use_fp16,
+                use_directml=is_directml_device(torch_device),
+                device=torch_device,
+            )
         except Exception as e:
             print(f"❌ VDA adapter failed: {e}")
             return None, None
@@ -1449,7 +1758,14 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         from core.adapters.lbm_adapter import load_lbm_adapter
         print(f"🧩 Loading LBM adapter for: {checkpoint}")
         try:
-            return load_lbm_adapter(spec=checkpoint, cache_dir=local_model_dir)
+            return call_with_supported_kwargs(
+                load_lbm_adapter,
+                spec=checkpoint,
+                cache_dir=local_model_dir,
+                use_fp16=use_fp16,
+                use_directml=is_directml_device(torch_device),
+                device=torch_device,
+            )
         except Exception as e:
             print(f"❌ LBM adapter failed: {e}")
             return None, None
@@ -1497,14 +1813,15 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
             fixed_dir = _ensure_expected_weight_name(checkpoint)
             model = AutoModelForDepthEstimation.from_pretrained(
                 fixed_dir,
-                torch_dtype=dtype if torch.cuda.is_available() else None,
+                torch_dtype=load_dtype,
             )
 
-            if torch.cuda.is_available():
+            if is_cuda_device(torch_device):
                 try:
                     model = model.to(memory_format=torch.channels_last)
                 except Exception:
                     pass
+
             model.eval()
 
             processor = _load_flexible_processor(fixed_dir, prefer_fast=True)
@@ -1518,17 +1835,34 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
     # === Diffusion Model Check (depth-first, then generic) ===
     if isinstance(checkpoint, str) and checkpoint.startswith("diffusers:"):
         model_id = checkpoint.split(":", 1)[1].strip()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Diffusers on DirectML is best-effort.
+        # Some pipelines may use ops unsupported by torch-directml.
+        diffusers_device = torch_device if is_torch_accelerator_device(torch_device) else torch.device("cpu")
+        diffusers_dtype = dtype if (is_cuda_device(torch_device) and use_fp16) else torch.float32
+        diffusers_variant = "fp16" if (is_cuda_device(torch_device) and diffusers_dtype == torch.float16) else None
 
         # 1) Try Marigold depth pipeline
         try:
             from diffusers import MarigoldDepthPipeline
             pipe = MarigoldDepthPipeline.from_pretrained(
                 model_id,
-                variant="fp16" if (dtype == torch.float16) else None,
-                torch_dtype=dtype,
+                variant=diffusers_variant,
+                torch_dtype=diffusers_dtype,
                 cache_dir=local_model_dir,
-            ).to(device)
+            )
+
+            try:
+                pipe = pipe.to(diffusers_device)
+            except Exception as move_err:
+                if is_directml_device(torch_device):
+                    print(
+                        f"⚠️ Marigold could not move to DirectML: {move_err}\n"
+                        "   Falling back to CPU for this diffusion pipeline."
+                    )
+                    pipe = pipe.to("cpu")
+                else:
+                    raise
 
             def diffusion_pipe(images, inference_size=None, **kw):
                 steps = int(kw.get("num_inference_steps", 4))
@@ -1562,9 +1896,21 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
             from diffusers import DiffusionPipeline
             gpipe = DiffusionPipeline.from_pretrained(
                 model_id,
-                torch_dtype=dtype,
+                torch_dtype=diffusers_dtype,
                 cache_dir=local_model_dir,
-            ).to(device)
+            )
+
+            try:
+                gpipe = gpipe.to(diffusers_device)
+            except Exception as move_err:
+                if is_directml_device(torch_device):
+                    print(
+                        f"⚠️ Diffusers pipeline could not move to DirectML: {move_err}\n"
+                        "   Falling back to CPU for this diffusion pipeline."
+                    )
+                    gpipe = gpipe.to("cpu")
+                else:
+                    raise
 
             def generic_diffusers_call(x, **kw):
                 prompt = x if isinstance(x, str) else kw.get("prompt", "VisionDepth3D")
@@ -1592,14 +1938,15 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         model = AutoModelForDepthEstimation.from_pretrained(
             checkpoint,
             cache_dir=local_path,
-            torch_dtype=dtype if torch.cuda.is_available() else None,
+            torch_dtype=load_dtype,
         )
 
-        if torch.cuda.is_available():
+        if is_cuda_device(torch_device):
             try:
                 model = model.to(memory_format=torch.channels_last)
             except Exception:
                 pass
+
         model.eval()
         
         processor = _load_flexible_processor(checkpoint, cache_dir=local_path, prefer_fast=True)
@@ -1620,14 +1967,15 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
 
             model = AutoModelForDepthEstimation.from_pretrained(
                 fixed_dir,
-                torch_dtype=dtype if (torch.cuda.is_available() and use_fp16) else None,
+                torch_dtype=load_dtype,
             )
 
-            if torch.cuda.is_available():
+            if is_cuda_device(torch_device):
                 try:
                     model = model.to(memory_format=torch.channels_last)
                 except Exception:
                     pass
+
             model.eval()
 
             processor = _load_flexible_processor(fixed_dir, cache_dir=local_path, prefer_fast=True)
@@ -1640,8 +1988,6 @@ def ensure_model_downloaded(checkpoint, use_fp16: bool = False):
         except Exception as e2:
             print(f"❌ Failed to load Hugging Face model after normalization: {e2}")
             return None, None
-
-
 
 
 def load_onnx_model(model_dir, device="CUDAExecutionProvider", model_id=None):
@@ -1769,7 +2115,19 @@ def load_onnx_model(model_dir, device="CUDAExecutionProvider", model_id=None):
     def _prep_images(images, inference_size):
         arrs = []
         metas = []
+
         for img in images:
+            # Accept PIL.Image or RGB uint8 ndarray.
+            if isinstance(img, np.ndarray):
+                if img.ndim != 3 or img.shape[2] != 3:
+                    raise ValueError(f"Expected RGB ndarray HxWx3, got shape {img.shape}")
+                if img.dtype != np.uint8:
+                    img = img.astype(np.uint8, copy=False)
+                img = Image.fromarray(np.ascontiguousarray(img), mode="RGB")
+
+            elif not isinstance(img, Image.Image):
+                raise TypeError(f"ONNX input must be PIL.Image or RGB ndarray, got {type(img)!r}")
+
             if inference_size:
                 W, H = inference_size
                 ow, oh = img.size
@@ -1941,6 +2299,37 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
     
     selected_checkpoint = selected_model_var.get()
     checkpoint = supported_models.get(selected_checkpoint, None)
+
+    if (
+        not checkpoint
+        or str(selected_checkpoint).strip().startswith("-- Select")
+        or str(checkpoint).strip().startswith("-- Select")
+    ):
+        status_label_widget.config(text="⚠️ Please select a valid depth model.")
+        return
+        
+    # Snapshot Tk values on the UI thread before the worker starts.
+    # Tk variables/widgets are not safe to read from background threads.
+    try:
+        selected_inference_res_text = inference_res_var.get()
+    except Exception:
+        selected_inference_res_text = ""
+
+    try:
+        selected_fp16 = bool(fp16_var.get())
+    except Exception:
+        selected_fp16 = False
+
+    try:
+        selected_steps_text = inference_steps_entry.get().strip() if inference_steps_entry is not None else ""
+    except Exception:
+        selected_steps_text = ""
+
+    try:
+        selected_offload_mode = (offload_mode_dropdown.get() or "none").strip().lower() if offload_mode_dropdown is not None else "none"
+    except Exception:
+        selected_offload_mode = "none"
+
     session_id = uuid.uuid4().hex
     current_warmup_session["id"] = session_id
 
@@ -1958,23 +2347,20 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
             # Release the previous model before loading the next one so CUDA/CPU
             # memory is not held longer than needed during model switching.
-            old_pipe = pipe
-            pipe = None
-            pipe_type = None
+            with pipe_lock:
+                old_pipe = pipe
+                pipe = None
+                pipe_type = None
+
             try:
                 del old_pipe
             except Exception:
                 pass
-            gc.collect()
-            if torch.cuda.is_available():
-                try:
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-                except Exception:
-                    pass
+                
+            cleanup_torch_runtime()
 
-            use_fp16 = bool(fp16_var.get()) and can_use_fp16_on_device(torch_device)
-            dtype = torch.float16 if use_fp16 else torch.float32
+            use_fp16 = selected_fp16 and can_use_fp16_on_device(torch_device)
+            dtype = active_torch_dtype(use_fp16)
             model_callable, meta = ensure_model_downloaded(checkpoint, use_fp16=use_fp16)
             
             if not is_current_session():
@@ -1983,27 +2369,22 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     del model_callable
                 except Exception:
                     pass
-                gc.collect()
-                if torch.cuda.is_available():
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
+                cleanup_torch_runtime()
                 return
 
             if not model_callable:
                 status_label_widget.after(0, lambda: stop_spinner(status_label_widget, f"❌ Failed to load model: {selected_checkpoint}"))
                 return
 
-            # Determine execution backend for transformers/diffusers pipelines
-            if torch_device.type == "cuda":
-                # NVIDIA CUDA or AMD ROCm using CUDA API
+            # Determine execution backend for legacy pipeline-style APIs.
+            # DirectML should use direct model.to(torch_device), not pipeline(device=int).
+            if is_cuda_device(torch_device):
                 device = 0
-            elif torch_device.type == "mps":
-                # Apple Metal – must call to("mps") instead of int device index
+            elif is_mps_device(torch_device):
                 device = "mps"
+            elif is_directml_device(torch_device):
+                device = torch_device
             else:
-                # CPU only
                 device = -1
 
             caps = meta if isinstance(meta, dict) else {}
@@ -2040,7 +2421,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         warmup_T   = int(fixed_T) if fixed_T is not None else 8
 
                         # Pull user pref (if any), then snap for VDA (/32)
-                        user_res = parse_inference_resolution(inference_res_var.get(), fallback=(512, 288))
+                        user_res = parse_inference_resolution(selected_inference_res_text, fallback=(512, 288))
                         if user_res is None:
                             user_res = (512, 288)
                         uW, uH = snap_for_vda(user_res[0], user_res[1], base=32)
@@ -2102,8 +2483,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     except Exception as e:
                         warmup_ok = False
                         if is_current_session():
-                            pipe = None
-                            pipe_type = None
+                            clear_active_pipe()
                         print(f"ONNX warm-up failed: {e}")
                 else:
                     print("Skipping ONNX warm-up by request.")
@@ -2121,8 +2501,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 if not is_current_session():
                     return
 
-                pipe = onnx_pipe
-                pipe_type = "onnx"
+                set_active_pipe(onnx_pipe, "onnx")
 
                 dev_str = meta.get("provider", "CPUExecutionProvider")
                 status_label_widget.after(
@@ -2143,11 +2522,10 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     return
 
                 if is_dc:
-                    pipe = model_callable
-                    pipe_type = "depthcrafter"
+                    set_active_pipe(model_callable, "depthcrafter")
                     status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Getting DepthCrafter ready..."))
                     try:
-                        assert callable(pipe), "DepthCrafter pipe is not callable"
+                        assert callable(model_callable), "DepthCrafter pipe is not callable"
                         print("🔥 DepthCrafter ready (will run during video processing)")
                         status_label_widget.after(0, lambda: stop_spinner(
                             status_label_widget,
@@ -2161,22 +2539,21 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
                 # Diffusers: depth pipelines (Marigold)
                 if kind == "depth" or getattr(model_callable, "_is_marigold", False):
-                    pipe = model_callable
-                    pipe_type = "diffusion_depth"
+                    set_active_pipe(model_callable, "diffusion_depth")
                     status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up diffusion depth model..."))
                     if not skip_warmup:
                         try:
                             dummy = Image.new("RGB", (518, 518), (127, 127, 127))
-                            _ = pipe(dummy)
+                            _ = model_callable(dummy)
                         except Exception as e:
                             print(f"ℹ️ Depth warm-up skipped: {e}")
                     else:
                         print("⏭️ Skipping diffusion warm-up by request.")
                         
                     # ⬇️ read UI “inference steps” and store for runtime
-                    if supports_steps and inference_steps_entry is not None:
+                    if supports_steps:
                         try:
-                            steps_val = max(1, int(inference_steps_entry.get().strip()))
+                            steps_val = max(1, int(selected_steps_text))
                         except Exception:
                             steps_val = 4
                         set_pipe_extra_args({"num_inference_steps": steps_val})
@@ -2184,9 +2561,8 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         set_pipe_extra_args({})
 
                     # update_pipeline(...) in the generic diffusers branch (after warm-up):
-                    if supports_offload and offload_mode_dropdown is not None:
-                        mode = (offload_mode_dropdown.get() or "none").strip().lower()
-                        apply_offload_if_supported(pipe, caps, mode)
+                    if supports_offload:
+                        apply_offload_if_supported(model_callable, caps, selected_offload_mode)
 
 
                     status_label_widget.after(0, lambda: stop_spinner(
@@ -2199,11 +2575,10 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     return
 
                 # Diffusers: generic pipelines (text-to-image, etc.)
-                pipe = model_callable
-                pipe_type = "diffusers_generic"
+                set_active_pipe(model_callable, "diffusers_generic")
                 status_label_widget.after(0, lambda: start_spinner(status_label_widget, "🔄 Warming up diffusers pipeline..."))
                 try:
-                    _ = pipe("VisionDepth3D test prompt")
+                    _ = model_callable("VisionDepth3D test prompt")
                     print("🔥 Generic diffusers pipeline warmed up with a test prompt")
                 except Exception as e:
                     print(f"ℹ️ Generic warm-up skipped: {e}")
@@ -2211,16 +2586,62 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     status_label_widget,
                     f"✅ Diffusers pipeline loaded: {selected_checkpoint} (device: {device_display_name()})"
                 ))
+
+            # --- ViGeo adapter callable ---
+            is_vigeo = bool(
+                caps.get("kind") == "vigeo"
+                or getattr(model_callable, "_is_vigeo", False)
+            )
+
+            if is_vigeo:
+                if not is_current_session():
+                    return
+
+                set_active_pipe(model_callable, "vigeo")
+                skip_warmup = True
+
+                status_label_widget.after(
+                    0,
+                    lambda: start_spinner(status_label_widget, "🔄 Loading ViGeo.")
+                )
+
+                if not skip_warmup:
+                    try:
+                        dummy_frames = [
+                            Image.new("RGB", (512, 288), (127, 127, 127))
+                            for _ in range(4)
+                        ]
+
+                        _ = model_callable(
+                            dummy_frames,
+                            inference_size=(512, 288),
+                            mode="offline",
+                        )
+
+                        print("🔥 ViGeo warmed up with dummy clip")
+                    except Exception as e:
+                        print(f"⚠️ ViGeo warm-up failed: {e}")
+                else:
+                    print("⏭️ Skipping ViGeo warm-up by request.")
+
+                status_label_widget.after(
+                    0,
+                    lambda: stop_spinner(
+                        status_label_widget,
+                        f"✅ ViGeo model loaded: {selected_checkpoint} "
+                        f"(device: {device_display_name()})"
+                    )
+                )
+                return
                 
-                        # --- Video Depth Anything adapter callable ---
+            # --- Video Depth Anything adapter callable ---
             is_vda = bool(caps.get("kind") == "vda" or caps.get("is_video_model", False))
 
             if is_vda:
                 if not is_current_session():
                     return
                 
-                pipe = model_callable
-                pipe_type = "vda"
+                set_active_pipe(model_callable, "vda")
                 skip_warmup = True
                 
                 status_label_widget.after(
@@ -2238,7 +2659,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         ]
 
                         # Let adapter infer; pass an input_size if you want it explicit
-                        _ = pipe(dummy_frames, inference_size=(512, 288), input_size=518, target_fps=24)
+                        _ = model_callable(dummy_frames, inference_size=(512, 288), input_size=518, target_fps=24)
 
                         print("🔥 VDA warmed up with dummy clip")
                     except Exception as e:
@@ -2255,6 +2676,46 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 )
                 return
 
+            # --- Depth Anything v2 safetensors adapter callable ---
+            is_dav2 = bool(caps.get("is_dav2", False) or getattr(model_callable, "_is_dav2", False))
+
+            if is_dav2:
+                if not is_current_session():
+                    return
+
+                set_active_pipe(model_callable, "dav2")
+
+                status_label_widget.after(
+                    0,
+                    lambda: start_spinner(status_label_widget, "🔄 Warming up Depth Anything v2...")
+                )
+
+                if not skip_warmup:
+                    try:
+                        dummy = Image.new("RGB", (512, 288), (127, 127, 127))
+
+                        warmup_size = parse_inference_resolution(
+                            selected_inference_res_text,
+                            fallback=(518, 518),
+                        )
+
+                        _ = model_callable([dummy], inference_size=warmup_size)
+
+                        print("🔥 DA-V2 warmed up with dummy frame")
+                    except Exception as e:
+                        print(f"⚠️ DA-V2 warm-up failed: {e}")
+                else:
+                    print("⏭️ Skipping DA-V2 warm-up by request.")
+
+                status_label_widget.after(
+                    0,
+                    lambda: stop_spinner(
+                        status_label_widget,
+                        f"✅ Depth Anything v2 loaded: {selected_checkpoint} "
+                        f"(device: {device_display_name()})"
+                    )
+                )
+                return
             
             # --- Depth Anything v3 adapter callable ---
             is_da3 = bool(caps.get("kind") == "da3" or caps.get("has_builtin_processor", False))
@@ -2263,8 +2724,7 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 if not is_current_session():
                     return
 
-                pipe = model_callable
-                pipe_type = "da3"
+                set_active_pipe(model_callable, "da3")
 
                 status_label_widget.after(
                     0,
@@ -2278,11 +2738,11 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                         dummy = Image.new("RGB", (512, 288), (127, 127, 127))
 
                         warmup_size = parse_inference_resolution(
-                            inference_res_var.get(),
+                            selected_inference_res_text,
                             fallback=(504, 504),
                         )
 
-                        _ = pipe([dummy], inference_size=warmup_size)
+                        _ = model_callable([dummy], inference_size=warmup_size)
 
 
                         print("🔥 DA3 warmed up with dummy frame")
@@ -2303,6 +2763,36 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
             else:
                 processor = meta
 
+                if processor is None:
+                    msg = (
+                        f"❌ Failed to load processor for {selected_checkpoint}. "
+                        "This model cannot run through the generic Hugging Face path."
+                    )
+                    print(msg)
+                    status_label_widget.after(
+                        0,
+                        lambda m=msg: stop_spinner(status_label_widget, m)
+                    )
+                    return
+
+                try:
+                    first_param = next(model_callable.parameters())
+                    model_dtype = str(first_param.dtype)
+                    model_device = str(first_param.device)
+                except Exception:
+                    model_dtype = "unknown"
+                    model_device = "unknown"
+
+                print(
+                    f"[HF DEPTH] Using generic Hugging Face path | "
+                    f"selected={selected_checkpoint} | "
+                    f"class={model_callable.__class__.__name__} | "
+                    f"device_before_move={model_device} | "
+                    f"dtype={model_dtype} | "
+                    f"active_backend={device_display_name()}"
+                )
+                
+
                 # ------------------------------------------------------------
                 # Faster generic HuggingFace depth path.
                 #
@@ -2314,14 +2804,24 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 try:
                     model_callable.eval()
 
-                    if getattr(torch_device, "type", None) != "cpu":
+                    if is_torch_accelerator_device(torch_device):
                         model_callable.to(torch_device)
 
+                    # channels_last is CUDA-only here. Do not force it on DirectML.
                     if is_cuda_device(torch_device):
                         try:
                             model_callable.to(memory_format=torch.channels_last)
                         except Exception:
                             pass
+                            
+                    try:
+                        first_param = next(model_callable.parameters())
+                        print(
+                            f"[HF DEPTH] Moved model | "
+                            f"device={first_param.device} | dtype={first_param.dtype}"
+                        )
+                    except Exception:
+                        pass
 
                 except Exception as e:
                     print(f"⚠️ Could not move HF model to active device cleanly: {e}")
@@ -2330,15 +2830,19 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                     if not isinstance(images, list):
                         images = [images]
 
-                    # Resize once before processor.
-                    # This keeps your UI inference-resolution behavior.
+                    # Resize only if needed.
+                    # In video mode, process_video2() already resized frames with OpenCV
+                    # before wrapping them as PIL images. Re-resizing here adds CPU overhead.
                     if inference_size:
+                        target_size = (int(inference_size[0]), int(inference_size[1]))
+                        bicubic = getattr(Image, "Resampling", Image).BICUBIC
+
                         images = [
-                            img.resize(inference_size, Image.BICUBIC)
+                            img if getattr(img, "size", None) == target_size else img.resize(target_size, bicubic)
                             for img in images
                         ]
 
-                    use_fp16 = bool(fp16_var.get()) and can_use_fp16_on_device(torch_device)
+                    use_fp16 = selected_fp16 and can_use_fp16_on_device(torch_device)
 
                     # Processor call. Prefer do_resize=False because we already
                     # resized above. Some processors do not accept do_resize,
@@ -2397,15 +2901,14 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
                 if not is_current_session():
                     return
 
-                pipe = hf_batch_safe_pipe
-                pipe_type = "hf"
+                set_active_pipe(hf_batch_safe_pipe, "hf")
 
                 status_label_widget.after(0, lambda: start_spinner(
                     status_label_widget, "🔄 Warming up Hugging Face model..."))
                 if not skip_warmup:
                     try:
                         dummy = Image.new("RGB", (384, 384), (127, 127, 127))
-                        _ = pipe([dummy])
+                        _ = hf_batch_safe_pipe([dummy])
                         print("🔥 Hugging Face pipeline warmed up with dummy frame")
                     except Exception as e:
                         print(f"⚠️ Hugging Face warm-up failed: {e}")
@@ -2498,8 +3001,13 @@ def choose_output_directory(output_label_widget, output_dir_var):
         output_label_widget.config(text=f"📁 {selected_directory}")
 
 def get_dynamic_batch_size(base=4, scale_factor=1.0, max_limit=32, reserve_vram_gb=1.0): 
-    # GPU Memory-based scaling only when a CUDA-like device exists
-    if torch_device.type == "cuda":
+    # DirectML does not expose reliable PyTorch VRAM stats.
+    # Keep a conservative fixed default unless the user manually chooses higher.
+    if is_directml_device(torch_device):
+        return max(1, int(base))
+
+    # GPU Memory-based scaling only when CUDA exists.
+    if is_cuda_device(torch_device):
         try:
             num_gpus = torch.cuda.device_count()
             if num_gpus > 0:
@@ -2588,9 +3096,12 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
             ui_status("❌ Failed to create output directory.")
             return
 
-    if pipe is None:
+    current_pipe, current_pipe_type, _ = get_active_pipe_snapshot()
+    if current_pipe is None:
         ui_status("❌ No depth model loaded. Please select a model first.")
+        ui_progress(value=0)
         return
+
 
     inference_size = parse_inference_resolution(inference_res_var.get())
 
@@ -2603,11 +3114,14 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
         batch_size = get_dynamic_batch_size()
         ui_status(f"⚠️ Invalid batch size. Using dynamic batch size: {batch_size}")
 
-    image_files = [
-        os.path.join(folder_path, f)
-        for f in os.listdir(folder_path)
-        if f.lower().endswith((".jpeg", ".jpg", ".png"))
-    ]
+    image_files = sorted(
+        [
+            os.path.join(folder_path, f)
+            for f in os.listdir(folder_path)
+            if f.lower().endswith((".jpeg", ".jpg", ".png"))
+        ],
+        key=lambda p: natural_sort_key(os.path.basename(p)),
+    )
 
     if not image_files:
         ui_status("⚠️ No image files found.")
@@ -2677,8 +3191,8 @@ def process_images_in_folder(folder_path, batch_size_widget, output_dir_var, inf
                     else:
                         depth_image = Image.fromarray(out_arr, mode="L")
                 else:
-                    if getattr(pipe, "_is_marigold", False):
-                        depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
+                    if getattr(current_pipe, "_is_marigold", False):
+                        depth_image = current_pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
                         depth_image = depth_image.resize((orig_w, orig_h), Image.BICUBIC)
                         if invert_var.get():
                             arr = np.array(depth_image, dtype=np.uint16)
@@ -2794,7 +3308,8 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
             ui_call(status_label.config, text="❌ Failed to create output directory.")
             return
 
-    if pipe is None:
+    current_pipe, current_pipe_type, _ = get_active_pipe_snapshot()
+    if current_pipe is None:
         ui_call(status_label.config, text="❌ No depth model loaded. Please select a model first.")
         return
 
@@ -2838,15 +3353,15 @@ def process_image(file_path, colormap_var, invert_var, output_dir_var, inference
 
         else:
             # === Marigold special path ===
-            if getattr(pipe, "_is_marigold", False):
+            if getattr(current_pipe, "_is_marigold", False):
                 if colormap_name == "default":
-                    depth_image = pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
+                    depth_image = current_pipe.image_processor.export_depth_to_16bit_png(depth_pred)[0]
                 else:
                     try:
-                        depth_image = pipe.image_processor.visualize_depth(depth_pred, color_map=colormap_name)[0]
+                        depth_image = current_pipe.image_processor.visualize_depth(depth_pred, color_map=colormap_name)[0]
                     except Exception as e:
                         print(f"⚠️ Failed to apply colormap '{colormap_name}', using default. {e}")
-                        depth_image = pipe.image_processor.visualize_depth(depth_pred)[0]
+                        depth_image = current_pipe.image_processor.visualize_depth(depth_pred)[0]
 
                 depth_image = depth_image.resize(original_size, Image.BICUBIC)
                 if invert_var.get():
@@ -3212,6 +3727,7 @@ def process_video2(
     ignore_letterbox_bars=False,
     prefer_opencv_writer=False,
     disable_scene_normalization=False,
+    vda_overlap=None,
 ):
     
     def ui_set_progress(pct: int):
@@ -3264,25 +3780,8 @@ def process_video2(
     except Exception:
         inference_steps = 2
 
-    try:
-        offload_mode = offload_mode_dropdown.get().strip() if offload_mode_dropdown else "sequential"
-    except Exception:
-        offload_mode = "sequential"
-
     inference_size = parse_inference_resolution(inference_res_text)
-    print(
-        "[DEPTH SETTINGS]",
-        f"pipe_type={pipe_type}",
-        f"inference_size={inference_size}",
-        f"batch_size={batch_size}",
-        f"codec={ffmpeg_codec}",
-        f"invert={invert_flag}",
-        f"ignore_letterbox_bars={ignore_letterbox_bars}",
-        f"disable_scene_normalization={disable_scene_normalization}",
-        f"save_frames={save_frames}",
-        f"device={device_display_name()}",
-        flush=True,
-    )    
+
     if not output_dir:
         def _warn():
             try:
@@ -3294,10 +3793,27 @@ def process_video2(
         ui_set_progress(0)
         return 0
 
-    if pipe is None:
+    # Snapshot the active model once at job start.
+    # This also defines current_pipe for the Marigold branch below.
+    current_pipe, current_pipe_type, _ = get_active_pipe_snapshot()
+    if current_pipe is None:
         ui_set_status("❌ No depth model loaded. Please select a model first.")
         ui_set_progress(0)
         return 0
+
+    print(
+        "[DEPTH SETTINGS]",
+        f"pipe_type={current_pipe_type}",
+        f"inference_size={inference_size}",
+        f"batch_size={batch_size}",
+        f"codec={ffmpeg_codec}",
+        f"invert={invert_flag}",
+        f"ignore_letterbox_bars={ignore_letterbox_bars}",
+        f"disable_scene_normalization={disable_scene_normalization}",
+        f"save_frames={save_frames}",
+        f"device={device_display_name()}",
+        flush=True,
+    )
 
     os.makedirs(output_dir, exist_ok=True)
     _, input_filename = os.path.split(file_path)
@@ -3307,7 +3823,7 @@ def process_video2(
     sidecar_path = os.path.splitext(output_path)[0] + ".letterbox.json"
 
     # === Marigold special path ===
-    if hasattr(pipe, "image_processor") and hasattr(pipe.image_processor, "export_depth_to_16bit_png"):
+    if hasattr(current_pipe, "image_processor") and hasattr(current_pipe.image_processor, "export_depth_to_16bit_png"):
         print("🎥 Marigold model detected — switching to frame-based 16-bit processing.")
 
         ffmpeg_exe = require_tool("ffmpeg")
@@ -3366,6 +3882,7 @@ def process_video2(
                 [
                     ffmpeg_exe, "-y",
                     "-framerate", str(float(source_fps)),
+                    "-start_number", "1",
                     "-i", os.path.join(tmp_frame_dir, "frame_%05d_depth.png"),
                     "-c:v", "ffv1",
                     "-pix_fmt", "gray16le",
@@ -3519,14 +4036,7 @@ def process_video2(
         except Exception:
             pass
 
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-            except Exception:
-                pass
-
-        gc.collect()
+        cleanup_torch_runtime()
 
     frame_output_dir = os.path.join(output_dir, f"{name}_frames")
     if save_frames:
@@ -3538,8 +4048,8 @@ def process_video2(
     total_processed_frames = 0
     bars_batch = []
 
-    if pipe_type == "onnx" and getattr(pipe, "_is_vda_onnx", False):
-        fixed_T = int(getattr(pipe, "_fixed_T", 8) or 8)
+    if current_pipe_type == "onnx" and getattr(current_pipe, "_is_vda_onnx", False):
+        fixed_T = int(getattr(current_pipe, "_fixed_T", 8) or 8)
         if batch_size != fixed_T:
             print(f"[VDA-ONNX] Forcing batch_size from {batch_size} to fixed T={fixed_T}")
         batch_size = fixed_T
@@ -3553,7 +4063,10 @@ def process_video2(
 
     if generator is None:
         seed = 42
-        gen_device = "cuda" if torch.cuda.is_available() else ("cpu" if torch_device.type != "privateuseone" else torch_device)
+
+        # torch.Generator on DirectML/privateuseone is not reliably supported.
+        # Use CUDA generator only on CUDA, otherwise CPU generator.
+        gen_device = "cuda" if is_cuda_device(torch_device) else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
     global_session_start_time = time.time()
@@ -3631,12 +4144,19 @@ def process_video2(
                 f"lo={temp_normalizer.lo:.4f}, hi={temp_normalizer.hi:.4f}"
             )
 
+    # Start FPS timing after bootstrap/normalizer setup.
+    # Otherwise reported FPS includes the sampled pre-pass and looks artificially low.
+    global_session_start_time = time.time()
+
     # ============================================================
     # MAIN PROCESSING - wrapped in try/finally for cleanup
     # ============================================================
     try:
         if _is_vda_runtime():
-            vda_window_size, vda_overlap, vda_stride = get_vda_window_settings(batch_size)
+            vda_window_size, vda_overlap, vda_stride = get_vda_window_settings(
+                batch_size,
+                user_overlap=vda_overlap,
+            )
 
             if vda_window_size >= 32:
                 print(
@@ -3688,12 +4208,7 @@ def process_video2(
                     )
 
                 except Exception as e:
-                    if torch.cuda.is_available():
-                        try:
-                            torch.cuda.empty_cache()
-                            torch.cuda.ipc_collect()
-                        except Exception:
-                            pass
+                    cleanup_torch_runtime()
 
                     raise RuntimeError(
                         f"VDA streaming window failed at source frame {window_start_idx}. "
@@ -3856,12 +4371,7 @@ def process_video2(
                     source_window = source_window[vda_stride:]
 
                     if source_index % max(1, vda_window_size * 10) == 0:
-                        if torch.cuda.is_available():
-                            try:
-                                torch.cuda.empty_cache()
-                            except Exception:
-                                pass
-                        gc.collect()
+                        cleanup_torch_runtime()
 
                 # EOF partial window, process everything left and flush all remaining frames.
                 elif eof:
@@ -3912,7 +4422,169 @@ def process_video2(
             frame_count = total_processed_frames
 
         else:
-            # Non-VDA batch processing
+            # Non-VDA batch processing.
+            #
+            # Important:
+            # Do not rely on frame_count == total_frames to flush the last batch.
+            # OpenCV can report CAP_PROP_FRAME_COUNT as 0 or slightly wrong for
+            # some files/streams, which used to drop the final partial batch.
+            def flush_non_vda_batch():
+                nonlocal prev_depth_u8, write_index, total_processed_frames, last_profile_print
+
+                if not frames_batch:
+                    return True
+
+                wait_if_paused(status_label)
+                if cancel_requested.is_set():
+                    return False
+
+                extra = {}
+                if pipe_type == "vda":
+                    extra = {
+                        "target_fps": int(target_fps) if target_fps and target_fps > 0 else int(fps),
+                        "input_size": 518,
+                    }
+
+                _profile_sync()
+                t_infer = time.perf_counter()
+
+                predictions = _run_pipe_or_tile(frames_batch, inference_size, **extra)
+
+                _profile_sync()
+                stage_times["inference"] += time.perf_counter() - t_infer
+                stage_counts["batches"] += 1
+
+                if len(predictions) != len(frames_batch):
+                    print(
+                        f"⚠️ Model returned {len(predictions)} predictions "
+                        f"for {len(frames_batch)} video frames."
+                    )
+
+                for i, prediction in enumerate(predictions[:len(frames_batch)]):
+                    if cancel_requested.is_set():
+                        return False
+
+                    try:
+                        # -------------------------
+                        # Postprocess timing
+                        # -------------------------
+                        t_post = time.perf_counter()
+
+                        raw_depth = prediction["predicted_depth"]
+                        depth_f = _ensure_depth_np(raw_depth).squeeze()
+
+                        if temp_normalizer is not None:
+                            depth_01 = temp_normalizer(depth_f)
+                        else:
+                            depth_01 = fast_depth_to_01(depth_f)
+
+                        depth_u8 = (depth_01 * 255.0 + 0.5).astype(np.uint8)
+
+                        if invert_flag:
+                            depth_u8 = 255 - depth_u8
+
+                        depth_u8 = cv2.resize(
+                            depth_u8,
+                            (original_width, original_height),
+                            interpolation=cv2.INTER_CUBIC,
+                        )
+
+                        if prev_depth_u8 is None:
+                            smoothed_u8 = depth_u8
+                        else:
+                            smoothed_u8 = cv2.addWeighted(prev_depth_u8, 0.2, depth_u8, 0.8, 0.0)
+
+                        prev_depth_u8 = smoothed_u8
+
+                        bt, bb = bars_batch[i] if i < len(bars_batch) else (0, 0)
+
+                        if ignore_letterbox_bars and (bt or bb):
+                            top = max(0, int(bt))
+                            bot = max(0, int(bb))
+
+                            if top + bot < original_height:
+                                full_gray = smoothed_u8.copy()
+                                core = full_gray[top:original_height - bot, :]
+                                neutral = int(np.median(core)) if core.size else 0
+
+                                if top > 0:
+                                    full_gray[:top, :] = neutral
+
+                                if bot > 0:
+                                    full_gray[original_height - bot:, :] = neutral
+
+                                bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
+                            else:
+                                bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
+                        else:
+                            bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
+
+                        stage_times["postprocess"] += time.perf_counter() - t_post
+
+                        # -------------------------
+                        # Write timing
+                        # -------------------------
+                        t_write = time.perf_counter()
+
+                        if use_opencv:
+                            out.write(bgr)
+                        else:
+                            ff_proc.stdin.write(bgr.tobytes())
+
+                        if save_frames:
+                            cv2.imwrite(
+                                os.path.join(frame_output_dir, f"frame_{write_index:05d}.png"),
+                                smoothed_u8,
+                            )
+
+                        stage_times["write"] += time.perf_counter() - t_write
+
+                        write_index += 1
+                        total_processed_frames += 1
+
+                    except Exception as e:
+                        print(f"Depth processing error: {e}")
+
+                now_profile = time.time()
+
+                if profile_depth_stages and (now_profile - last_profile_print) >= 10:
+                    total_profile = sum(stage_times.values()) or 1e-6
+
+                    debug_print(
+                        "[DEPTH PROFILE] "
+                        f"frames={stage_counts['frames']} batches={stage_counts['batches']} | "
+                        f"decode={stage_times['decode']:.2f}s ({stage_times['decode'] / total_profile * 100:.1f}%) | "
+                        f"pre={stage_times['preprocess']:.2f}s ({stage_times['preprocess'] / total_profile * 100:.1f}%) | "
+                        f"infer={stage_times['inference']:.2f}s ({stage_times['inference'] / total_profile * 100:.1f}%) | "
+                        f"post={stage_times['postprocess']:.2f}s ({stage_times['postprocess'] / total_profile * 100:.1f}%) | "
+                        f"write={stage_times['write']:.2f}s ({stage_times['write'] / total_profile * 100:.1f}%)"
+                    )
+
+                    last_profile_print = now_profile
+
+                if frame_count % 300 == 0:
+                    if is_cuda_device(torch_device):
+                        try:
+                            if torch.cuda.memory_reserved() > 0.90 * torch.cuda.get_device_properties(0).total_memory:
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+
+                    if is_directml_device(torch_device):
+                        try:
+                            import torch_directml
+                            empty_cache = getattr(torch_directml, "empty_cache", None)
+                            if callable(empty_cache):
+                                empty_cache()
+                        except Exception:
+                            pass
+
+                    gc.collect()
+
+                frames_batch.clear()
+                bars_batch.clear()
+                return True
+
             while True:
                 wait_if_paused(status_label)
                 if cancel_requested.is_set():
@@ -3923,10 +4595,12 @@ def process_video2(
                 stage_times["decode"] += time.perf_counter() - t_decode
 
                 if not ret:
+                    # Flush any remaining partial batch at EOF.
+                    flush_non_vda_batch()
                     break
 
                 frame_count += 1
-                
+
                 t_pre = time.perf_counter()
 
                 if ignore_letterbox_bars:
@@ -3934,7 +4608,7 @@ def process_video2(
                 else:
                     bars_top, bars_bottom = 0, 0
 
-                if pipe_type == "da3":
+                if current_pipe_type == "da3":
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 else:
                     if inference_size is None:
@@ -3943,153 +4617,34 @@ def process_video2(
                         frame_rs = cv2.resize(frame, (target_w, target_h), interpolation=interp)
                         frame_rgb = cv2.cvtColor(frame_rs, cv2.COLOR_BGR2RGB)
 
-                frames_batch.append(Image.fromarray(frame_rgb))
+                # DA-V2 adapter accepts RGB uint8 NumPy directly.
+                # Avoid RGB NumPy -> PIL -> NumPy round-trip per frame.
+                if current_pipe_type == "dav2":
+                    frames_batch.append(np.ascontiguousarray(frame_rgb, dtype=np.uint8))
+                else:
+                    frames_batch.append(Image.fromarray(frame_rgb))
+
                 bars_batch.append((bars_top, bars_bottom))
 
                 stage_times["preprocess"] += time.perf_counter() - t_pre
                 stage_counts["frames"] += 1
 
-                if len(frames_batch) == batch_size or (frame_count == total_frames and frames_batch):
-                    wait_if_paused(status_label)
-                    if cancel_requested.is_set():
+                if len(frames_batch) >= batch_size:
+                    if not flush_non_vda_batch():
                         break
-
-                    extra = {}
-                    if pipe_type == "vda":
-                        extra = {"target_fps": int(target_fps) if target_fps and target_fps > 0 else int(fps), "input_size": 518}
-
-                    _profile_sync()
-                    t_infer = time.perf_counter()
-
-                    predictions = _run_pipe_or_tile(frames_batch, inference_size, **extra)
-
-                    _profile_sync()
-                    stage_times["inference"] += time.perf_counter() - t_infer
-                    stage_counts["batches"] += 1
-
-                    for i, prediction in enumerate(predictions):
-                        if cancel_requested.is_set():
-                            break
-
-                        try:
-                            # -------------------------
-                            # Postprocess timing
-                            # -------------------------
-                            t_post = time.perf_counter()
-
-                            raw_depth = prediction["predicted_depth"]
-                            depth_f = _ensure_depth_np(raw_depth).squeeze()
-
-                            if temp_normalizer is not None:
-                                depth_01 = temp_normalizer(depth_f)
-                            else:
-                                depth_01 = fast_depth_to_01(depth_f)
-
-                            depth_u8 = (depth_01 * 255.0 + 0.5).astype(np.uint8)
-
-                            if invert_flag:
-                                depth_u8 = 255 - depth_u8
-
-                            depth_u8 = cv2.resize(
-                                depth_u8,
-                                (original_width, original_height),
-                                interpolation=cv2.INTER_CUBIC,
-                            )
-
-                            if prev_depth_u8 is None:
-                                smoothed_u8 = depth_u8
-                            else:
-                                smoothed_u8 = cv2.addWeighted(prev_depth_u8, 0.2, depth_u8, 0.8, 0.0)
-
-                            prev_depth_u8 = smoothed_u8
-                            
-                            bt, bb = bars_batch[i] if i < len(bars_batch) else (bars_top, bars_bottom)
-
-                            if ignore_letterbox_bars and (bt or bb):
-                                top = max(0, int(bt))
-                                bot = max(0, int(bb))
-
-                                if top + bot < original_height:
-                                    full_gray = smoothed_u8.copy()
-                                    core = full_gray[top:original_height - bot, :]
-                                    neutral = int(np.median(core)) if core.size else 0
-
-                                    if top > 0:
-                                        full_gray[:top, :] = neutral
-
-                                    if bot > 0:
-                                        full_gray[original_height - bot:, :] = neutral
-
-                                    bgr = cv2.cvtColor(full_gray, cv2.COLOR_GRAY2BGR)
-                                else:
-                                    bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
-                            else:
-                                bgr = cv2.cvtColor(smoothed_u8, cv2.COLOR_GRAY2BGR)
-
-                            stage_times["postprocess"] += time.perf_counter() - t_post
-
-                            # -------------------------
-                            # Write timing
-                            # -------------------------
-                            t_write = time.perf_counter()
-
-                            if use_opencv:
-                                out.write(bgr)
-                            else:
-                                ff_proc.stdin.write(bgr.tobytes())
-
-                            if save_frames:
-                                cv2.imwrite(
-                                    os.path.join(frame_output_dir, f"frame_{write_index:05d}.png"),
-                                    smoothed_u8,
-                                )
-
-                            stage_times["write"] += time.perf_counter() - t_write
-
-                            write_index += 1
-                            total_processed_frames += 1
-
-                        except Exception as e:
-                            print(f"Depth processing error: {e}")
-
-                    if cancel_requested.is_set():
-                        break
-
-                    now_profile = time.time()
-
-                    if profile_depth_stages and (now_profile - last_profile_print) >= 10:
-                        total_profile = sum(stage_times.values()) or 1e-6
-
-                        debug_print(
-                            "[DEPTH PROFILE] "
-                            f"frames={stage_counts['frames']} batches={stage_counts['batches']} | "
-                            f"decode={stage_times['decode']:.2f}s ({stage_times['decode'] / total_profile * 100:.1f}%) | "
-                            f"pre={stage_times['preprocess']:.2f}s ({stage_times['preprocess'] / total_profile * 100:.1f}%) | "
-                            f"infer={stage_times['inference']:.2f}s ({stage_times['inference'] / total_profile * 100:.1f}%) | "
-                            f"post={stage_times['postprocess']:.2f}s ({stage_times['postprocess'] / total_profile * 100:.1f}%) | "
-                            f"write={stage_times['write']:.2f}s ({stage_times['write'] / total_profile * 100:.1f}%)"
-                        )
-
-                        last_profile_print = now_profile
-
-                    if frame_count % 300 == 0:
-                        if torch.cuda.is_available():
-                            try:
-                                if torch.cuda.memory_reserved() > 0.90 * torch.cuda.get_device_properties(0).total_memory:
-                                    torch.cuda.empty_cache()
-                            except Exception: pass
-                        gc.collect()
-
-                    frames_batch.clear()
-                    bars_batch.clear()
 
                 elapsed = time.time() - global_session_start_time
                 avg_fps = total_processed_frames / elapsed if elapsed > 0 else 0
-                remaining = total_frames - total_processed_frames
+                remaining = max(0, total_frames - total_processed_frames) if total_frames > 0 else 0
                 eta = remaining / avg_fps if avg_fps > 0 else 0
                 progress_den = max(1, int(total_frames_all or total_frames or 1))
                 progress = int(((frames_processed_all + total_processed_frames) / progress_den) * 100)
-                ui_set_status(f"{frames_processed_all + total_processed_frames}/{total_frames_all} | FPS: {avg_fps:.1f} | ETA: {time.strftime('%H:%M:%S', time.gmtime(eta))}")
+
+                ui_set_status(
+                    f"{frames_processed_all + total_processed_frames}/{total_frames_all} | "
+                    f"FPS: {avg_fps:.1f} | "
+                    f"ETA: {time.strftime('%H:%M:%S', time.gmtime(eta))}"
+                )
                 ui_set_progress(progress)
 
     finally:
@@ -4192,8 +4747,11 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
         if is_av1_encoded(file_path):
             messagebox.showwarning(
                 "Unsupported AV1 Input",
-                "🚫 This video is encoded with AV1, which is not supported by OpenCV in this application.\n\n"
-                "Please re-encode it to H.264 using:\n\nffmpeg -i input.mkv -c:v libx264 output.mp4"
+                "🚫 This video is encoded with AV1.\n\n"
+                "This app currently decodes video through OpenCV for depth processing, "
+                "and your OpenCV build may not support AV1.\n\n"
+                "Please re-encode it to H.264 first, for example:\n\n"
+                "ffmpeg -i input.mkv -c:v libx264 -crf 18 -preset veryfast output.mp4"
             )
             status_label.config(text="❌ AV1 input not supported. Re-encode to H.264.")
             return
@@ -4240,7 +4798,6 @@ def open_video(status_label, progress_bar, batch_size_widget, output_dir_var, in
                 inference_steps_value,
             ),
             kwargs={
-                "offload_mode_dropdown": offload_mode_dropdown,
                 "target_fps": -1,
                 "ignore_letterbox_bars": False,
                 "prefer_opencv_writer": False,
