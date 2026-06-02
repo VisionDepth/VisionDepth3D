@@ -10,7 +10,7 @@ class AppState:
     output_format: str = "Full-SBS"
     stereo_mode: str = "sbs"
     render_mode: str = "video"
-    selected_aspect_ratio: str = "Default (16:9)"
+    selected_aspect_ratio: str = "Default (16:9 / 1.78:1)"
 
     selected_codec: str = "mp4v"
 
@@ -26,6 +26,13 @@ class AppState:
     preserve_hdr10: bool = False
     crf_value: int = 20
     nvenc_cq_value: int = 20
+    
+    encoding_container: str = ""
+    encoding_extension: str = ""
+    encoding_pixel_format: str = "yuv420p"
+    encoding_encoder_preset: str = "p5"
+    encoding_audio_mode: str = "copy"
+    encoding_warning: str = ""
 
     fg_shift: float = -8.0
     mg_shift: float = -1.5
@@ -60,6 +67,13 @@ class AppState:
     subject_lock_strength: float = 0.34
     subject_plane_lock_strength: float = 0.0
     subject_plane_lock_width: float = 0.08
+
+    # Subject Zero Lock strength.
+    # 0.0 = off
+    # 1.0 = strongly cancel tracked subject disparity toward screen plane
+    # Kept as subject_screen_plane internally for backward compatibility.
+    subject_screen_plane: float = 0.0
+
     foreground_curvature_strength: float = 0.06
 
     feather_strength: float = 0.0
