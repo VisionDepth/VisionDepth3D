@@ -187,6 +187,14 @@ class DepthGenerationPage(QWidget):
         self.batch_spin.setValue(8)
         self.batch_spin.setPrefix(f"{self._t('Batch:')} ")
 
+        self.vda_overlap_spin = QSpinBox()
+        self.vda_overlap_spin.setRange(0, 63)
+        self.vda_overlap_spin.setValue(4)
+        self.vda_overlap_spin.setPrefix(f"{self._t('Overlap:')} ")
+        self.vda_overlap_spin.setToolTip(
+            "VDA only. Reuses this many frames between depth windows for smoother temporal depth."
+        )
+
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(1, 50)
         self.steps_spin.setValue(5)
@@ -194,6 +202,7 @@ class DepthGenerationPage(QWidget):
 
         inference_card.inner_layout.addWidget(self.resolution_combo)
         inference_card.inner_layout.addWidget(self.batch_spin)
+        inference_card.inner_layout.addWidget(self.vda_overlap_spin)
         inference_card.inner_layout.addWidget(self.steps_spin)
 
         left_layout.addWidget(inference_card)
@@ -427,6 +436,7 @@ class DepthGenerationPage(QWidget):
             "No preview samples were generated.": "No preview samples were generated.",
             "Depth preview samples ready.": "Depth preview samples ready.",
             "Preview failed:": "Preview failed:",
+            "Overlap:": "Overlap:",
         }
 
         if isinstance(translations, dict):
@@ -490,6 +500,9 @@ class DepthGenerationPage(QWidget):
     def _set_spin_prefixes(self):
         if hasattr(self, "batch_spin"):
             self.batch_spin.setPrefix(f"{self._t('Batch:')} ")
+
+        if hasattr(self, "vda_overlap_spin"):
+            self.vda_overlap_spin.setPrefix(f"{self._t('Overlap:')} ")
 
         if hasattr(self, "steps_spin"):
             self.steps_spin.setPrefix(f"{self._t('Steps:')} ")
@@ -611,13 +624,25 @@ class DepthGenerationPage(QWidget):
 
         if hasattr(self, "next_preview_btn"):
             self.next_preview_btn.setEnabled(is_video_mode and len(self._preview_pairs) > 1)
+            
+    def _on_batch_size_changed(self, value):
+        value = int(value)
+        setattr(self._state, "batch_size", value)
+
+        if hasattr(self, "vda_overlap_spin"):
+            max_overlap = max(0, value - 1)
+            self.vda_overlap_spin.setMaximum(max_overlap)
+
+            if self.vda_overlap_spin.value() > max_overlap:
+                self.vda_overlap_spin.setValue(max_overlap)
 
     # ── All the same methods from your existing file ──
     def _bind_events(self):
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         self.mode_combo.currentIndexChanged.connect(self._on_processing_mode_changed)
         self.resolution_combo.currentTextChanged.connect(lambda v: setattr(self._state, "inference_resolution", v))
-        self.batch_spin.valueChanged.connect(lambda v: setattr(self._state, "batch_size", v))
+        self.batch_spin.valueChanged.connect(self._on_batch_size_changed)
+        self.vda_overlap_spin.valueChanged.connect(lambda v: setattr(self._state, "vda_overlap", v))
         self.steps_spin.valueChanged.connect(lambda v: setattr(self._state, "inference_steps", v))
         self.codec_combo.currentTextChanged.connect(lambda v: setattr(self._state, "codec", v))
         self.invert_check.toggled.connect(lambda v: setattr(self._state, "invert_depth", v))
@@ -655,6 +680,11 @@ class DepthGenerationPage(QWidget):
         self._update_diffusion_options(self._state.selected_model)
         self.resolution_combo.setCurrentText(self._state.inference_resolution)
         self.batch_spin.setValue(self._state.batch_size)
+
+        if hasattr(self, "vda_overlap_spin"):
+            self.vda_overlap_spin.setValue(int(getattr(self._state, "vda_overlap", 4)))
+            self.vda_overlap_spin.setMaximum(max(0, int(self._state.batch_size) - 1))
+
         self.steps_spin.setValue(self._state.inference_steps)
         self.codec_combo.setCurrentText(self._state.codec)
         self.invert_check.setChecked(self._state.invert_depth)
@@ -726,11 +756,32 @@ class DepthGenerationPage(QWidget):
 
     def _update_diffusion_options(self, model_name):
         from core.render_depth import supported_models
+
         checkpoint = supported_models.get(model_name, "")
-        is_diffusion = isinstance(checkpoint, str) and checkpoint.startswith("diffusers:")
+        checkpoint_text = str(checkpoint or "").lower()
+        model_text = str(model_name or "").lower()
+
+        is_diffusion = checkpoint_text.startswith("diffusers:")
+
+        is_vda = (
+            "video-depth-anything" in checkpoint_text
+            or "video depth anything" in checkpoint_text
+            or "videodepthanything" in checkpoint_text
+            or "video-depth-anything" in model_text
+            or "video depth anything" in model_text
+            or "vda" in model_text
+        )
+
         self.steps_spin.setVisible(is_diffusion)
         self.offload_combo.setVisible(is_diffusion)
 
+        if hasattr(self, "offload_label"):
+            self.offload_label.setVisible(is_diffusion)
+
+        if hasattr(self, "vda_overlap_spin"):
+            self.vda_overlap_spin.setVisible(is_vda)
+            self.vda_overlap_spin.setMaximum(max(0, int(self.batch_spin.value()) - 1))
+            
     def _start_processing(self):
         mode = self.mode_combo.currentData() or self.mode_combo.currentText()
         setattr(self._state, "processing_mode", mode)
