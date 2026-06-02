@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="800" height="400" alt="NewVD3D-Logo" src="https://github.com/user-attachments/assets/d2a9e18f-08f9-498e-b023-5243aa0af639" />
+  <img width="800" height="450" alt="NewVD3D-Logo" src="https://github.com/user-attachments/assets/d2656cc4-d51c-44e4-a364-49c221dddc89" />
   <br>
 </p>
 
