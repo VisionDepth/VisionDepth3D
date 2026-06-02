@@ -3,8 +3,8 @@ import sys
 import time
 import webbrowser
 
-from PySide6.QtCore import Qt, QObject, Signal, QUrl
-from PySide6.QtGui import QIcon, QPalette, QActionGroup, QDesktopServices
+from PySide6.QtCore import Qt, QObject, Signal, QUrl, QRect, QTimer
+from PySide6.QtGui import QIcon, QPalette, QActionGroup, QDesktopServices, QPixmap, QImage
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -136,8 +136,13 @@ class MainWindow(QMainWindow):
         top_layout.setContentsMargins(14, 10, 14, 10)
         top_layout.setSpacing(10)
 
-        self.app_title = QLabel("VisionDepth3D")
-        self.app_title.setObjectName("AppTitle")
+        self.app_title = QLabel()
+        self.app_title.setObjectName("AppLogo")
+        self.app_title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.app_title.setStyleSheet("background: transparent; border: none; padding: 0px; margin: 0px;")
+        self._app_logo_path = resource_path("resources/icons/NewVD3D-Logo.png")
+        self._app_logo_height = 42
+        self._set_app_logo()
 
         self.gpu_label = QLabel("")
         self.gpu_label.setObjectName("GpuLabel")
@@ -163,7 +168,7 @@ class MainWindow(QMainWindow):
             self.nav_buttons[key] = btn
 
         top_layout.addWidget(self.app_title)
-        top_layout.addSpacing(18)
+        top_layout.addSpacing(8)
         top_layout.addWidget(self.btn_stereo)
         top_layout.addWidget(self.btn_depth)
         top_layout.addWidget(self.btn_blend)
@@ -190,7 +195,7 @@ class MainWindow(QMainWindow):
 
         self.content_splitter.setStretchFactor(0, 1)
         self.content_splitter.setStretchFactor(1, 0)
-        self.content_splitter.setSizes([700, 240])
+        self.content_splitter.setSizes([700, 150])
 
         root.addWidget(self.content_splitter, 1)
 
@@ -219,6 +224,33 @@ class MainWindow(QMainWindow):
         self._apply_page_themes()
         self._detect_gpu()
         self.refresh_shell_labels()
+
+    def bring_to_front_once(self):
+        """
+        Bring the main VD3D window to the front once after startup.
+
+        This avoids making the app permanently always-on-top.
+        It only asks Windows/Qt to raise and activate the main window after loading.
+        """
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        self.raise_()
+        self.activateWindow()
+
+        # Windows sometimes ignores the first activation if another window had focus.
+        # Temporarily set always-on-top, then remove it right away.
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        def remove_top_hint():
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        QTimer.singleShot(250, remove_top_hint)
 
     def _bind_events(self):
         self.btn_stereo.clicked.connect(lambda: self._switch_page("stereo"))
@@ -284,14 +316,14 @@ class MainWindow(QMainWindow):
     # ── Render callbacks ──
     def _on_render_started(self):
         self.queue.reset_progress()
-        self.queue.set_status(self._t("Render started..."))
+        self.queue.set_status_key("Render started...")
         self.queue.set_telemetry("")
-
+        
     def _on_render_finished(self, outputs: list):
         self.queue.set_progress(100)
-        self.queue.set_status(self._t("Render finished."))
+        self.queue.set_status_key("Render finished.")
         self.queue.add_message(self._t("Render finished."))
-
+        
         QMessageBox.information(
             self,
             self._t("Render Complete"),
@@ -309,25 +341,25 @@ class MainWindow(QMainWindow):
         )
 
     def _on_render_suspended(self):
-        self.queue.set_status(self._t("Render suspended."))
+        self.queue.set_status_key("Render suspended.")
 
     def _on_render_resumed(self):
-        self.queue.set_status(self._t("Render resumed."))
+        self.queue.set_status_key("Render resumed.")
 
     def _on_render_cancelled(self):
-        self.queue.set_status(self._t("Render cancelled."))
+        self.queue.set_status_key("Render cancelled.")
         self.queue.add_message(self._t("Render cancelled."))
 
     # ── Depth callbacks ──
     def _on_depth_started(self):
         self.queue.reset_progress()
-        self.queue.set_status(self._t("Depth processing started..."))
+        self.queue.set_status_key("Depth processing started...")
         self.queue.set_telemetry("")
         self.queue.add_message(self._t("Depth processing started..."))
 
     def _on_depth_finished(self, output_path: str):
         self.queue.set_progress(100)
-        self.queue.set_status(self._t("Depth processing finished."))
+        self.queue.set_status_key("Depth processing finished.")
         self.queue.add_message(f"{self._t('Depth output:')} {output_path}")
 
     def _on_depth_failed(self, error: str):
@@ -335,15 +367,15 @@ class MainWindow(QMainWindow):
         self.queue.add_message(f"{self._t('Depth failed:')} {error}")
 
     def _on_depth_cancelled(self):
-        self.queue.set_status(self._t("Depth cancelled."))
+        self.queue.set_status_key("Depth cancelled.")
         self.queue.add_message(self._t("Depth cancelled."))
 
     def _on_depth_suspended(self):
-        self.queue.set_status(self._t("Depth suspended."))
+        self.queue.set_status_key("Depth suspended.")
         self.queue.add_message(self._t("Depth suspended."))
 
     def _on_depth_resumed(self):
-        self.queue.set_status(self._t("Depth resumed."))
+        self.queue.set_status_key("Depth resumed.")
         self.queue.add_message(self._t("Depth resumed."))
 
     def _get_system_stats_text(self):
@@ -589,11 +621,104 @@ class MainWindow(QMainWindow):
     def _set_action_text(self, action, key: str):
         action.setText(self._t(key))
 
+    def _trim_transparent_pixmap(self, pixmap: QPixmap, alpha_threshold: int = 8) -> QPixmap:
+        """
+        Crops transparent padding from a logo PNG so the QLabel only takes up
+        the real visible logo size.
+        """
+        if pixmap.isNull():
+            return pixmap
+
+        try:
+            try:
+                fmt = QImage.Format.Format_ARGB32
+            except AttributeError:
+                fmt = QImage.Format_ARGB32
+
+            image = pixmap.toImage().convertToFormat(fmt)
+
+            w = image.width()
+            h = image.height()
+
+            min_x = w
+            min_y = h
+            max_x = -1
+            max_y = -1
+
+            for y in range(h):
+                for x in range(w):
+                    if image.pixelColor(x, y).alpha() > alpha_threshold:
+                        if x < min_x:
+                            min_x = x
+                        if y < min_y:
+                            min_y = y
+                        if x > max_x:
+                            max_x = x
+                        if y > max_y:
+                            max_y = y
+
+            if max_x < min_x or max_y < min_y:
+                return pixmap
+
+            rect = QRect(
+                min_x,
+                min_y,
+                max_x - min_x + 1,
+                max_y - min_y + 1,
+            )
+
+            return QPixmap.fromImage(image.copy(rect))
+
+        except Exception as e:
+            print(f"Logo trim failed: {e}")
+            return pixmap
+
+
+    def _set_app_logo(self):
+        """
+        Loads the transparent VD3D logo into the top-left app title area.
+        Crops transparent padding so it does not push the tabs away.
+        """
+        if not hasattr(self, "app_title"):
+            return
+
+        logo_path = getattr(
+            self,
+            "_app_logo_path",
+            resource_path("resources/icons/NewVD3D-Logo.png"),
+        )
+
+        pixmap = QPixmap(logo_path)
+
+        if pixmap.isNull():
+            self.app_title.setObjectName("AppTitle")
+            self.app_title.setText(self._t("VisionDepth3D"))
+            self.app_title.setFixedSize(120, 36)
+            return
+
+        pixmap = self._trim_transparent_pixmap(pixmap)
+
+        target_h = int(getattr(self, "_app_logo_height", 42))
+
+        scaled = pixmap.scaledToHeight(
+            target_h,
+            Qt.SmoothTransformation,
+        )
+
+        self.app_title.setObjectName("AppLogo")
+        self.app_title.setText("")
+        self.app_title.setToolTip(self._t("VisionDepth3D"))
+        self.app_title.setPixmap(scaled)
+
+        # This is the important part:
+        # QLabel becomes the exact size of the scaled cropped logo.
+        self.app_title.setFixedSize(scaled.width(), scaled.height())
+
     def refresh_shell_labels(self):
         # App title / window title
         self.setWindowTitle(self._t("VisionDepth3D"))
         if hasattr(self, "app_title"):
-            self.app_title.setText(self._t("VisionDepth3D"))
+            self._set_app_logo()
 
         # Top navigation
         self.btn_stereo.setText(self._t("3D Generator"))
@@ -811,7 +936,7 @@ class MainWindow(QMainWindow):
             self,
             self._t("About VisionDepth3D"),
             (
-                f"{self._t('VisionDepth3D v4.2')}\n\n"
+                f"{self._t('VisionDepth3D v4.2.1')}\n\n"
                 f"{self._t('A hybrid 2D-to-3D conversion suite for cinema and VR.')}\n\n"
                 f"{self._t('Features:')}\n"
                 f" • {self._t('Depth map blending (multi-model)')}\n"
@@ -1191,6 +1316,11 @@ class MainWindow(QMainWindow):
                     color: __TEXT_BRIGHT__;
                     font-size: 15px;
                     font-weight: 800;
+                }
+                
+                QLabel#AppLogo {
+                    background-color: transparent;
+                    border: none;
                 }
 
                 QLabel#GpuLabel {
