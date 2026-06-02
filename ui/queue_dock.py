@@ -18,6 +18,12 @@ class JobQueueDock(QWidget):
         self._translator = None
         self.max_log_lines = 500
 
+        self._status_key = "Idle"
+        self._status_is_translatable = True
+
+        self._telemetry_key = ""
+        self._telemetry_is_translatable = False
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
@@ -88,21 +94,12 @@ class JobQueueDock(QWidget):
         self.copy_btn.setText(self._t("Copy Log"))
         self.clear_btn.setText(self._t("Clear Log"))
 
-        idle_words = {
-            "Idle",
-            "Inactif",
-            "Inactivo",
-            "Bereit",
-            "待機中",
-            "アイドル",
-            "空闲",
-            "空閒",
-            "閒置",
-        }
+        if self._status_is_translatable:
+            self.status_label.setText(self._t(self._status_key))
 
-        if self.status_label.text() in idle_words:
-            self.status_label.setText(self._t("Idle"))
-
+        if self._telemetry_is_translatable:
+            self.telemetry_label.setText(self._t(self._telemetry_key))
+            
     def add_message(self, text: str):
         self.log_list.addItem(str(text))
 
@@ -138,13 +135,37 @@ class JobQueueDock(QWidget):
     def set_progress(self, value: float):
         self.progress_bar.setValue(max(0, min(100, int(value))))
 
-    def set_status(self, text: str):
-        self.status_label.setText(str(text))
+    def set_status(self, text: str, translate: bool = False):
+        """
+        Sets the status label.
 
-    def set_telemetry(self, text: str):
-        self.telemetry_label.setText(str(text))
+        translate=False:
+            Use for dynamic strings like progress, FPS, ETA, or errors.
 
+        translate=True:
+            Use for fixed language keys like Idle, Render started..., etc.
+        """
+        self._status_key = str(text)
+        self._status_is_translatable = bool(translate)
+
+        if translate:
+            self.status_label.setText(self._t(self._status_key))
+        else:
+            self.status_label.setText(self._status_key)
+
+    def set_status_key(self, key: str):
+        self.set_status(key, translate=True)
+
+    def set_telemetry(self, text: str, translate: bool = False):
+        self._telemetry_key = str(text)
+        self._telemetry_is_translatable = bool(translate)
+
+        if translate:
+            self.telemetry_label.setText(self._t(self._telemetry_key))
+        else:
+            self.telemetry_label.setText(self._telemetry_key)
+            
     def reset_progress(self):
         self.progress_bar.setValue(0)
-        self.status_label.setText(self._t("Idle"))
-        self.telemetry_label.setText("")
+        self.set_status_key("Idle")
+        self.set_telemetry("")

@@ -1,4 +1,5 @@
-# core/adapters/video_depth_anything_adapter.py
+# core/adapters/videodepthanything_adapter.py
+
 
 import re
 import torch
@@ -223,8 +224,87 @@ def _snap_vda_input_size(requested: int) -> int:
 
     return snapped
 
+def _resolve_torch_device(device=None, use_directml: bool = False):
+    """
+    Resolve device for Video Depth Anything.
 
-def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
+    Priority:
+      1. Explicit device passed by main app
+      2. DirectML if requested
+      3. CUDA if available
+      4. CPU fallback
+    """
+    if device is not None:
+        if isinstance(device, str):
+            return torch.device(device)
+        return device
+
+    if use_directml:
+        try:
+            import torch_directml
+
+            if hasattr(torch_directml, "is_available"):
+                try:
+                    if not torch_directml.is_available():
+                        raise RuntimeError("torch_directml.is_available() returned False")
+                except Exception:
+                    pass
+
+            dml_device = torch_directml.device()
+
+            # Sanity check.
+            _ = torch.ones(1).to(dml_device).cpu()
+
+            return dml_device
+
+        except Exception as e:
+            print(f"⚠️ VDA DirectML requested but unavailable: {e}")
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+
+    return torch.device("cpu")
+
+
+def _device_backend_name(device) -> str:
+    t = getattr(device, "type", str(device))
+
+    if t == "cuda":
+        if getattr(torch.version, "hip", None) is not None:
+            return "rocm"
+        return "cuda"
+
+    if t == "privateuseone":
+        return "directml"
+
+    if t == "mps":
+        return "mps"
+
+    return "cpu"
+    
+def _device_type_string(device) -> str:
+    """
+    VDA upstream expects device as a string because it uses torch.autocast(device_type=...).
+    torch.autocast wants 'cuda', 'cpu', 'mps', etc., not torch.device('cuda').
+    """
+    if isinstance(device, torch.device):
+        return device.type
+
+    if hasattr(device, "type"):
+        return str(device.type)
+
+    if isinstance(device, str):
+        return device.split(":", 1)[0]
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+def load_vda_adapter(
+    spec: str,
+    cache_dir: str,
+    use_fp16: bool = False,
+    use_directml: bool = False,
+    device=None,
+):
     """
     spec example:
         "depth-anything/Video-Depth-Anything-Large"
@@ -236,20 +316,32 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
     from core.models.video_depth_anything.video_depth import VideoDepthAnything
     from huggingface_hub import hf_hub_download
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _resolve_torch_device(device=device, use_directml=use_directml)
 
-    if device == "cuda":
+    device_type = getattr(device, "type", str(device))
+    is_cuda = device_type == "cuda"
+    is_directml = device_type == "privateuseone"
+    backend = _device_backend_name(device)
+
+    if is_cuda:
         try:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+
+            try:
+                torch.set_float32_matmul_precision("high")
+            except Exception:
+                pass
+
         except Exception:
             pass
 
-    # VDA FP16 can be tested later, but keep model weights FP32 by default for
-    # temporal stability. infer_video_depth may still use autocast internally
-    # depending on its fp32 flag.
-    fp16_requested = bool(use_fp16 and device == "cuda")
+    # Keep FP16 CUDA-only.
+    #
+    # DirectML FP16 can be unstable depending on GPU/driver/op coverage,
+    # especially for ViT/DINO-style models.
+    fp16_requested = bool(use_fp16 and is_cuda)
 
     metric = "metric" in (spec or "").lower()
 
@@ -257,14 +349,16 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
     ckpt_name = _ckpt_filename(encoder, metric)
 
     print(f"[VDA] Loading Video Depth Anything")
-    print(f"[VDA] repo={spec}")
     print(f"[VDA] encoder={encoder}")
     print(f"[VDA] metric={metric}")
     print(f"[VDA] checkpoint={ckpt_name}")
     print(f"[VDA] device={device}")
+    print(f"[VDA] backend={backend}")
 
     if fp16_requested:
-        print("[VDA] FP16 requested. Keeping model weights FP32 for stability; using fp32=False at inference.")
+        print("[VDA] FP16 requested on CUDA. Keeping model weights FP32 for stability; using fp32=False at inference.")
+    elif is_directml:
+        print("[VDA] DirectML selected. Forcing FP32 inference path for compatibility.")
 
     ckpt_path = hf_hub_download(
         repo_id=spec,
@@ -301,7 +395,14 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
 
     del sd
 
-    vda.to(device).eval()
+    try:
+        vda.to(device).eval()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to move VDA model to {device} backend={backend}. "
+            f"If this is DirectML, the VDA model may use unsupported torch-directml ops. "
+            f"Original error: {e}"
+        ) from e
 
     warned_short_sequence = False
 
@@ -349,9 +450,25 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
         target_fps = int(kw.get("target_fps", -1))
 
         # infer_video_depth uses fp32 flag.
-        # fp32=True = force full precision.
-        # fp32=False = allow faster/default path in upstream implementation.
-        fp32 = bool(kw.get("fp32", False))
+        # fp32=True  = force full precision.
+        # fp32=False = allow faster/default upstream path.
+        #
+        # CUDA:
+        #   - if FP16 requested, use fp32=False
+        #   - otherwise default to fp32=True for stability
+        #
+        # DirectML:
+        #   - force fp32=True, because CUDA-style autocast/half paths are not valid
+        #
+        # CPU:
+        #   - force fp32=True
+        if "fp32" in kw and kw.get("fp32") is not None:
+            fp32 = bool(kw.get("fp32"))
+        else:
+            fp32 = False if fp16_requested else True
+
+        if is_directml or not is_cuda:
+            fp32 = True
 
         sequence_len = frames_np.shape[0]
 
@@ -365,6 +482,8 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
 
         debug_print(
             f"[VDA] Running | "
+            f"backend={backend} | "
+            f"device={device} | "
             f"frames={sequence_len} | "
             f"frame_shape={frames_np.shape[2]}x{frames_np.shape[1]} | "
             f"input_size={input_size} | "
@@ -372,11 +491,13 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
             f"fp32={fp32}"
         )
 
+        infer_device = _device_type_string(device)
+
         depths, fps_out = vda.infer_video_depth(
             frames_np,
             target_fps,
             input_size=input_size,
-            device=device,
+            device=infer_device,
             fp32=fp32,
         )
 
@@ -406,6 +527,9 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
         ]
 
     vda_infer._is_vda = True
+    vda_infer._device = str(device)
+    vda_infer._backend = backend
+    vda_infer._is_directml = bool(is_directml)
 
     caps = {
         "kind": "vda",
@@ -422,8 +546,12 @@ def load_vda_adapter(spec: str, cache_dir: str, use_fp16: bool = False):
         "recommended_overlap": 16,
 
         # Model kept FP32 by default for temporal consistency.
-        "supports_fp16": False,
-        "supports_tf32": bool(device == "cuda"),
-    }
+        # FP16 is only exposed as supported on CUDA.
+        "supports_fp16": bool(is_cuda),
+        "supports_tf32": bool(is_cuda),
 
+        "device": str(device),
+        "backend": backend,
+        "is_directml": bool(is_directml),
+    }
     return vda_infer, caps

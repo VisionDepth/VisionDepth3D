@@ -80,39 +80,89 @@ The cleanest workflow is:
 | Improve FPS or upscale | [FPS / Upscale Enhancer](#fps--upscale-enhancer) |
 | Use real-time 3D | [VD3D Live](#vd3d-live-real-time-2d-to-3d) |
 
+
+---
+
+## Quick Links: What Are You Working On?
+
+| If you want to... | Go here |
+|---|---|
+| Learn the full beginner workflow | [Where to Start: Recommended VD3D Workflow](#where-to-start-recommended-vd3d-workflow) |
+| Make your first depth map | [Quick Start: Render Your First Depth Map](#quick-start-render-your-first-depth-map) |
+| Improve depth stability | [Depth Normalization](#depth-normalization) |
+| Blend two depth maps together | [Depth Blender Tab](#depth-blender-tab) |
+| Convert a 2D video into 3D | [3D Generator Tab](#3d-generator-tab) |
+| Use the new simple 3D controls | [3D Assistant Beginner Controls](#3d-assistant-beginner-controls) |
+| Use the full manual 3D controls | [Advanced 3D Controls](#advanced-3d-controls) |
+| Fix a flat background | [Layered Depth and Background Depth](#layered-depth-and-background-depth) |
+| Keep the subject from flattening with the background | [Subject Stability and Subject Plane Controls](#subject-stability-and-subject-plane-controls) |
+| Understand the new screen-depth control | [Screen Depth and Screen Plane Offset](#screen-depth-and-screen-plane-offset) |
+| Check depth before rendering | [Preview Modes](#preview-modes) |
+| Pick the right codec preset | [Codec Presets](#codec-presets) |
+| Make a quick test render | [Clip Range Rendering](#clip-range-rendering) |
+| Render for VR180 | [VR180 Output Settings](#vr180-output-settings) |
+| Increase FPS or upscale a video | [FPS / Upscale Enhancer](#fps--upscale-enhancer) |
+| Use live real-time 3D | [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d) |
+| Troubleshoot common problems | [Common Issues & Fixes](#common-issues--fixes) |
+
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [Where to Start: Recommended VD3D Workflow](#where-to-start-recommended-vd3d-workflow)
 3. [Quick Feature Map](#quick-feature-map)
-4. [FPS / Upscale Enhancer](#fps--upscale-enhancer)
-5. [Depth Estimation Tab](#depth-estimation-tab)
+4. [Quick Links: What Are You Working On?](#quick-links-what-are-you-working-on)
+5. [FPS / Upscale Enhancer](#fps--upscale-enhancer)
+   - [Extract Frames from Video](#1-extract-frames-from-video)
+   - [Configure Output Video](#2-configure-output-video)
+   - [Set Output Resolution](#3-set-output-resolution)
+   - [Set Original FPS](#4-set-original-fps)
+   - [Configure FPS Interpolation](#5-configure-fps-interpolation-rife)
+   - [Choose Video Codec](#6-choose-video-codec)
+   - [ESRGAN Upscaling Settings](#7-esrgan-upscaling-settings)
+   - [Choosing a Processing Mode](#choosing-a-processing-mode)
+6. [Depth Estimation Tab](#depth-estimation-tab)
    - [Quick Start: Render Your First Depth Map](#quick-start-render-your-first-depth-map)
-   - [Depth Normalization](#depth-normalization)
+   - [When Should I Change Settings?](#when-should-i-change-settings)
    - [Adjusting Quality and Performance](#adjusting-quality-and-performance)
+   - [Depth Normalization](#depth-normalization)
    - [Output Formats](#output-formats)
-6. [Depth Blender Tab](#depth-blender-tab)
-7. [3D Generator Tab](#3d-generator-tab)
+   - [Pause, Resume, Cancel](#pause-resume-cancel)
+7. [Depth Blender Tab](#depth-blender-tab)
+   - [Quick Start](#quick-start)
+   - [Blend Parameters](#blend-parameters)
+   - [Running a Batch](#running-a-batch)
+   - [Output Formats](#output-formats-1)
+8. [3D Generator Tab](#3d-generator-tab)
    - [Important: New VisionDepth3D Shift Direction](#important-new-visiondepth3d-shift-direction)
+   - [Updating Older Presets](#updating-older-presets)
    - [Getting Started](#getting-started)
+   - [3D Assistant Beginner Controls](#3d-assistant-beginner-controls)
+   - [Advanced 3D Controls](#advanced-3d-controls)
+   - [Layered Depth and Background Depth](#layered-depth-and-background-depth)
+   - [Screen Depth and Screen Plane Offset](#screen-depth-and-screen-plane-offset)
+   - [Subject Stability and Subject Plane Controls](#subject-stability-and-subject-plane-controls)
+   - [Codec Presets](#codec-presets)
    - [VR180 Output Settings](#vr180-output-settings)
+   - [Processing Options](#4-configure-processing-options)
+   - [Open Preview for Testing](#open-preview-for-testing)
    - [Preview Modes](#preview-modes)
    - [Depth and Parallax Controls](#depth-and-parallax-controls)
-   - [Screen Plane Offset](#screen-plane-offset-formerly-zero-parallax)
-   - [Subject Lock](#subject-lock)
-   - [Foreground Curvature](#foreground-curvature)
-   - [Edge Repair Quality](#edge-repair-quality)
+   - [Depth Shaping: Pop and Subject Controls](#depth-shaping-pop-and-subject-controls)
+   - [Pop-Out vs Depth Layering](#pop-out-vs-depth-layering)
+   - [Optional Advanced Controls](#optional-advanced-controls)
    - [Clip Range Rendering](#clip-range-rendering)
-8. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
-9. [Recommended Workflow Summary](#recommended-workflow-summary)
-10. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
-11. [Hardware / Backend Support](#hardware--backend-support)
-12. [Performance Optimization Tips](#performance-optimization-tips)
-13. [Common Issues & Fixes](#common-issues--fixes)
-14. [When to Use Depth Blending](#when-to-use-depth-blending)
-15. [Support & Updates](#support--updates)
-16. [End of User Manual](#end-of-user-manual)
-
+   - [Recommended First-Time Workflow](#recommended-first-time-workflow)
+   - [Recommended Starting Presets](#recommended-starting-presets)
+   - [Troubleshooting](#troubleshooting)
+9. [VD3D Live (Real-Time 2D-to-3D)](#vd3d-live-real-time-2d-to-3d)
+10. [Recommended Workflow Summary](#recommended-workflow-summary)
+11. [Best Practices for High-Quality 3D](#best-practices-for-high-quality-3d)
+12. [Hardware / Backend Support](#hardware--backend-support)
+13. [Performance Optimization Tips](#performance-optimization-tips)
+14. [Common Issues & Fixes](#common-issues--fixes)
+15. [When to Use Depth Blending](#when-to-use-depth-blending)
+16. [Support & Updates](#support--updates)
+17. [End of User Manual](#end-of-user-manual)
 
 ---
 
@@ -652,7 +702,14 @@ This is the final stage of the VisionDepth3D workflow. It takes:
 
 and renders a final 3D video using the current **VisionDepth3D Method**.
 
-The current method uses subject-aware depth normalization, pop-control depth shaping, structured near / mid / far disparity weighting, GPU stereo warping, edge-aware repair, dynamic convergence, and floating-window protection to create a controllable stereo result.
+The current method uses subject-aware depth normalization, pop-control depth shaping, structured near / mid / far disparity weighting, GPU stereo warping, edge-aware repair, dynamic convergence, floating-window protection, cinematic depth sculpting, and optional layered depth-order warping to create a controllable stereo result.
+
+The 3D Generator now has two levels of control:
+
+- **3D Assistant Beginner Controls** for users who want a simpler guided workflow.
+- **Advanced 3D Controls** for users who want full manual control over stereo depth, convergence, subject locking, depth shaping, edge repair, and layered background depth.
+
+The goal of the newer 3D system is not only to push subjects forward. It is designed to make the background feel like it sinks behind the screen, while keeping subjects separated so the whole image does not collapse into a flat sheet.
 
 ---
 
@@ -846,6 +903,716 @@ Here you can set:
   - Use when working with compatible HDR source material
 
 NVENC H.264 or NVENC H.265 is recommended for NVIDIA users who want faster encoding.
+
+If you are not sure what codec to choose, use the new **Codec Presets** section instead of manually tuning every codec option. Start with **Fast Preview - Quick Test** for short tests, then use **Balanced Final - NVIDIA**, **High Quality Final - NVIDIA**, **Small File - HEVC**, or **Compatibility Mode - Plays Everywhere** depending on the final goal.
+
+---
+
+## 3D Assistant Beginner Controls
+
+The **3D Assistant** is the recommended starting point for new users. It gives simple controls that adjust the advanced stereo system behind the scenes.
+
+Use the 3D Assistant when:
+
+- you are new to VD3D
+- you want fast results without learning every advanced slider
+- you want a safe starting point for a movie
+- you are tuning preview frames before a full render
+- you want to quickly switch between comfort, pop-out, deep background, and clean edge styles
+
+The 3D Assistant does not replace the advanced controls. It gives a cleaner front-end for common tuning choices. If you want more control, open **Advanced 3D Controls** after the beginner settings are close.
+
+---
+
+### 3D Style
+
+The **3D Style** dropdown chooses a preset starting point.
+
+Common styles include:
+
+| Style | What it is for |
+|---|---|
+| Comfortable Cinema | Balanced, safer movie viewing |
+| Strong Pop-Out | More forward subject and foreground depth |
+| Deep Background | More background recession and room depth |
+| Close-Up Safe | Safer faces, dialogue shots, and subject-heavy scenes |
+| VR Comfortable | Reduced strain for headset viewing |
+| Wide / Deep Scene | Stronger scene depth for rooms, landscapes, and wide shots |
+| Clean Edge | Safer edges with less tearing or halo stress |
+| Showcase Mode | Stronger demo-style 3D for short clips |
+| Custom | Used when you manually adjust the sliders |
+
+When a user changes the beginner sliders manually, the style can switch to **Custom**. This is normal.
+
+---
+
+### 3D Strength
+
+**3D Strength** controls the overall amount of stereo depth.
+
+Higher values:
+
+- increase the total 3D effect
+- increase separation between foreground, midground, and background
+- make depth easier to see
+- can increase eye strain
+- can reveal more edge artifacts if pushed too high
+
+Lower values:
+
+- create a softer 3D effect
+- improve comfort
+- reduce artifacts
+- are better for long movies or difficult depth maps
+
+Recommended use:
+
+```text
+40 to 55 = comfortable movie range
+55 to 70 = stronger depth
+70 to 85 = showcase or testing
+```
+
+If a render looks too flat, raise 3D Strength slightly. If the render feels stretched or uncomfortable, lower it.
+
+---
+
+### Pop-Out
+
+**Pop-Out** controls how much the foreground and subjects are allowed to come toward the viewer.
+
+Higher values:
+
+- make close objects feel more forward
+- increase subject presence
+- create a more dramatic 3D look
+- can increase cutout or edge artifacts
+
+Lower values:
+
+- keep the subject closer to the screen plane
+- reduce eye strain
+- are safer for faces and close-up shots
+
+Use Pop-Out carefully. Strong 3D does not only come from pop-out. A good 3D conversion also needs background depth, midground layering, and a stable screen plane.
+
+---
+
+### Screen Depth
+
+**Screen Depth** controls where the scene sits relative to the screen.
+
+Simple meaning:
+
+```text
+Lower value = scene feels closer / more forward
+Middle value = neutral
+Higher value = scene feels deeper behind the screen
+```
+
+Use Screen Depth when:
+
+- the whole scene feels too close
+- the whole scene feels too far back
+- the background needs to sit deeper
+- the subject feels like it is floating too far forward
+- the screen plane needs to feel more comfortable
+
+Recommended use:
+
+```text
+45 to 55 = neutral
+55 to 65 = deeper background feel
+35 to 45 = more forward pop-out feel
+```
+
+Small changes can make a big difference, so adjust slowly and preview several frames.
+
+---
+
+### Depth Comfort
+
+**Depth Comfort** makes the stereo effect safer.
+
+Higher values:
+
+- reduce extreme parallax
+- reduce eye strain
+- stabilize the viewing experience
+- help longer movies feel more comfortable
+
+Lower values:
+
+- allow stronger 3D
+- allow more dramatic depth
+- can increase discomfort if pushed too low
+
+Recommended use:
+
+```text
+70 to 85 = full movie comfort
+55 to 70 = balanced
+40 to 55 = stronger test clips
+```
+
+For VR or headset viewing, use higher comfort settings.
+
+---
+
+### Subject Stability
+
+**Subject Stability** controls how strongly the main subject is protected from drifting with the background.
+
+Higher values:
+
+- keep faces and bodies more stable
+- reduce subject wobble
+- prevent the subject from flattening into the background
+- are good for dialogue scenes and close-ups
+
+Lower values:
+
+- allow stronger subject depth movement
+- can create more pop-out
+- may be less stable
+
+Recommended use:
+
+```text
+60 to 85 = faces and dialogue
+45 to 65 = general scenes
+25 to 45 = stronger pop tests
+```
+
+If pushing the background deeper makes the subject fall flat with it, increase Subject Stability or use the advanced Subject Plane Lock controls.
+
+---
+
+### Recommended Beginner Workflow
+
+1. Load the source video and depth map.
+2. Click **Load Preview Sources**.
+3. Select a 3D Style.
+4. Preview a frame in **Red-Blue Anaglyph**.
+5. Adjust **3D Strength** until the depth is visible but not uncomfortable.
+6. Adjust **Screen Depth** until the background sits where you want it.
+7. Adjust **Pop-Out** if the foreground needs more presence.
+8. Raise **Subject Stability** if people or main objects feel unstable.
+9. Use **Shift Heatmap** to check where the strongest stereo stress is.
+10. Render a short clip range before rendering the full video.
+
+---
+
+## Advanced 3D Controls
+
+Advanced 3D Controls are for manual tuning. They give direct access to the stereo renderer.
+
+Use Advanced Controls when:
+
+- the beginner controls are close but not perfect
+- a scene has difficult depth
+- you need exact preset values
+- you want to fix flat backgrounds
+- you want to reduce artifacts
+- you want to tune subject stability, convergence, edge repair, or layered depth
+
+The advanced controls are grouped into several ideas:
+
+1. **Depth and Parallax Controls**  
+   Foreground, midground, background, max shift, and parallax balance.
+
+2. **Screen Plane and Convergence**  
+   Screen placement, convergence strength, and dynamic convergence.
+
+3. **Subject Controls**  
+   Subject tracking, subject lock, subject plane lock, and subject lock width.
+
+4. **Depth Shaping Controls**  
+   Depth pop gamma, pop mid, stretch lo, stretch hi, foreground pop, background push, and curvature.
+
+5. **Artifact Controls**  
+   Edge masking, feathering, edge repair quality, floating window, and optional smoothing.
+
+6. **Layered Depth Controls**  
+   Cinematic depth sculpt and depth-order warp behavior.
+
+---
+
+## Layered Depth and Background Depth
+
+The newer 3D system improves the way VD3D creates background depth.
+
+Older simple stereo shifting could sometimes produce:
+
+```text
+flat background
+subject pops out
+scene does not feel like a room
+pushing depth back makes everything move together
+```
+
+The updated system is designed to create:
+
+```text
+background sinks behind the screen
+subjects stay separated from the background
+rooms and environments feel deeper
+screen feels more like a window into the scene
+```
+
+This is done with two major ideas:
+
+- **Cinematic Depth Sculpt**
+- **Depth-Order Forward Warp**
+
+---
+
+### Cinematic Depth Sculpt
+
+Cinematic Depth Sculpt reshapes the depth used for stereo rendering.
+
+It helps:
+
+- push far areas deeper
+- hold the subject closer to a stable plane
+- create stronger background recession
+- prevent the subject and background from flattening together
+- improve the window-into-the-scene illusion
+
+This works with:
+
+- Depth Pop Gamma
+- BG Push
+- Subject Plane Lock
+- Subject Plane Lock Width
+- FG Pop
+- Screen Depth
+
+This is why background depth can now feel stronger without destroying the subject placement.
+
+---
+
+### Depth-Order Forward Warp
+
+Depth-Order Forward Warp is an optional layered warp behavior.
+
+Classic stereo warping samples the image smoothly, which is good for stability. Depth-order warping adds a layered placement pass where depth order matters more.
+
+Conceptually:
+
+```text
+far pixels are placed first
+near pixels are placed after
+near objects can sit over far objects
+background can separate more naturally
+```
+
+This can make the scene feel less flat and more layered.
+
+Best for:
+
+- rooms
+- hallways
+- landscapes
+- shots with clear foreground and background
+- clips where the background feels flat
+
+Use carefully for:
+
+- hair
+- fast motion
+- thin objects
+- heavy edge detail
+- noisy depth maps
+
+If artifacts increase, lower the layered warp strength or use stronger edge repair.
+
+---
+
+### Layered Depth Warp Strength
+
+If your version exposes this as a control, it adjusts how much depth-order warp is blended into the classic VD3D warp.
+
+Suggested meaning:
+
+```text
+0 = classic VD3D warp only
+35 = safe layered depth
+50 = balanced layered depth
+65 = strong room/background depth
+80+ = aggressive testing
+```
+
+Recommended starting values:
+
+```text
+0.35 to 0.50 = safe tests
+0.50 to 0.65 = strong but usable
+0.65+ = showcase or difficult flat-background shots
+```
+
+If the background looks much better but subject edges get stressed, reduce this first.
+
+---
+
+## Screen Depth and Screen Plane Offset
+
+VD3D has both a beginner screen-depth concept and an advanced screen-plane control.
+
+### Screen Depth
+
+Screen Depth is the beginner control.
+
+It answers the user question:
+
+```text
+Should the scene feel closer to me, neutral, or deeper behind the screen?
+```
+
+Use it for broad tuning.
+
+### Screen Plane Offset
+
+Screen Plane Offset is the advanced fine-tuning control.
+
+It adjusts the underlying stereo plane where the left and right eye line up.
+
+Use it when:
+
+- the whole scene feels shifted forward
+- the whole scene feels shifted backward
+- the subject is not sitting comfortably
+- the stereo field feels offset
+- the scene needs a small comfort adjustment
+
+Screen plane should be adjusted slowly. Small changes can have a noticeable effect.
+
+---
+
+## Subject Stability and Subject Plane Controls
+
+Subject controls are important because stronger background depth can make subjects unstable if not managed correctly.
+
+The goal is:
+
+```text
+background can go deeper
+subject remains readable and stable
+```
+
+---
+
+### Subject Lock
+
+Subject Lock anchors the tracked subject depth.
+
+Higher values:
+
+- stabilize the subject
+- reduce subject drift
+- improve comfort
+- help faces and bodies stay readable
+
+Lower values:
+
+- allow more subject movement
+- allow stronger pop-out
+- may be less stable
+
+Use higher values for dialogue and close-ups. Use lower values for pop-out tests.
+
+---
+
+### Subject Plane Lock
+
+Subject Plane Lock protects the subject depth band from being pulled too aggressively.
+
+Higher values:
+
+- keep subjects from flattening with the background
+- keep faces more comfortable
+- reduce subject drift
+
+Lower values:
+
+- allow more depth movement
+- create stronger separation
+- can be less stable
+
+Recommended starting range:
+
+```text
+0.20 to 0.35
+```
+
+---
+
+### Subject Plane Lock Width
+
+Subject Plane Lock Width controls how wide the protected subject band is.
+
+Recommended range:
+
+```text
+0.10 to 0.14
+```
+
+Meaning:
+
+```text
+0.08 = tight protection
+0.12 = good default
+0.16+ = safer, but can flatten more of the scene
+```
+
+If too much of the scene feels flat, lower the width. If subjects are unstable, increase it slightly.
+
+---
+
+## Codec Presets
+
+Codec presets help users pick output settings without needing to understand every FFmpeg option.
+
+Use presets when:
+
+- you want a quick test
+- you want final output
+- you want maximum compatibility
+- you want smaller files
+- you want a high-quality archive
+- hardware encoding is not working
+
+A codec preset may change encoder, quality, speed, container behavior, pixel format, and compatibility settings.
+
+---
+
+### Fast Preview - Quick Test
+
+Use this for short previews and setting tests.
+
+Best for:
+
+- checking 10 to 20 seconds
+- testing depth settings
+- comparing 3D presets
+- checking convergence and edge repair
+
+Expected result:
+
+- faster encoding
+- smaller test files
+- lower quality than final output
+
+Use this before any long render.
+
+---
+
+### Compatibility Mode - Plays Everywhere
+
+Use this when playback compatibility matters most.
+
+Best for:
+
+- sharing with other users
+- basic media players
+- TVs
+- Discord or web uploads
+- avoiding playback problems
+
+Expected result:
+
+- H.264-style compatibility
+- safer pixel format
+- usually larger than HEVC at similar quality
+- broad support
+
+---
+
+### Balanced Final - NVIDIA
+
+Recommended default for most NVIDIA users.
+
+Best for:
+
+- final renders
+- good speed
+- good quality
+- general movie clips
+
+Expected result:
+
+- NVENC hardware acceleration
+- balanced quality and file size
+- much faster than CPU encoding on NVIDIA systems
+
+---
+
+### High Quality Final - NVIDIA
+
+Use this when final quality matters more than speed.
+
+Best for:
+
+- showcase clips
+- demo renders
+- final archive-quality outputs
+- high-detail scenes
+
+Expected result:
+
+- slower than Balanced Final
+- higher quality
+- larger files
+
+---
+
+### Small File - HEVC
+
+Use this when file size matters.
+
+Best for:
+
+- sharing large videos
+- storing many conversions
+- reducing upload size
+- keeping good quality at lower bitrate
+
+Expected result:
+
+- H.265 / HEVC compression
+- smaller files than H.264
+- may not play on older devices
+
+---
+
+### 4K / Full-SBS High Quality - HEVC
+
+Use this for high-resolution stereo output.
+
+Best for:
+
+- 4K renders
+- Full-SBS output
+- VR viewing
+- high-quality movie clips
+- modern players and headsets
+
+Expected result:
+
+- better compression for high resolution
+- high quality
+- larger files than small-file presets
+- more demanding playback than H.264
+
+---
+
+### Depth Map Output - Fast Safe
+
+Use this for depth videos or utility output.
+
+Best for:
+
+- grayscale depth videos
+- intermediate depth files
+- quick depth pipeline outputs
+- avoiding unnecessary final-video settings
+
+Expected result:
+
+- fast and reliable output
+- safe settings for depth video
+- not meant as the main final movie preset
+
+---
+
+### Archive Master - Large File
+
+Use this when storage size is less important than preserving quality.
+
+Best for:
+
+- master files
+- later editing
+- future re-encoding
+- avoiding repeated quality loss
+
+Expected result:
+
+- very high quality
+- large files
+- slower encode
+- better source for later exports
+
+---
+
+### CPU Compatibility - Slow
+
+Use this when GPU encoding fails or is unavailable.
+
+Best for:
+
+- systems without NVENC / AMF / QSV
+- encoder troubleshooting
+- maximum fallback compatibility
+
+Expected result:
+
+- slower render
+- reliable CPU encode
+- useful fallback when hardware encoders fail
+
+---
+
+### Custom
+
+Use Custom when you want manual control.
+
+Best for users who understand:
+
+- codecs
+- CRF / CQ
+- bitrate
+- presets
+- pixel formats
+- containers
+- HDR settings
+
+---
+
+### Which Codec Preset Should I Use?
+
+| Goal | Recommended Preset |
+|---|---|
+| First test render | Fast Preview - Quick Test |
+| Most NVIDIA final renders | Balanced Final - NVIDIA |
+| Best NVIDIA quality | High Quality Final - NVIDIA |
+| Smaller file size | Small File - HEVC |
+| 4K or Full-SBS output | 4K / Full-SBS High Quality - HEVC |
+| Sharing with most devices | Compatibility Mode - Plays Everywhere |
+| Depth video output | Depth Map Output - Fast Safe |
+| High-quality master file | Archive Master - Large File |
+| Hardware encoding fails | CPU Compatibility - Slow |
+| Manual encoder tuning | Custom |
+
+---
+
+### Codec Troubleshooting
+
+If a render fails with a hardware encoder:
+
+1. Try **Compatibility Mode - Plays Everywhere**.
+2. Try **CPU Compatibility - Slow**.
+3. Update GPU drivers.
+4. Try H.264 before HEVC or AV1.
+5. Try MKV if MP4 fails.
+6. Confirm your GPU supports the selected encoder.
+
+If playback fails:
+
+1. Try H.264 Compatibility Mode.
+2. Avoid AV1 unless your player supports it.
+3. Use MP4 for broad compatibility.
+4. Use MKV for more flexible advanced output.
 
 ---
 
@@ -2174,10 +2941,11 @@ For best quality and efficiency, follow this proven VD3D workflow:
 1. Generate depth maps in the **Depth Estimation Tab**  
 2. (Optional) Blend two depth sources in the **Depth Blender Tab**  
 3. Load source + depth video in the **3D Generator Tab**  
-4. Configure Encoder Settings and Processing Options  
-5. Open Live Preview and tune depth using Shift Heatmap + Anaglyph  
-6. Test short Clip Range (optional)  
-7. Render final full-length 3D video  
+4. Choose a 3D Assistant preset or open Advanced 3D Controls  
+5. Configure Encoder Settings or choose a Codec Preset  
+6. Open Live Preview and tune depth using Shift Heatmap + Anaglyph  
+7. Test short Clip Range  
+8. Render final full-length 3D video  
 
 This approach prevents wasted long renders and ensures optimal depth quality.
 
@@ -2450,9 +3218,13 @@ Floating Window: Off for testing, On if edge violations appear
 
 ### Depth Looks Flat
 
-- Increase **Depth Pop Gamma**  
-- Raise **Foreground Shift** slightly  
-- Adjust **Pop Mid** toward subject depth  
+- Use **Deep Background** or **Wide / Deep Scene** in the 3D Assistant  
+- Increase **BG Push ×** slightly  
+- Enable or raise **Layered Depth Warp** if available  
+- Lower **Depth Pop Gamma** slightly for stronger depth separation  
+- Increase **Background Shift** carefully  
+- Use **Shift Heatmap** to confirm the background is receiving usable shift  
+- Check that the depth map actually contains background depth detail  
 
 ---
 

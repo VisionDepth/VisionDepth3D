@@ -1,6 +1,6 @@
 import sys
 import os
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap, QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
@@ -31,8 +31,8 @@ def main():
         splash_pixmap.fill(QColor("#0f141a"))
 
     splash = QSplashScreen(splash_pixmap)
-    splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
-
+    splash.setWindowFlags(Qt.SplashScreen | Qt.FramelessWindowHint)
+    
     # Bigger, bolder font for splash messages
     splash_font = QFont("Segoe UI", 13)
     splash_font.setBold(True)
@@ -95,9 +95,11 @@ def main():
 
     splash_msg("Starting...")
     splash.finish(window)
-    window.show()
-    app.processEvents()
+
     window.showMaximized()
+    app.processEvents()
+
+    QTimer.singleShot(100, window.bring_to_front_once)
 
     exit_code = app.exec()
     controller.save_settings()

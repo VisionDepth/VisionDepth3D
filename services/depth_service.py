@@ -407,6 +407,15 @@ class DepthService:
             batch_size = 4
 
         batch_size = max(1, batch_size)
+
+        try:
+            vda_overlap = int(getattr(state, "vda_overlap", 4))
+        except (ValueError, TypeError):
+            vda_overlap = 4
+
+        # Overlap must be lower than the active window size.
+        vda_overlap = max(0, min(vda_overlap, batch_size - 1))
+
         output_dir = VarAdapter(str(output_dir_path))
         inference_res_text = VarAdapter(state.inference_resolution)
         status_label = self.progress_label
@@ -442,6 +451,7 @@ class DepthService:
                 ignore_letterbox_bars=ignore_letterbox_bars,
                 prefer_opencv_writer=prefer_opencv_writer,
                 disable_scene_normalization=disable_scene_normalization,
+                vda_overlap=vda_overlap,
             )
         except Exception as e:
             if self.cancel_flag.is_set():

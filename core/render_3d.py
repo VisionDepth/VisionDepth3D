@@ -193,18 +193,34 @@ DFW_WIDTH_EASE       = 0.90    # how much to keep previous width (0.9 = very smo
 DFW_PARALLAX_WEIGHT  = 0.65    # how much the actual parallax drives the bar
 DFW_DEPTH_WEIGHT     = 0.35    # how much subject depth offset from mid drives it
 DFW_USE_FADE         = True    # use faded mask instead of solid black
+# Experimental depth-order forward warp.
+# This tries to place pixels by depth order before edge repair.
+# Keep this switchable while testing.
+DEPTH_ORDER_WARP_ENABLED = True
+DEPTH_ORDER_WARP_BLEND = 0.65
+DEPTH_ORDER_WARP_MAX_FILL_TRIES = 96
 
 SETTINGS_FILE = "settings.json"
 
 # Common Aspect Ratios
 aspect_ratios = {
-    "Default (16:9)": 16 / 9,
+    "Default (16:9 / 1.78:1)": 16 / 9,
+    "Classic (4:3 / 1.33:1)": 4 / 3,
+    "Square (1:1 / 1.00:1)": 1 / 1,
+    "Vertical 9:16 / 0.56:1": 9 / 16,
+    "Instagram 4:5 / 0.80:1": 4 / 5,
+    "3:2 Photography / 1.50:1": 3 / 2,
+    "5:4 / 1.25:1": 5 / 4,
+    "7:5 / 1.40:1": 7 / 5,
+    "Academy Flat (1.85:1)": 1.85,
+    "European Flat (1.66:1)": 1.66,
+    "2:1 (Modern Hybrid)": 2.0,
     "CinemaScope (2.39:1)": 2.39,
-    "21:9 UltraWide": 21 / 9,
-    "4:3 (Classic Films)": 4 / 3,
-    "1:1 (Square)": 1 / 1,
-    "2.35:1 (Classic Cinematic)": 2.35,
-    "2.76:1 (Ultra-Panavision)": 2.76,
+    "Anamorphic (2.35:1)": 2.35,
+    "Modern Cinema (2.40:1)": 2.40,
+    "Ultra Panavision (2.76:1)": 2.76,
+    "21:9 UltraWide / 2.33:1": 21 / 9,
+    "32:9 SuperWide / 3.56:1": 32 / 9,
 }
 
 FFMPEG_CODEC_MAP = {
@@ -480,18 +496,10 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
     """
     Muxes the original audio track into the final 3D render.
 
-    Important for clipped renders:
-    - The rendered video starts at timestamp 0.
-    - The source audio must be trimmed to the same clip start.
-    - Audio timestamps must be reset to 0, otherwise some players show a frozen
-      first video frame until audio/video timestamps line up.
-
-    For unclipped renders:
-    - MP4/MOV uses AAC for compatibility.
-    - MKV/AVI attempts audio stream copy.
-
-    For clipped renders:
-    - Audio is filtered with atrim/asetpts, so it must be re-encoded.
+    Fix:
+    - Always resets audio timestamps to 0.
+    - Prevents delayed audio / frozen first video frame at the beginning.
+    - Trims audio when rendering a clipped section.
     """
     if not os.path.exists(original_video) or not os.path.exists(final_video):
         return final_video
@@ -502,7 +510,6 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
 
     ffmpeg_exe = require_tool("ffmpeg")
 
-    # Clean old failed output first.
     if os.path.exists(output_with_audio):
         try:
             os.remove(output_with_audio)
@@ -521,61 +528,48 @@ def merge_audio_from_source(final_video, original_video, output_with_audio, star
     except Exception:
         clip_end = None
 
-    clipped_audio = (clip_start > 0.0001) or (clip_end is not None and clip_end > 0.0001)
+    # Build audio filter.
+    # Important: even full renders need asetpts/first_pts=0 because some sources
+    # have audio start_time offsets or edit-list delay.
+    if clip_end is not None and clip_end > clip_start:
+        atrim = f"atrim=start={clip_start:.6f}:end={clip_end:.6f}"
+    elif clip_start > 0.0001:
+        atrim = f"atrim=start={clip_start:.6f}"
+    else:
+        atrim = "anull"
+
+    audio_filter = (
+        f"[1:a:0]{atrim},"
+        "asetpts=PTS-STARTPTS,"
+        "aresample=async=1:first_pts=0"
+        "[aout]"
+    )
 
     cmd = [
         ffmpeg_exe,
         "-y",
+
+        # Input 0: already-rendered silent video
         "-i", final_video,
+
+        # Input 1: original source video/audio
         "-i", original_video,
-    ]
 
-    if clipped_audio:
-        # Accurate audio trim + timestamp reset.
-        # This prevents the common "frozen first video frame for a few seconds"
-        # problem after muxing clipped renders.
-        if clip_end is not None and clip_end > clip_start:
-            atrim = f"atrim=start={clip_start:.6f}:end={clip_end:.6f}"
-        else:
-            atrim = f"atrim=start={clip_start:.6f}"
+        "-filter_complex", audio_filter,
 
-        audio_filter = (
-            f"[1:a:0]{atrim},"
-            "asetpts=PTS-STARTPTS,"
-            "aresample=async=1:first_pts=0"
-            "[aout]"
-        )
+        "-map", "0:v:0",
+        "-map", "[aout]",
 
-        cmd += [
-            "-filter_complex", audio_filter,
-            "-map", "0:v:0",
-            "-map", "[aout]",
-            "-c:v", "copy",
+        # Keep rendered video untouched
+        "-c:v", "copy",
 
-            # Filtering requires re-encoding audio. AAC is broadly compatible
-            # in MP4, MOV, MKV, and most players.
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-shortest",
-        ]
+        # Filtering audio requires re-encoding
+        "-c:a", "aac",
+        "-b:a", "192k",
 
-    else:
-        # No clip: keep existing behavior.
-        if ext == ".mp4":
-            audio_args = ["-c:a", "aac", "-b:a", "192k"]
-        else:
-            audio_args = ["-c:a", "copy"]
+        "-shortest",
 
-        cmd += [
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            *audio_args,
-            "-shortest",
-        ]
-
-    # Helps avoid odd timestamp/edit-list behavior in some containers/players.
-    cmd += [
+        # Reduce timestamp weirdness in containers/players
         "-avoid_negative_ts", "make_zero",
         "-muxpreload", "0",
         "-muxdelay", "0",
@@ -1796,6 +1790,197 @@ def shift_mask(mask_tensor, shift_vals, width):
 
     return warped.squeeze(0)  # Remove batch dimension
 
+@torch.no_grad()
+def fill_depth_order_holes_horizontal(
+    image_t: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    prefer: str = "right",
+    max_tries: int = 96,
+):
+    """
+    Fills holes left/right using nearest available horizontal pixels.
+
+    image_t: [3, H, W]
+    valid_mask: [H, W] bool
+    """
+    out = image_t
+    valid = valid_mask.bool()
+
+    def fill_from_right(out_img, valid_img):
+        # For pixel x, use x + 1.
+        src = torch.cat([out_img[:, :, 1:], out_img[:, :, -1:]], dim=2)
+        src_valid = torch.cat([valid_img[:, 1:], valid_img[:, -1:]], dim=1)
+
+        hole = (~valid_img) & src_valid
+        if hole.any():
+            out_img = torch.where(hole.unsqueeze(0), src, out_img)
+            valid_img = valid_img | hole
+
+        return out_img, valid_img
+
+    def fill_from_left(out_img, valid_img):
+        # For pixel x, use x - 1.
+        src = torch.cat([out_img[:, :, :1], out_img[:, :, :-1]], dim=2)
+        src_valid = torch.cat([valid_img[:, :1], valid_img[:, :-1]], dim=1)
+
+        hole = (~valid_img) & src_valid
+        if hole.any():
+            out_img = torch.where(hole.unsqueeze(0), src, out_img)
+            valid_img = valid_img | hole
+
+        return out_img, valid_img
+
+    max_tries = int(max(1, max_tries))
+
+    for _ in range(max_tries):
+        if valid.all():
+            break
+
+        if prefer == "left":
+            out, valid = fill_from_left(out, valid)
+            out, valid = fill_from_right(out, valid)
+        else:
+            out, valid = fill_from_right(out, valid)
+            out, valid = fill_from_left(out, valid)
+
+    return out.clamp(0.0, 1.0), valid
+
+
+@torch.no_grad()
+def depth_order_forward_warp_eye(
+    frame_tensor: torch.Tensor,
+    depth_order_tensor: torch.Tensor,
+    shift_vals: torch.Tensor,
+    *,
+    eye: str = "left",
+    fill_holes: bool = True,
+    max_fill_tries: int = 96,
+):
+    """
+    Experimental depth-order forward warp.
+
+    This differs from grid_sample backward warp:
+    - source pixels are moved forward into the target eye
+    - farther pixels are written first
+    - nearer pixels are written last, so foreground can visually sit over background
+
+    VD3D depth convention in the shaped render path:
+    - lower depth values are nearer
+    - higher depth values are farther
+    """
+    if frame_tensor.dim() != 3:
+        raise ValueError(f"frame_tensor must be [3,H,W], got {tuple(frame_tensor.shape)}")
+
+    C, H, W = frame_tensor.shape
+    device = frame_tensor.device
+    dtype = frame_tensor.dtype
+
+    d = depth_order_tensor.squeeze().to(device=device, dtype=dtype).clamp(0.0, 1.0)
+    s = shift_vals.squeeze().to(device=device, dtype=dtype)
+
+    if d.shape != (H, W):
+        d = F.interpolate(
+            d.unsqueeze(0).unsqueeze(0),
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0).squeeze(0).clamp(0.0, 1.0)
+
+    if s.shape != (H, W):
+        s = F.interpolate(
+            s.unsqueeze(0).unsqueeze(0),
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0).squeeze(0)
+
+    yy, xx = torch.meshgrid(
+        torch.arange(H, device=device),
+        torch.arange(W, device=device),
+        indexing="ij",
+    )
+
+    # shift_vals are normalized grid units.
+    # Convert to pixel shift so we can forward splat.
+    shift_px = s * (float(W) / 2.0)
+
+    # Match your current grid_sample sign convention:
+    # left eye samples x + shift, which is equivalent to source moving x - shift.
+    # right eye samples x - shift, which is equivalent to source moving x + shift.
+    if eye == "left":
+        dest_x = xx.to(dtype) - shift_px
+        fill_prefer = "right"
+    elif eye == "right":
+        dest_x = xx.to(dtype) + shift_px
+        fill_prefer = "left"
+    else:
+        raise ValueError("eye must be 'left' or 'right'")
+
+    dest_x = dest_x.round().clamp(0, W - 1).to(torch.long)
+    dest_flat = (yy * W + dest_x).reshape(-1)
+
+    src_rgb = frame_tensor.permute(1, 2, 0).reshape(-1, C)
+    depth_flat = d.reshape(-1)
+
+    # Farther pixels first, nearer pixels last.
+    # Since lower depth is nearer in this path, descending writes far first.
+    order = torch.argsort(depth_flat, descending=True)
+
+    out_flat = torch.empty((H * W, C), device=device, dtype=dtype)
+    out_flat.fill_(-1.0)
+
+    out_flat[dest_flat[order]] = src_rgb[order]
+
+    out = out_flat.reshape(H, W, C).permute(2, 0, 1).contiguous()
+    valid = out[0] >= 0.0
+
+    # Fill remaining holes horizontally before falling back.
+    if fill_holes:
+        out, valid = fill_depth_order_holes_horizontal(
+            out,
+            valid,
+            prefer=fill_prefer,
+            max_tries=max_fill_tries,
+        )
+
+    # Any remaining holes fall back to original frame.
+    out = torch.where(valid.unsqueeze(0), out, frame_tensor)
+
+    return out.clamp(0.0, 1.0), valid.float()
+
+
+@torch.no_grad()
+def depth_order_forward_warp_pair(
+    frame_tensor: torch.Tensor,
+    depth_order_tensor: torch.Tensor,
+    shift_vals: torch.Tensor,
+    *,
+    max_fill_tries: int = 96,
+):
+    """
+    Creates left/right eyes with experimental depth-order forward warp.
+    """
+    left, left_valid = depth_order_forward_warp_eye(
+        frame_tensor,
+        depth_order_tensor,
+        shift_vals,
+        eye="left",
+        fill_holes=True,
+        max_fill_tries=max_fill_tries,
+    )
+
+    right, right_valid = depth_order_forward_warp_eye(
+        frame_tensor,
+        depth_order_tensor,
+        shift_vals,
+        eye="right",
+        fill_holes=True,
+        max_fill_tries=max_fill_tries,
+    )
+
+    return left, right, left_valid, right_valid
+
 def compute_dynamic_parallax_scale(depth_tensor, min_scale=0.6, max_scale=1.0):
     """
     Adaptive parallax control based on normalized depth variance in center view.
@@ -1934,6 +2119,76 @@ def safe_quantile(t: torch.Tensor, q: float, max_samples: int = 262144) -> torch
     return torch.quantile(x, q).to(device=device, dtype=dtype)
 
 @torch.no_grad()
+def smoothstep_tensor(edge0, edge1, x):
+    """
+    Torch smoothstep.
+    Returns 0 below edge0, 1 above edge1, smooth blend between.
+    """
+    t = ((x - edge0) / max(1e-6, edge1 - edge0)).clamp(0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+@torch.no_grad()
+def cinematic_window_depth_sculpt(
+    depth_01: torch.Tensor,
+    subject_depth: torch.Tensor,
+    *,
+    background_push: float = 0.25,
+    subject_hold: float = 0.55,
+    near_pull: float = 0.08,
+    subject_width: float = 0.14,
+):
+    """
+    Creates a stronger 'window into the scene' depth layout.
+
+    VD3D convention in this render path:
+        lower shaped depth = closer / foreground zone
+        higher shaped depth = farther / background zone
+
+    Goal:
+        - Keep the tracked subject stable.
+        - Push far background farther back.
+        - Slightly separate foreground from subject.
+        - Avoid moving the subject itself too much.
+    """
+    d = depth_01.clamp(0.0, 1.0)
+
+    if not torch.is_tensor(subject_depth):
+        subject_depth = torch.tensor(float(subject_depth), device=d.device, dtype=d.dtype)
+
+    subj = subject_depth.to(device=d.device, dtype=d.dtype).clamp(0.0, 1.0)
+
+    # Relative depth around the tracked subject.
+    # Positive = farther than subject.
+    # Negative = closer than subject.
+    rel = d - subj
+
+    # Background mask grows only behind the subject.
+    far_mask = smoothstep_tensor(0.04, 0.42, rel)
+
+    # Foreground mask grows only in front of the subject.
+    near_mask = smoothstep_tensor(0.04, 0.32, -rel)
+
+    # Protect the subject depth band so faces/bodies do not drift out of place.
+    subject_mask = torch.exp(-0.5 * (rel / max(1e-6, float(subject_width))) ** 2).clamp(0.0, 1.0)
+
+    # Push farther areas toward deeper background.
+    # The (1.0 - d) term prevents clipping hard at 1.0.
+    far_boost = far_mask * float(background_push) * (1.0 - d) * 0.65
+
+    # Pull near foreground a little closer, but keep it weaker than background push.
+    # The d term prevents clipping hard at 0.0.
+    near_boost = near_mask * float(near_pull) * d * 0.45
+
+    sculpted = (d + far_boost - near_boost).clamp(0.0, 1.0)
+
+    # Hold the subject band closer to the original shaped depth.
+    hold = (subject_mask * float(subject_hold)).clamp(0.0, 0.95)
+    sculpted = (sculpted * (1.0 - hold)) + (d * hold)
+
+    return sculpted.clamp(0.0, 1.0)
+
+@torch.no_grad()
 def shape_depth_for_pop(
     depth_01,
     subject_depth,
@@ -1969,31 +2224,28 @@ def apply_subject_plane_lock(
     strength: float = 0.0,
     width: float = 0.08,
     center_bias: float = 0.35,
+    zero_lock_strength: float = 0.0,
 ) -> torch.Tensor:
     """
-    Subject-aware screen-plane stabilization.
+    Subject Zero Lock.
 
-    This is different from Screen Plane Offset.
+    This does not move the whole stereo volume.
 
-    Screen Plane Offset:
-        Moves the entire stereo volume forward/backward globally.
+    It measures the current average shift around the tracked subject,
+    then subtracts that subject shift only inside the subject depth band.
 
-    Subject Plane Lock:
-        Locally reduces disparity around the tracked hero/subject depth
-        so the subject stays more comfortable and readable near the
-        screen plane, while foreground/background depth remains active.
-
-    total_shift:
-        [1,H,W] normalized disparity/shift map.
-
-    depth_tensor:
-        [1,H,W] normalized depth, white/near convention.
-
-    subject_depth:
-        scalar tracked subject depth.
+    Result:
+        subject moves closer to no-shift / screen plane
+        background depth stays mostly intact
     """
     strength = float(strength or 0.0)
-    if strength <= 1e-6:
+    zero_lock_strength = float(np.clip(float(zero_lock_strength or 0.0), 0.0, 1.0))
+
+    # Let the new simple slider work even if Subject Plane Lock is low.
+    # Advanced Subject Plane Lock can still strengthen it.
+    effective_strength = float(np.clip(max(strength, zero_lock_strength), 0.0, 1.0))
+
+    if effective_strength <= 1e-6:
         return total_shift
 
     width = max(float(width or 0.08), 1e-4)
@@ -2015,8 +2267,8 @@ def apply_subject_plane_lock(
         -0.5 * ((d - subject_depth.clamp(0.0, 1.0)) / width) ** 2
     ).clamp(0.0, 1.0)
 
-    # Light center weighting helps avoid locking random background regions
-    # that happen to share the same depth as the subject.
+    # Center weighting reduces accidental locking on background objects
+    # that share the same depth as the subject.
     if center_bias > 1e-6:
         _, H, W = d.shape
         yy, xx = torch.meshgrid(
@@ -2033,20 +2285,68 @@ def apply_subject_plane_lock(
             (1.0 - center_bias) + center_weight * center_bias
         )
 
-    # Soften mask to avoid hard stereo transitions around the subject.
+    # ------------------------------------------------------------
+    # Subject silhouette fill
+    # ------------------------------------------------------------
+    # A narrow depth band can miss the face or inner body details when
+    # the depth map gives the face a slightly different value than the robe,
+    # shoulders, or outer contour.
+    #
+    # This expands and softly fills the detected subject region so the
+    # zero-lock correction affects the full visible subject, not only the
+    # outline / robe / depth edges.
+    # ------------------------------------------------------------
+    subject_band_4d = subject_band.unsqueeze(0)
+
+    # Expand the subject band enough to cover inner holes.
+    # Kernel 21 is large enough for faces/torso gaps but still local.
+    subject_dilated = F.max_pool2d(
+        subject_band_4d,
+        kernel_size=21,
+        stride=1,
+        padding=10,
+    )
+
+    # Soft closing pass. This fills small missing islands inside the subject.
+    subject_closed = -F.max_pool2d(
+        -subject_dilated,
+        kernel_size=15,
+        stride=1,
+        padding=7,
+    )
+
+    subject_closed = subject_closed.squeeze(0).clamp(0.0, 1.0)
+
+    # Blend the filled silhouette back with the original depth band.
+    # The original band stays strongest, the fill covers face/body holes.
+    subject_band = torch.maximum(
+        subject_band,
+        subject_closed * 0.70,
+    )
+
+    # Smooth mask to avoid hard stereo transitions.
     subject_band = F.avg_pool2d(
         subject_band.unsqueeze(0),
-        kernel_size=9,
+        kernel_size=13,
         stride=1,
-        padding=4,
+        padding=6,
     ).squeeze(0).clamp(0.0, 1.0)
 
-    lock_amount = torch.clamp(subject_band * strength, 0.0, 1.0)
+    subject_weight = torch.clamp(subject_band * effective_strength, 0.0, 1.0)
 
-    # Pull the subject's disparity toward the screen plane.
-    # total_shift == 0 means screen plane.
-    return total_shift * (1.0 - lock_amount)
+    weight_sum = subject_weight.sum().clamp_min(1e-6)
 
+    # Measure where the subject currently sits in disparity.
+    subject_current_shift = (total_shift * subject_weight).sum() / weight_sum
+
+    # Cancel the subject's own shift locally.
+    # Use a slightly eased mask so the face/interior gets enough correction
+    # while the outer falloff stays soft.
+    correction_mask = subject_weight.pow(0.75).clamp(0.0, 1.0)
+
+    corrected_shift = total_shift - (subject_current_shift * correction_mask)
+
+    return corrected_shift
 def compute_occlusion_mask_from_shift(
     shift_vals: torch.Tensor,
     blur_ksize: int = 7,
@@ -2686,6 +2986,7 @@ def pixel_shift_cuda(
     subject_lock_strength=0.35,
     subject_plane_lock_strength=0.0,
     subject_plane_lock_width=0.08,
+    subject_screen_plane=0.0,
     foreground_curvature_strength=0.06,
     return_tensors=False,
     disable_shift_ema=False,
@@ -2764,6 +3065,46 @@ def pixel_shift_cuda(
         gamma=depth_pop_gamma
     )
 
+    # ------------------------------------------------------------
+    # Cinematic Window Depth Sculpt
+    # ------------------------------------------------------------
+    # This creates stronger background separation before stereo shift.
+    # It is driven by existing controls for now:
+    #   lower depth_pop_gamma = more depth sculpt
+    #   higher bg_push_multiplier = more background depth
+    # ------------------------------------------------------------
+    window_depth_strength = (
+        max(0.0, 1.0 - float(depth_pop_gamma)) * 1.60 +
+        max(0.0, float(bg_push_multiplier) - 1.0) * 1.20
+    )
+    window_depth_strength = float(np.clip(window_depth_strength, 0.0, 0.45))
+
+    if window_depth_strength > 1e-5:
+        subject_hold_value = 0.35 + (0.20 * float(np.clip(subject_plane_lock_strength, 0.0, 1.0)))
+        subject_width_value = float(np.clip(subject_plane_lock_width, 0.09, 0.16))
+
+        d_shaped = cinematic_window_depth_sculpt(
+            d_shaped,
+            subject_depth_track,
+            background_push=window_depth_strength,
+            subject_hold=subject_hold_value,
+            near_pull=0.06 + (0.06 * float(np.clip(fg_pop_multiplier - 1.0, 0.0, 0.6))),
+            subject_width=subject_width_value,
+        )
+
+        if is_debug_enabled() and not hasattr(pixel_shift_cuda, "_window_depth_dbg"):
+            pixel_shift_cuda._window_depth_dbg = 0
+
+        if is_debug_enabled():
+            pixel_shift_cuda._window_depth_dbg += 1
+            if pixel_shift_cuda._window_depth_dbg % 120 == 0:
+                debug_print(
+                    f"[WINDOW_DEPTH] strength={window_depth_strength:.3f} "
+                    f"subj={float(subject_depth_track.detach().item()):.3f} "
+                    f"gamma={float(depth_pop_gamma):.3f} "
+                    f"bg_push={float(bg_push_multiplier):.3f}"
+                )
+
     # use tracking depth for convergence, not shaped depth
     subject_depth = subject_depth_track
     
@@ -2772,9 +3113,11 @@ def pixel_shift_cuda(
     mid_center  = depth_pop_mid
     far_center  = 0.85
 
-    near_sigma = 0.30   # Wider for smoother falloff
-    mid_sigma  = 0.35   # Much wider mid zone
-    far_sigma  = 0.30   # Wider for smoother falloff
+    # Tighter layers create a stronger foreground / midground / background split.
+    # The previous wider values blended too much together and could feel flat.
+    near_sigma = 0.24
+    mid_sigma  = 0.28
+    far_sigma  = 0.24
 
     fg_weight = torch.exp(-0.5 * ((d_shaped - near_center) / near_sigma) ** 2)
     mg_weight = torch.exp(-0.5 * ((d_shaped - mid_center)  / mid_sigma)  ** 2)
@@ -2850,6 +3193,7 @@ def pixel_shift_cuda(
         strength=subject_plane_lock_strength,
         width=subject_plane_lock_width,
         center_bias=0.35,
+        zero_lock_strength=subject_screen_plane,
     )
 
     # ------------------------------------------------------------
@@ -2979,6 +3323,51 @@ def pixel_shift_cuda(
         padding_mode='border',
         align_corners=True
     ).squeeze(0)
+    
+    # ------------------------------------------------------------
+    # Experimental Depth-Order Forward Warp
+    # ------------------------------------------------------------
+    # Classic grid_sample warp is still calculated above.
+    # This optional pass forward-warps pixels by depth order, then blends
+    # into the classic result. This can create stronger layer separation
+    # and a more "window into the scene" feeling.
+    # ------------------------------------------------------------
+    if DEPTH_ORDER_WARP_ENABLED:
+        try:
+            fwd_left, fwd_right, fwd_valid_left, fwd_valid_right = depth_order_forward_warp_pair(
+                frame_tensor,
+                d_shaped,
+                shift_vals,
+                max_fill_tries=DEPTH_ORDER_WARP_MAX_FILL_TRIES,
+            )
+
+            depth_order_blend = float(np.clip(DEPTH_ORDER_WARP_BLEND, 0.0, 1.0))
+
+            warped_left = (
+                warped_left * (1.0 - depth_order_blend) +
+                fwd_left * depth_order_blend
+            ).clamp(0.0, 1.0)
+
+            warped_right = (
+                warped_right * (1.0 - depth_order_blend) +
+                fwd_right * depth_order_blend
+            ).clamp(0.0, 1.0)
+
+            if is_debug_enabled() and not hasattr(pixel_shift_cuda, "_depth_order_dbg"):
+                pixel_shift_cuda._depth_order_dbg = 0
+
+            if is_debug_enabled():
+                pixel_shift_cuda._depth_order_dbg += 1
+                if pixel_shift_cuda._depth_order_dbg % 120 == 0:
+                    debug_print(
+                        f"[DEPTH_ORDER_WARP] enabled blend={depth_order_blend:.2f} "
+                        f"validL={float(fwd_valid_left.mean().item()):.3f} "
+                        f"validR={float(fwd_valid_right.mean().item()):.3f}"
+                    )
+
+        except Exception as e:
+            if is_debug_enabled():
+                debug_print(f"[DEPTH_ORDER_WARP] disabled for this frame because: {e}")
 
     # 🛡️ STRONGER smear suppression
     shift_grad_x = torch.abs(F.pad(shift_vals[:, 1:] - shift_vals[:, :-1], (1, 0)))
@@ -3101,6 +3490,8 @@ def pixel_shift_cuda(
             "screen_plane_offset": zero_parallax_float,
             "subject_plane_lock_strength": float(subject_plane_lock_strength),
             "subject_plane_lock_width": float(subject_plane_lock_width),
+            "subject_screen_plane": float(subject_screen_plane),
+            "subject_zero_lock_strength": float(subject_screen_plane),
             "edge_violation_left": float(edge_violation_left),
             "edge_violation_right": float(edge_violation_right),
             "valid_left_p01": 1.0,
@@ -3584,6 +3975,7 @@ def render_sbs_3d(
     subject_lock_strength=0.35,
     subject_plane_lock_strength=0.0,
     subject_plane_lock_width=0.08,
+    subject_screen_plane=0.0,
     foreground_curvature_strength=0.06,
     color_saturation=1.0,
     color_contrast=1.0,
@@ -3599,6 +3991,9 @@ def render_sbs_3d(
     disable_shift_ema=False,
     enable_shift_preview=False,
     keyframe_service=None,
+    encoding_pixel_format="yuv420p",
+    encoding_encoder_preset="p5",
+    encoding_audio_mode="copy",
     ):
 
     reset_render_state()
@@ -3624,6 +4019,7 @@ def render_sbs_3d(
         "subject_lock_strength": float(subject_lock_strength),
         "subject_plane_lock_strength": float(subject_plane_lock_strength),
         "subject_plane_lock_width": float(subject_plane_lock_width),
+        "subject_screen_plane": float(subject_screen_plane),
         "foreground_curvature_strength": float(foreground_curvature_strength),
 
         "dof_strength": float(dof_strength),
@@ -3987,6 +4383,52 @@ def render_sbs_3d(
             elif output_format == "VR180 Equirect (SBS)":
                 out_width  = int(equi_eye_w) * 2
                 out_height = int(equi_eye_h)
+                
+    def _safe_nvenc_preset(value, default="p5"):
+        value = str(value or default).strip().lower()
+        if value in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
+            return value
+        return default
+
+
+    def _safe_software_preset(value, default="slow"):
+        value = str(value or default).strip().lower()
+        allowed = {
+            "ultrafast", "superfast", "veryfast", "faster", "fast",
+            "medium", "slow", "slower", "veryslow",
+        }
+        if value in allowed:
+            return value
+        return default
+
+
+    def _safe_pix_fmt(value, *, preserve_hdr=False):
+        value = str(value or "").strip().lower()
+
+        if preserve_hdr:
+            return "p010le"
+
+        # Do not allow gray for final 3D color renders.
+        # Gray belongs to depth-map output, not the 3D SBS renderer.
+        if value in {"yuv420p", "yuv444p", "p010le"}:
+            return value
+
+        return "yuv420p"
+
+
+    encoding_pixel_format = _safe_pix_fmt(encoding_pixel_format, preserve_hdr=bool(preserve_hdr10))
+    encoding_encoder_preset = str(encoding_encoder_preset or "p5").strip()
+    encoding_audio_mode = str(encoding_audio_mode or "copy").strip().lower()
+
+    try:
+        crf_value = int(crf_value)
+    except Exception:
+        crf_value = 23
+
+    try:
+        nvenc_cq_value = int(nvenc_cq_value)
+    except Exception:
+        nvenc_cq_value = crf_value
 
     if use_ffmpeg:
         ffmpeg_exe = require_tool("ffmpeg")
@@ -4024,10 +4466,10 @@ def render_sbs_3d(
                 # NVENC HDR10. Some builds support metadata options differently,
                 # so keep the conversion correct and tag the output correctly.
                 ffmpeg_cmd += [
-                    "-preset", "p5",
+                    "-preset", _safe_nvenc_preset(encoding_encoder_preset, "p5"),
                     "-tune", "hq",
                     "-rc", "vbr",
-                    "-cq", str(crf_value),
+                    "-cq", str(nvenc_cq_value),
                     "-b:v", "0",
                     "-profile:v", "main10",
                 ]
@@ -4052,7 +4494,7 @@ def render_sbs_3d(
                 )
 
                 ffmpeg_cmd += [
-                    "-preset", "slow",
+                    "-preset", _safe_software_preset(encoding_encoder_preset, "slow"),
                     "-crf", str(crf_value),
                     "-x265-params", x265_params,
                 ]
@@ -4075,27 +4517,38 @@ def render_sbs_3d(
         else:
             # SDR
             if is_nvenc:
+                nvenc_preset = _safe_nvenc_preset(encoding_encoder_preset, "p5")
+
                 ffmpeg_cmd += [
-                    "-preset","p5",
-                    "-tune","hq",
-                    "-rc","vbr",
-                    "-cq", str(crf_value),   # reuse your CRF slider as NVENC CQ
-                    "-b:v","0",
-                    "-pix_fmt","yuv420p",
+                    "-preset", nvenc_preset,
                 ]
+
+                if selected_ffmpeg_codec in {"h264_nvenc", "hevc_nvenc"}:
+                    ffmpeg_cmd += ["-tune", "hq"]
+
+                ffmpeg_cmd += [
+                    "-rc", "vbr",
+                    "-cq", str(nvenc_cq_value),
+                    "-b:v", "0",
+                    "-pix_fmt", encoding_pixel_format,
+                ]
+
             elif selected_ffmpeg_codec in {"h264_amf", "hevc_amf", "av1_amf"}:
                 ffmpeg_cmd += [
                     "-quality", "quality",
                     "-rc", "cqp",
                     "-qp_i", str(crf_value),
                     "-qp_p", str(crf_value),
-                    "-pix_fmt","yuv420p",
+                    "-pix_fmt", encoding_pixel_format,
                 ]
+
             else:
+                software_preset = _safe_software_preset(encoding_encoder_preset, "slow")
+
                 ffmpeg_cmd += [
-                    "-preset","slow",
+                    "-preset", software_preset,
                     "-crf", str(crf_value),
-                    "-pix_fmt","yuv420p",
+                    "-pix_fmt", encoding_pixel_format,
                 ]
 
         ffmpeg_cmd.append(output_path)
@@ -4353,6 +4806,7 @@ def render_sbs_3d(
                 subject_lock_strength_frame = float(active_3d_settings.get("subject_lock_strength", subject_lock_strength))
                 subject_plane_lock_strength_frame = float(active_3d_settings.get("subject_plane_lock_strength", subject_plane_lock_strength))
                 subject_plane_lock_width_frame = float(active_3d_settings.get("subject_plane_lock_width", subject_plane_lock_width))
+                subject_screen_plane_frame = float(active_3d_settings.get("subject_screen_plane", subject_screen_plane))
                 foreground_curvature_strength_frame = float(active_3d_settings.get("foreground_curvature_strength", foreground_curvature_strength))
 
                 dof_strength_frame = float(active_3d_settings.get("dof_strength", dof_strength))
@@ -4369,6 +4823,7 @@ def render_sbs_3d(
                             f"conv={convergence_strength_frame:.4f} "
                             f"subject_lock={subject_lock_strength_frame:.4f} "
                             f"plane_lock={subject_plane_lock_strength_frame:.4f} "
+                            f"subject_plane={subject_screen_plane_frame:.4f} "
                             f"curvature={foreground_curvature_strength_frame:.4f}"
                         )
                         last_keyframe_debug_signature = keyframe_debug_signature
@@ -4405,6 +4860,7 @@ def render_sbs_3d(
                     subject_lock_strength=subject_lock_strength_frame,
                     subject_plane_lock_strength=subject_plane_lock_strength_frame,
                     subject_plane_lock_width=subject_plane_lock_width_frame,
+                    subject_screen_plane=subject_screen_plane_frame,
                     foreground_curvature_strength=foreground_curvature_strength_frame,
                     return_tensors=True,
                     disable_shift_ema=disable_shift_ema,
@@ -4950,6 +5406,7 @@ def render_sbs_3d_image(
     subject_lock_strength: float = 1.00,
     subject_plane_lock_strength: float = 0.0,
     subject_plane_lock_width: float = 0.08,
+    subject_screen_plane: float = 0.0,
     foreground_curvature_strength: float = 0.06,
     color_saturation: float = 1.0,
     color_contrast: float = 1.0,
@@ -4996,6 +5453,7 @@ def render_sbs_3d_image(
     subject_lock_strength  = float(_val(subject_lock_strength))
     subject_plane_lock_strength = float(_val(subject_plane_lock_strength))
     subject_plane_lock_width = float(_val(subject_plane_lock_width))
+    subject_screen_plane = float(_val(subject_screen_plane))
     foreground_curvature_strength = float(_val(foreground_curvature_strength))
     color_saturation       = float(_val(color_saturation))
     color_contrast         = float(_val(color_contrast))
@@ -5031,26 +5489,77 @@ def render_sbs_3d_image(
         cached_crop = (top_crop, bottom_crop)
         frame_tensor, _ = crop_black_bars_torch(frame_tensor, cached_crop)
         depth_tensor, _ = crop_black_bars_torch(depth_tensor, cached_crop)
+        
+    def _as_bool(v):
+        v = _val(v)
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return bool(v)
 
-    # For still images, preserve original aspect by default.
-    # Only apply selected aspect ratio if preserve_original_aspect is False.
-    if not preserve_original_aspect:
-        _, h, w = frame_tensor.shape
-        current_ratio = w / h
+    preserve_original_aspect = _as_bool(preserve_original_aspect)
 
-        if abs(current_ratio - target_ratio) > 0.01:
-            if current_ratio > target_ratio:
-                # frame is wider than target, crop left/right
-                new_w = int(h * target_ratio)
-                start = (w - new_w) // 2
-                frame_tensor = frame_tensor[:, :, start:start + new_w]
-                depth_tensor = depth_tensor[:, :, start:start + new_w]
-            else:
-                # frame is taller than target, crop top/bottom
-                new_h = int(w / target_ratio)
-                start = (h - new_h) // 2
-                frame_tensor = frame_tensor[:, start:start + new_h, :]
-                depth_tensor = depth_tensor[:, start:start + new_h, :]
+    def _crop_to_aspect(tensor, target_ratio):
+        _, h, w = tensor.shape
+        current_ratio = w / max(1, h)
+
+        if abs(current_ratio - target_ratio) <= 0.01:
+            return tensor
+
+        if current_ratio > target_ratio:
+            new_w = int(round(h * target_ratio))
+            new_w = max(1, min(new_w, w))
+            x = (w - new_w) // 2
+            return tensor[:, :, x:x + new_w]
+
+        new_h = int(round(w / target_ratio))
+        new_h = max(1, min(new_h, h))
+        y = (h - new_h) // 2
+        return tensor[:, y:y + new_h, :]
+
+    def _pad_to_aspect(tensor, target_ratio, fill_value=0.0):
+        c, h, w = tensor.shape
+        current_ratio = w / max(1, h)
+
+        if abs(current_ratio - target_ratio) <= 0.01:
+            return tensor
+
+        if current_ratio < target_ratio:
+            new_h = h
+            new_w = int(round(h * target_ratio))
+        else:
+            new_w = w
+            new_h = int(round(w / target_ratio))
+
+        new_w = max(w, new_w)
+        new_h = max(h, new_h)
+
+        padded = torch.full(
+            (c, new_h, new_w),
+            float(fill_value),
+            device=tensor.device,
+            dtype=tensor.dtype,
+        )
+
+        x = (new_w - w) // 2
+        y = (new_h - h) // 2
+        padded[:, y:y + h, x:x + w] = tensor
+        return padded
+
+    needs_stereo_canvas = output_format in ("Full-SBS", "Half-SBS", "VR")
+
+    if needs_stereo_canvas:
+        if preserve_original_aspect:
+            frame_tensor = _pad_to_aspect(frame_tensor, target_ratio, fill_value=0.0)
+            depth_tensor = _pad_to_aspect(depth_tensor, target_ratio, fill_value=0.0)
+            print(f"[IMAGE ASPECT] padded to {frame_tensor.shape[2]}x{frame_tensor.shape[1]} per eye")
+        else:
+            frame_tensor = _crop_to_aspect(frame_tensor, target_ratio)
+            depth_tensor = _crop_to_aspect(depth_tensor, target_ratio)
+            print(f"[IMAGE ASPECT] cropped to {frame_tensor.shape[2]}x{frame_tensor.shape[1]} per eye")
+
+    elif not preserve_original_aspect:
+        frame_tensor = _crop_to_aspect(frame_tensor, target_ratio)
+        depth_tensor = _crop_to_aspect(depth_tensor, target_ratio)
 
     resized_height = frame_tensor.shape[1]
     resized_width  = frame_tensor.shape[2]
@@ -5195,6 +5704,7 @@ def render_sbs_3d_image(
         subject_lock_strength=subject_lock_strength,
         subject_plane_lock_strength=subject_plane_lock_strength,
         subject_plane_lock_width=subject_plane_lock_width,
+        subject_screen_plane=subject_screen_plane,
         foreground_curvature_strength=foreground_curvature_strength,
         disable_shift_ema=disable_shift_ema,
     )
@@ -5237,7 +5747,7 @@ def render_sbs_3d_image(
             left_t,
             depth_for_eye,
             focal_depth,
-            max_sigma=dof_strength_frame,
+            max_sigma=dof_strength,
             focus_width=0.35,
         )
 
@@ -5245,23 +5755,23 @@ def render_sbs_3d_image(
             right_t,
             depth_for_eye,
             focal_depth,
-            max_sigma=dof_strength_frame,
+            max_sigma=dof_strength,
             focus_width=0.35,
         )
 
     if need_color:
         left_t = apply_color_grade(
             left_t,
-            saturation=color_saturation_frame,
-            contrast=color_contrast_frame,
-            brightness=color_brightness_frame,
+            saturation=color_saturation,
+            contrast=color_contrast,
+            brightness=color_brightness,
         )
 
         right_t = apply_color_grade(
             right_t,
-            saturation=color_saturation_frame,
-            contrast=color_contrast_frame,
-            brightness=color_brightness_frame,
+            saturation=color_saturation,
+            contrast=color_contrast,
+            brightness=color_brightness,
         )
 
     # Keep SDR formatting on GPU as long as possible.
@@ -5508,6 +6018,7 @@ def process_video(
     subject_lock_strength,
     subject_plane_lock_strength,
     subject_plane_lock_width,
+    subject_screen_plane,
     foreground_curvature_strength,
     color_saturation,
     color_contrast,
@@ -5529,7 +6040,10 @@ def process_video(
     disable_shift_ema=False,
     keyframe_service=None,
     edge_repair_quality=None,
-):
+    encoding_pixel_format=None,
+    encoding_encoder_preset=None,
+    encoding_audio_mode=None,
+    ):
 
 
     global original_video_width, original_video_height
@@ -5587,6 +6101,9 @@ def process_video(
         except Exception:
             return float(default)
 
+    encoding_pixel_format_value = str(_get(encoding_pixel_format, "yuv420p") or "yuv420p").strip()
+    encoding_encoder_preset_value = str(_get(encoding_encoder_preset, "p5") or "p5").strip()
+    encoding_audio_mode_value = str(_get(encoding_audio_mode, "copy") or "copy").strip()
 
     # 🧠 Save original dimensions globally
     original_video_width = width
@@ -5737,6 +6254,7 @@ def process_video(
             subject_lock_strength=subject_lock_strength.get(),
             subject_plane_lock_strength=subject_plane_lock_strength.get(),
             subject_plane_lock_width=subject_plane_lock_width.get(),
+            subject_screen_plane=subject_screen_plane.get(),
             foreground_curvature_strength=foreground_curvature_strength.get(),
             color_saturation=(color_saturation.get() if hasattr(color_saturation, 'get') else color_saturation),
             color_contrast=(color_contrast.get() if hasattr(color_contrast, 'get') else color_contrast),
@@ -5751,6 +6269,9 @@ def process_video(
             vr180_hfov_deg=hfov,
             disable_shift_ema=disable_shift_ema,
             keyframe_service=keyframe_service,
+            encoding_pixel_format=encoding_pixel_format_value,
+            encoding_encoder_preset=encoding_encoder_preset_value,
+            encoding_audio_mode=encoding_audio_mode_value,
         )
 
     if not final_render_path:

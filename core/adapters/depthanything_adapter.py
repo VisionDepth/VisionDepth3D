@@ -3,6 +3,7 @@ import os
 import math
 from pathlib import Path
 from typing import Tuple, Callable, Dict, Any
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -11,6 +12,7 @@ from PIL import Image, ImageOps
 from torchvision import transforms
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file as load_safetensors
+
 
 from core.models.depth_anything_v2.dpt import DepthAnythingV2
 
@@ -39,6 +41,24 @@ _DEFAULT_FILENAMES = {
     "metric_hypersim_vitl_fp32": "depth_anything_v2_metric_hypersim_vitl_fp32.safetensors",
     "metric_vkitti_vitl_fp32":   "depth_anything_v2_metric_vkitti_vitl_fp32.safetensors",
 }
+
+# Keep the most recently used DA-V2 model alive.
+# This prevents accidental per-frame/per-batch reloads from destroying FPS.
+_DAV2_MODEL_CACHE: Dict[Tuple[Any, ...], Tuple[torch.nn.Module, torch.Tensor, torch.Tensor]] = {}
+_DAV2_MODEL_CACHE_MAX = 1
+
+
+def clear_da_v2_adapter_cache():
+    """
+    Optional external cleanup hook for the GUI/worker when switching projects/models.
+    Existing active closures still keep their model alive until released.
+    """
+    _DAV2_MODEL_CACHE.clear()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 def _snap_kijai_if_needed(filename: str, cache_dir: str, repo_id: str = _DEFAULT_REPO_ID) -> str:
     cache_dir = str(Path(cache_dir).expanduser())
@@ -95,6 +115,8 @@ def load_da_v2_adapter(
     spec_or_path: str,
     cache_dir: str,
     use_fp16: bool = False,
+    use_directml: bool = False,
+    device=None,
 ) -> Tuple[Callable, Dict[str, Any]]:
     """
     spec_or_path:
@@ -144,59 +166,123 @@ def load_da_v2_adapter(
     if is_metric:
         cfg.update({"is_metric": True, "max_depth": max_depth})
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # ------------------------------------------------------------
+    # Device selection
+    # ------------------------------------------------------------
+    # Priority:
+    #   1. Explicit device passed by main app
+    #   2. DirectML if requested
+    #   3. CUDA if available
+    #   4. CPU fallback
+    if device is not None:
+        selected_device = torch.device(device) if isinstance(device, str) else device
 
-    # Use FP16 on CUDA when either:
-    # - the checkpoint name is explicitly fp16
-    # - the caller/UI requested FP16
-    #
-    # This lets fp32 safetensors like vitg_fp32 run faster on RTX GPUs.
-    use_half = bool(device == "cuda" and (use_fp16 or "fp16" in weight_path.lower()))
+    elif use_directml:
+        try:
+            import torch_directml
+
+            if hasattr(torch_directml, "is_available"):
+                try:
+                    if not torch_directml.is_available():
+                        raise RuntimeError("torch_directml.is_available() returned False")
+                except Exception:
+                    pass
+
+            selected_device = torch_directml.device()
+
+            # Quick sanity check.
+            _ = torch.ones(1).to(selected_device).cpu()
+
+        except Exception as e:
+            print(f"⚠️ DA-V2 DirectML requested but unavailable: {e}")
+            selected_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    else:
+        selected_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = selected_device
+
+    device_type = getattr(device, "type", str(device))
+    is_cuda = device_type == "cuda"
+    is_directml = device_type == "privateuseone"
+
+    # Use FP16 only on CUDA.
+    # DirectML FP16 can be unstable/unsupported depending on GPU/driver/op coverage.
+    use_half = bool(is_cuda and (use_fp16 or "fp16" in weight_path.lower()))
     dtype = torch.float16 if use_half else torch.float32
 
-    if device == "cuda":
+    if is_cuda:
         try:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+
+            # Helps Ampere/Ada/Lovelace cards use TF32 for FP32 matmul paths.
+            # This does not affect true FP16 inference, but helps if the user runs FP32.
+            try:
+                torch.set_float32_matmul_precision("high")
+            except Exception:
+                pass
         except Exception:
             pass
 
-    # Build model and load weights
-    model = DepthAnythingV2(**cfg)
-    sd = load_safetensors(weight_path, device="cpu")
-    load_result = model.load_state_dict(sd, strict=False)
+    # Build/load model, but cache the most recently used model.
+    # This protects against caller-side accidental reloads per frame/batch.
+    cache_key = (
+        os.path.abspath(weight_path),
+        enc,
+        bool(is_metric),
+        float(max_depth),
+        str(device),
+        str(dtype),
+        bool(use_half),
+    )
 
-    if load_result.missing_keys or load_result.unexpected_keys:
-        raise RuntimeError(
-            "Depth Anything V2 checkpoint did not match the model configuration.\n"
-            f"Weight file: {weight_path}\n"
-            f"Missing keys: {load_result.missing_keys}\n"
-            f"Unexpected keys: {load_result.unexpected_keys}"
-        )
+    cached = _DAV2_MODEL_CACHE.get(cache_key)
 
-    del sd
-    model.eval().to(device=device, dtype=dtype)
+    if cached is not None:
+        model, mean_t, std_t = cached
 
-    if device == "cuda":
-        try:
-            model = model.to(memory_format=torch.channels_last)
-        except Exception:
-            pass
+    else:
+        model = DepthAnythingV2(**cfg)
+        sd = load_safetensors(weight_path, device="cpu")
+        load_result = model.load_state_dict(sd, strict=False)
 
-    # Preprocess
-    # Preprocess constants on GPU.
-    mean_t = torch.tensor(
-        _MEAN_STD[0],
-        device=device,
-        dtype=dtype,
-    ).view(1, 3, 1, 1)
+        if load_result.missing_keys or load_result.unexpected_keys:
+            raise RuntimeError(
+                "Depth Anything V2 checkpoint did not match the model configuration.\n"
+                f"Weight file: {weight_path}\n"
+                f"Missing keys: {load_result.missing_keys}\n"
+                f"Unexpected keys: {load_result.unexpected_keys}"
+            )
 
-    std_t = torch.tensor(
-        _MEAN_STD[1],
-        device=device,
-        dtype=dtype,
-    ).view(1, 3, 1, 1)
+        del sd
+
+        model.eval().to(device=device, dtype=dtype)
+
+        if is_cuda:
+            try:
+                model = model.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+
+        # Preprocess constants on target device.
+        mean_t = torch.tensor(
+            _MEAN_STD[0],
+            device=device,
+            dtype=dtype,
+        ).view(1, 3, 1, 1)
+
+        std_t = torch.tensor(
+            _MEAN_STD[1],
+            device=device,
+            dtype=dtype,
+        ).view(1, 3, 1, 1)
+
+        if len(_DAV2_MODEL_CACHE) >= _DAV2_MODEL_CACHE_MAX:
+            _DAV2_MODEL_CACHE.clear()
+
+        _DAV2_MODEL_CACHE[cache_key] = (model, mean_t, std_t)
 
     @torch.inference_mode()
     def run(images, inference_size=None):
@@ -218,8 +304,6 @@ def load_da_v2_adapter(
         if len(images) == 0:
             return []
 
-        bicubic = getattr(Image, "Resampling", Image).BICUBIC
-
         infer_w = infer_h = None
         if inference_size:
             infer_w, infer_h = map(int, inference_size)
@@ -228,7 +312,14 @@ def load_da_v2_adapter(
         original_sizes = []
 
         # ------------------------------------------------------------
-        # CPU decode/resize/stack
+        # Lightweight CPU decode only.
+        #
+        # Important:
+        # - Do not resize PIL frames on CPU.
+        # - Do not convert uint8 -> float32 on CPU.
+        # - Do not force GPU tensors back to CPU.
+        #
+        # Resize, dtype conversion, /255, and normalization happen on GPU below.
         # ------------------------------------------------------------
         for img in images:
             if isinstance(img, Image.Image):
@@ -236,17 +327,58 @@ def load_da_v2_adapter(
                 out_w, out_h = img.size
                 original_sizes.append((out_h, out_w))
 
-                if inference_size and img.size != (infer_w, infer_h):
-                    img = img.resize((infer_w, infer_h), bicubic)
+                # np.asarray(PIL) can be read-only. Use writable contiguous memory.
+                arr = np.array(img, dtype=np.uint8, copy=True)
+                t = torch.from_numpy(arr).permute(2, 0, 1)
 
-                arr = np.asarray(img, dtype=np.uint8)
-                t = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
-                t = t.float().div_(255.0)
+            elif isinstance(img, np.ndarray):
+                arr = np.asarray(img)
+
+                # Remove batch dim if someone passed [1,H,W,C] or [1,C,H,W].
+                if arr.ndim == 4 and arr.shape[0] == 1:
+                    arr = arr[0]
+
+                # CHW -> HWC if needed.
+                if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
+                    arr = np.transpose(arr, (1, 2, 0))
+
+                # Grayscale -> RGB.
+                if arr.ndim == 2:
+                    arr = np.stack([arr, arr, arr], axis=-1)
+
+                # RGBA -> RGB.
+                if arr.ndim == 3 and arr.shape[-1] == 4:
+                    arr = arr[..., :3]
+
+                # Single channel -> RGB.
+                if arr.ndim == 3 and arr.shape[-1] == 1:
+                    arr = np.repeat(arr, 3, axis=-1)
+
+                if arr.ndim != 3 or arr.shape[-1] != 3:
+                    raise ValueError(f"Expected RGB ndarray HxWx3, got shape {arr.shape}")
+
+                out_h, out_w = int(arr.shape[0]), int(arr.shape[1])
+                original_sizes.append((out_h, out_w))
+
+                if np.issubdtype(arr.dtype, np.floating):
+                    if arr.size and float(np.nanmax(arr)) <= 1.0:
+                        arr = arr * 255.0
+                    arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
+
+                elif arr.dtype != np.uint8:
+                    arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
+
+                if not arr.flags.c_contiguous or not arr.flags.writeable:
+                    arr = np.array(arr, dtype=np.uint8, copy=True)
+                else:
+                    arr = np.ascontiguousarray(arr)
+
+                t = torch.from_numpy(arr).permute(2, 0, 1)
 
             else:
                 if not torch.is_tensor(img):
                     raise TypeError(
-                        f"Expected PIL.Image.Image or torch.Tensor, got {type(img)!r}"
+                        f"Expected PIL.Image.Image, np.ndarray, or torch.Tensor, got {type(img)!r}"
                     )
 
                 if img.ndim != 3:
@@ -262,32 +394,14 @@ def load_da_v2_adapter(
                 out_h, out_w = int(img.shape[-2]), int(img.shape[-1])
                 original_sizes.append((out_h, out_w))
 
+                # Keep tensor on its current device. Moving CUDA tensors back to CPU
+                # causes a sync and can destroy render FPS.
                 t = img.detach()
-
-                if t.device.type != "cpu":
-                    t = t.cpu()
-
-                if not torch.is_floating_point(t):
-                    t = t.float().div_(255.0)
-                else:
-                    t = t.float()
-
-                # Do not call t.max().item() here; that can sync if input was GPU.
-                # VD3D tensors are expected to be 0..1 floats or uint8.
-
-                if inference_size and t.shape[-2:] != (infer_h, infer_w):
-                    t = F.interpolate(
-                        t.unsqueeze(0),
-                        size=(infer_h, infer_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    ).squeeze(0)
 
             tensors.append(t)
 
-        # If no inference_size was given and input images have mixed sizes,
-        # fall back to processing each image separately. This keeps image-folder
-        # mode safe for mixed-resolution folders.
+        # Batching requires equal source sizes. Video frames normally satisfy this.
+        # Mixed-size folders are kept safe by recursively processing one at a time.
         shapes = {tuple(t.shape[-2:]) for t in tensors}
 
         if len(shapes) != 1:
@@ -296,14 +410,60 @@ def load_da_v2_adapter(
                 outputs.extend(run([single_img], inference_size=inference_size))
             return outputs
 
+        # If tensors came from different devices, move them to the inference device
+        # before stacking. This is uncommon, but keeps the adapter robust.
+        tensor_devices = {t.device for t in tensors}
+        if len(tensor_devices) > 1:
+            stack_device = device
+            tensors = [
+                t.to(
+                    stack_device,
+                    non_blocking=(is_cuda and t.device.type == "cpu"),
+                )
+                for t in tensors
+            ]
+
+        tensors = [
+            t.contiguous() if not t.is_contiguous() else t
+            for t in tensors
+        ]
+
         batch = torch.stack(tensors, dim=0)  # [B,3,H,W]
 
-        # Snap to multiple of 14 for ViT/DINOv2 patch safety.
-        h, w = int(batch.shape[-2]), int(batch.shape[-1])
-        Hs = max(14, math.ceil(h / 14) * 14)
-        Ws = max(14, math.ceil(w / 14) * 14)
+        # One transfer for the whole batch. Keep uint8 until it reaches the GPU
+        # so CPU does less work and PCIe transfer stays smaller.
+        if batch.device != device:
+            if is_cuda and batch.device.type == "cpu":
+                try:
+                    batch = batch.pin_memory()
+                except Exception:
+                    pass
 
-        if (Hs, Ws) != (h, w):
+            batch = batch.to(
+                device=device,
+                non_blocking=(is_cuda and batch.device.type == "cpu"),
+            )
+
+        # Convert and scale on GPU.
+        if not torch.is_floating_point(batch):
+            batch = batch.to(dtype=dtype)
+            batch.div_(255.0)
+        else:
+            batch = batch.to(dtype=dtype)
+
+        # Decide final model input size.
+        cur_h, cur_w = int(batch.shape[-2]), int(batch.shape[-1])
+
+        if inference_size:
+            model_h, model_w = infer_h, infer_w
+        else:
+            model_h, model_w = cur_h, cur_w
+
+        # Snap to multiple of 14 for ViT/DINOv2 patch safety.
+        Hs = max(14, math.ceil(model_h / 14) * 14)
+        Ws = max(14, math.ceil(model_w / 14) * 14)
+
+        if (cur_h, cur_w) != (Hs, Ws):
             batch = F.interpolate(
                 batch,
                 size=(Hs, Ws),
@@ -311,12 +471,12 @@ def load_da_v2_adapter(
                 align_corners=False,
             )
 
-        # One GPU transfer for the whole batch.
-        batch = batch.to(device=device, dtype=dtype, non_blocking=True)
-
-        try:
-            batch = batch.contiguous(memory_format=torch.channels_last)
-        except Exception:
+        if is_cuda:
+            try:
+                batch = batch.contiguous(memory_format=torch.channels_last)
+            except Exception:
+                batch = batch.contiguous()
+        else:
             batch = batch.contiguous()
 
         # Normalize on GPU.
@@ -325,10 +485,19 @@ def load_da_v2_adapter(
         # ------------------------------------------------------------
         # Batched model inference
         # ------------------------------------------------------------
-        with torch.autocast(
-            device_type="cuda",
-            enabled=(device == "cuda" and dtype == torch.float16),
-        ):
+        # CUDA autocast only.
+        # DirectML/privateuseone must not use CUDA autocast.
+        autocast_ctx = (
+            torch.autocast(
+                device_type="cuda",
+                dtype=torch.float16,
+                enabled=True,
+            )
+            if is_cuda and dtype == torch.float16
+            else nullcontext()
+        )
+
+        with autocast_ctx:
             depth = model(batch)
 
         if isinstance(depth, (tuple, list)):
@@ -383,11 +552,11 @@ def load_da_v2_adapter(
                 d_max = depth.amax(dim=(1, 2), keepdim=True)
                 depth_norm = (depth - d_min) / (d_max - d_min + 1e-6)
 
-                depth_cpu = depth_norm.detach().cpu()
+                depth_np = depth_norm.detach().cpu().numpy().astype(np.float32, copy=False)
 
                 return [
-                    {"predicted_depth": depth_cpu[i]}
-                    for i in range(depth_cpu.shape[0])
+                    {"predicted_depth": np.ascontiguousarray(depth_np[i])}
+                    for i in range(depth_np.shape[0])
                 ]
 
         # Mixed output sizes. Resize each prediction individually on GPU.
@@ -419,9 +588,24 @@ def load_da_v2_adapter(
                 d_max = d.amax()
                 d = (d - d_min) / (d_max - d_min + 1e-6)
 
-                outputs.append({"predicted_depth": d.detach().cpu()})
+                d_np = d.detach().cpu().numpy().astype(np.float32, copy=False)
+                outputs.append({"predicted_depth": np.ascontiguousarray(d_np)})
 
         return outputs
 
     run._is_dav2 = True
-    return run, {"is_diffusion": False, "diffusion_kind": "depth", "is_dav2": True}
+    run._device = str(device)
+    run._dtype = str(dtype)
+    run._backend = "cuda" if is_cuda else ("directml" if is_directml else "cpu")
+
+    return run, {
+        "is_diffusion": False,
+        "diffusion_kind": "depth",
+        "is_dav2": True,
+        "kind": "dav2",
+        "device": str(device),
+        "dtype": str(dtype),
+        "backend": run._backend,
+        "is_directml": bool(is_directml),
+        "supports_fp16": bool(is_cuda),
+    }

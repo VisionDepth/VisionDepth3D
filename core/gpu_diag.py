@@ -17,7 +17,7 @@ def gpu_diagnostics(return_text: bool = False):
         }
 
     lines = []
-    lines += ["GPU Diagnostics version: v4.2"]
+    lines += ["GPU Diagnostics version: v4.2.1"]
 
     try:
         import torch
