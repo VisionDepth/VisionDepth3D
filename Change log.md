@@ -158,16 +158,15 @@ core/adapters/vigeo_adapter.py
 
 ### 3D Generator Controls and Preview Tuning
 
-- Added new 3D Assistant control groundwork for subject screen-plane handling.
-- Reworked the experimental subject placement control into **Subject Zero Lock** after testing showed that direct subject plane shifting could move too much of the scene and reduce background depth.
+- Added new 3D Assistant control groundwork.
 - Added **Subject Zero Lock** as a local subject disparity cancel control.
 - Subject Zero Lock now measures the tracked subject's current shift and pulls that subject area closer to screen plane without flattening the full background.
 - Improved the workflow for deeper scenes where the background needs to stay pushed back while the main subject remains comfortable.
 - Added tuning support for close-up and dialogue-heavy shots where faces or central subjects need less stereo separation.
-- Updated simple 3D style behavior so users can choose a style first, then adjust sliders without the style collapsing back into a weaker generic formula.
+- Updated simple 3D style behavior so users can choose a style first, then adjust advanced sliders if they wish. 
 - Simple 3D controls now adjust from the selected style as a base instead of replacing the advanced preset values immediately.
 - Added safer handling for Subject Zero Lock in saved state, keyframe settings, preview settings, and render settings.
-- Updated preview debug output to report Subject Zero Lock clearly during live preview testing.
+- Updated preview debug output to report Subject Zero Lock clearly during preview testing.
 
 ---
 
@@ -196,7 +195,5 @@ core/adapters/vigeo_adapter.py
 ### Stability and State Handling
 
 - Added additional guard logic around multi-control preset application to avoid accidental UI state changes while presets are loading.
-- Fixed a crash caused by leftover Subject Screen Plane variable references after converting the control to Subject Zero Lock.
-- Fixed a startup syntax issue caused by a duplicated `subject_lock_strength` argument in the render function signature.
 - Improved consistency between 3D Assistant sliders, advanced controls, preview generation, and final render settings.
 
