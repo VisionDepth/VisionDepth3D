@@ -473,6 +473,10 @@ Useful for:
 
 ### CPU Offload Mode
 
+`
+This only activates when a diffusion based model is selected like Marigold depth model.
+`
+
 Reduces VRAM usage by moving parts of the model to CPU.
 
 - None = fastest, highest VRAM usage
@@ -484,6 +488,10 @@ Only adjust this if you encounter memory limits.
 ---
 
 ### Use float16
+
+`
+Enable FP16 before loading/reloading DAv2 models.
+`
 
 Reduces VRAM usage and can increase speed on supported GPUs.
 

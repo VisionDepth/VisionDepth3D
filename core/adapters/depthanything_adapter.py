@@ -283,6 +283,21 @@ def load_da_v2_adapter(
             _DAV2_MODEL_CACHE.clear()
 
         _DAV2_MODEL_CACHE[cache_key] = (model, mean_t, std_t)
+        
+    try:
+        p = next(model.parameters())
+        print(
+            f"[DA-V2] READY | weight={Path(weight_path).name} | "
+            f"device={p.device} | dtype={p.dtype} | "
+            f"use_half={use_half} | backend={'cuda' if is_cuda else ('directml' if is_directml else 'cpu')}",
+            flush=True,
+        )
+    except Exception:
+        print(
+            f"[DA-V2] READY | weight={Path(weight_path).name} | "
+            f"device={device} | dtype={dtype} | use_half={use_half}",
+            flush=True,
+        )
 
     @torch.inference_mode()
     def run(images, inference_size=None):
@@ -457,7 +472,23 @@ def load_da_v2_adapter(
         if inference_size:
             model_h, model_w = infer_h, infer_w
         else:
-            model_h, model_w = cur_h, cur_w
+            # Important:
+            # If VisionDepth3D UI is set to "Original", inference_size is None.
+            # Do NOT run DA-V2 at full 1080p/4K by default; that will destroy FPS.
+            #
+            # Default max side 518 matches DA-V2/Depth Anything common inference size.
+            # Set VD3D_DAV2_DEFAULT_MAX_SIDE=0 to restore true original-resolution inference.
+            try:
+                default_max_side = int(os.environ.get("VD3D_DAV2_DEFAULT_MAX_SIDE", "518"))
+            except Exception:
+                default_max_side = 518
+
+            if default_max_side > 0 and max(cur_h, cur_w) > default_max_side:
+                scale = float(default_max_side) / float(max(cur_h, cur_w))
+                model_h = max(14, int(round(cur_h * scale)))
+                model_w = max(14, int(round(cur_w * scale)))
+            else:
+                model_h, model_w = cur_h, cur_w
 
         # Snap to multiple of 14 for ViT/DINOv2 patch safety.
         Hs = max(14, math.ceil(model_h / 14) * 14)
@@ -524,13 +555,9 @@ def load_da_v2_adapter(
         if same_target:
             target_h, target_w = original_sizes[0]
 
-            if tuple(depth.shape[-2:]) != (target_h, target_w):
-                depth = F.interpolate(
-                    depth.unsqueeze(1),
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(1)
+            # Do not resize adapter output back to source size here.
+            # VD3D main postprocess already resizes depth to final video/image size.
+            # Keeping adapter output at model resolution reduces GPU work and GPU->CPU transfer.
 
             if is_metric:
                 metric_depth = depth.clamp(min=0)
@@ -548,11 +575,8 @@ def load_da_v2_adapter(
                 ]
 
             else:
-                d_min = depth.amin(dim=(1, 2), keepdim=True)
-                d_max = depth.amax(dim=(1, 2), keepdim=True)
-                depth_norm = (depth - d_min) / (d_max - d_min + 1e-6)
-
-                depth_np = depth_norm.detach().cpu().numpy().astype(np.float32, copy=False)
+                # Return raw relative depth. Main VD3D pipeline normalizes later.
+                depth_np = depth.detach().cpu().numpy().astype(np.float32, copy=False)
 
                 return [
                     {"predicted_depth": np.ascontiguousarray(depth_np[i])}
@@ -566,14 +590,9 @@ def load_da_v2_adapter(
             d = depth[i]
             target_h, target_w = original_sizes[i]
 
-            if tuple(d.shape[-2:]) != (target_h, target_w):
-                d = F.interpolate(
-                    d.unsqueeze(0).unsqueeze(0),
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0).squeeze(0)
-
+            # Do not resize adapter output back to source size here.
+            # Main VD3D postprocess handles final resizing.
+            
             if is_metric:
                 metric_depth = d.clamp(min=0)
                 predicted_depth = torch.clamp(metric_depth / max_depth, 0.0, 1.0)
@@ -584,10 +603,7 @@ def load_da_v2_adapter(
                 })
 
             else:
-                d_min = d.amin()
-                d_max = d.amax()
-                d = (d - d_min) / (d_max - d_min + 1e-6)
-
+                # Return raw relative depth. Main VD3D pipeline normalizes later.
                 d_np = d.detach().cpu().numpy().astype(np.float32, copy=False)
                 outputs.append({"predicted_depth": np.ascontiguousarray(d_np)})
 
