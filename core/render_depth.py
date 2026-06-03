@@ -2361,6 +2361,16 @@ def update_pipeline(selected_model_var, status_label_widget, inference_res_var, 
 
             use_fp16 = selected_fp16 and can_use_fp16_on_device(torch_device)
             dtype = active_torch_dtype(use_fp16)
+
+            print(
+                f"[LOAD SETTINGS] selected={selected_checkpoint} | "
+                f"checkpoint={checkpoint} | "
+                f"ui_fp16={selected_fp16} | resolved_fp16={use_fp16} | "
+                f"dtype={dtype} | backend={device_display_name()} | "
+                f"torch_device={torch_device}",
+                flush=True,
+            )
+
             model_callable, meta = ensure_model_downloaded(checkpoint, use_fp16=use_fp16)
             
             if not is_current_session():
