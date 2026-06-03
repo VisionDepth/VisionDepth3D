@@ -1,954 +1,891 @@
-# DB.py — Depth Blender with path pickers + frames OR videos + Live Preview & Frame Scrubber
-import os, gc, cv2, numpy as np, threading, queue, tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from PIL import Image, ImageTk
+# ui/pages/depth_blender_page.py
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
+    QFileDialog, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
+    QScrollArea, QProgressBar, QGroupBox, QLineEdit,
+    QRadioButton, QButtonGroup, QSlider, QMessageBox, QSplitter,
+)
 
-# PyTorch's expandable_segments CUDA allocator option is not supported on
-# some platforms/builds, especially Windows. If inherited from the launcher
-# environment, remove only that option before importing torch.
-if os.name == "nt":
-    conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    if "expandable_segments" in conf:
-        kept = [
-            part.strip()
-            for part in conf.split(",")
-            if part.strip() and not part.strip().startswith("expandable_segments")
-        ]
-        if kept:
-            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(kept)
-        else:
-            os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-            
-# --- Universal PyTorch device selector ---
-try:
-    import torch
-    import torch.nn.functional as F
-    torch.set_grad_enabled(False)
+from ui.styles.page_theme import apply_unified_page_theme
+from core.debug_flags import debug_print
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+import cv2
+import numpy as np
+import threading
+import queue
+import os
+import time
 
-    print(f"Depth Blender Compute device: {device.type.upper()}")
+class DepthBlenderPage(QWidget):
+    progress_updated = Signal(dict)
+    preview_ready = Signal(object, int)
+    preview_failed = Signal(str)
 
-except Exception as e:
-    print(f"Depth Blender: PyTorch not available: {e}")
-    torch = None
-    F = None
-    device = None
+    PRESET_ITEMS = [
+        ("Select Preset", None),
+        ("Default (Balanced)", "Default (Balanced)"),
+        ("Sharp Edges", "Sharp Edges"),
+        ("Smooth Blend", "Smooth Blend"),
+        ("Metric + Mono", "Metric + Mono"),
+        ("High Contrast", "High Contrast"),
+    ]
 
-# ------------ Core blending ------------
-def detect_white_threshold(image, percentile=95):
-    return np.percentile(image, percentile)
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+        self._translation_map = []
 
-def create_soft_white_mask(image, threshold, softness=0.1):
-    softness = max(float(softness), 1e-6)
-    normalized = (image.astype(np.float32) - float(threshold)) / (255.0 * softness)
-    normalized = np.clip(normalized, -60.0, 60.0)
-    mask = 1.0 / (1.0 + np.exp(-normalized))
-    return (mask * 255.0).astype(np.uint8)
+        # State
+        self.mode = "frames"
+        self.overwrite_v2 = True
+        self.v1_path = ""
+        self.v2_path = ""
+        self.out_path = ""
+        self.out_w = ""
+        self.out_h = ""
+        self.use_gpu = True
 
-def boost_whites(image, threshold, boost_percent=30):
-    wmask = create_soft_white_mask(image, threshold)
-    boosted = image * (1 + (boost_percent / 100.0) * (wmask / 255.0))
-    return np.clip(boosted, 0, 255).astype(np.uint8)
+        # Blend params
+        self.white_strength = 1.0
+        self.blur_k = 35
+        self.clip_limit = 2.0
+        self.tile_grid = 8
+        self.bf_d = 12
+        self.bf_sigmaColor = 75
+        self.bf_sigmaSpace = 75
 
-def blend_whites_seamlessly(v1_map, v2_map, blur_kernel_size=35, white_strength=1.0, threshold=None):
-    k = int(blur_kernel_size) | 1
-    thr = detect_white_threshold(v2_map) if threshold is None else float(threshold)
-    v1_w = create_soft_white_mask(v1_map, thr)
-    v2_w = create_soft_white_mask(v2_map, thr)
-    v1_unique_mask = cv2.subtract(v1_w, v2_w)
-    v1_unique_white = cv2.bitwise_and(v1_map, v1_map, mask=v1_unique_mask)
-    v1_unique_white = np.clip(v1_unique_white, 0, thr)
-    trans = cv2.GaussianBlur(v1_unique_mask.astype(np.float32), (k, k), 0) / 255.0
-    blended = (v2_map * (1 - trans) + v1_unique_white * trans * white_strength).astype(np.uint8)
-    blended = cv2.medianBlur(blended, 5)
-    return blended
+        # Preview
+        self._preview_lock = threading.Lock()
+        self._preview_thread = None
+        self._preview_debounce = QTimer()
+        self._preview_debounce.setSingleShot(True)
+        self._preview_debounce.setInterval(120)
+        self._preview_debounce.timeout.connect(self._preview_now)
+        self._preview_pixmap = None
+        self.preview_index = 0
+        self.preview_max = 0
 
-def normalize_to_v2(blended_map, v2_map):
-    v2_mean, v2_std = cv2.meanStdDev(v2_map)
-    b_mean, b_std = cv2.meanStdDev(blended_map)
+        # Worker
+        self._last_progress = 0
+        self._blend_start_time = None
+        self.qlog = queue.Queue()
+        self.qprog = queue.Queue()
+        self.stop_evt = threading.Event()
+        self.worker = None
 
-    v2_mean = float(v2_mean[0, 0])
-    v2_std = float(v2_std[0, 0])
-    b_mean = float(b_mean[0, 0])
-    b_std = max(float(b_std[0, 0]), 1e-6)
+        self._build_ui()
 
-    out = blended_map.astype(np.float32)
-    out = (out - b_mean) * (v2_std / b_std) + v2_mean
-    return np.clip(out, 0, 255).astype(np.uint8)
+        self.preview_ready.connect(self._apply_preview_image)
+        self.preview_failed.connect(lambda msg: self._log(f"Preview error: {msg}"))
 
-# ------------ Torch helpers ------------
-def _to_torch_u8_gray(np_u8):
-    t = torch.from_numpy(np_u8).to(torch.float32) / 255.0
-    return t.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        self._start_poller()
+        
+        
+    def _sync_blend_params_from_sliders(self):
+        self.white_strength = self.white_slider.value() / 100.0
+        self.blur_k = int(self.blur_slider.value())
+        self.clip_limit = self.clahe_slider.value() / 100.0
+        self.tile_grid = int(self.tiles_slider.value())
+        self.bf_d = int(self.bfd_slider.value())
+        self.bf_sigmaColor = int(self.sigmaC_slider.value())
+        self.bf_sigmaSpace = int(self.sigmaS_slider.value())
 
-def _from_torch_u8_gray(t):
-    t = t.clamp(0, 1).squeeze().detach().cpu().numpy()
-    return (t * 255.0 + 0.5).astype(np.uint8)
+    def _t(self, key: str) -> str:
+        """
+        Translation helper.
+        Supports both new PySide6 label keys and older JSON keys.
+        Avoids false missing-key warnings for English where value == key.
+        """
+        translator = getattr(self.controller, "t", None)
+        if not callable(translator):
+            return key
 
-def _gauss_kernel_1d(sig, radius=None, device="cpu", dtype=None):
-    if torch is None:
-        raise RuntimeError("PyTorch is not available.")
+        # Try to inspect the loaded translation dictionary if available.
+        translations = getattr(self.controller, "translations", None)
 
-    if dtype is None:
-        dtype = torch.float32
+        # Some controllers store the language service inside another attribute.
+        if translations is None:
+            language_service = getattr(self.controller, "language_service", None)
+            translations = getattr(language_service, "translations", None)
 
-    sig = max(float(sig), 1e-6)
+        aliases = {
+            "Preview (scrubbable)": "Preview (scrubbable):",
+            "Use GPU": "Use GPU (PyTorch CUDA)",
+            "Output:": "Output path/file:",
+            "W:": "Width:",
+            "H:": "Height:",
+            "(blank = keep source)": "(Leave blank to keep source)",
 
-    if radius is None:
-        radius = int(max(3, round(3.0 * sig)))
+            "Blend Parameters": "Blend Parameters (preview live)",
+            "Feather Blur": "Feather Blur (kernel)",
+            "CLAHE Clip": "CLAHE Clip Limit",
+            "CLAHE Tiles": "CLAHE Tile Grid",
 
-    x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
-    k = torch.exp(-(x ** 2) / (2 * sig ** 2))
-    k = (k / k.sum()).view(1, 1, -1)
-    return k, radius
+            "Prev": "< Prev",
+            "Next": "Next >",
+            "Refresh Preview": "Preview Now",
+        }
 
-def _gaussian_blur_torch(img_01, sigma=5.0, device="cpu"):
-    k, r = _gauss_kernel_1d(sigma, device=device, dtype=img_01.dtype)
-    pad = (r, r)
-    w_h = k.view(1, 1, 1, -1)
-    tmp = torch.nn.functional.pad(img_01, (pad[0], pad[1], 0, 0), mode="reflect")
-    tmp = torch.nn.functional.conv2d(tmp, w_h)
-    w_v = k.view(1, 1, -1, 1)
-    tmp = torch.nn.functional.pad(tmp, (0, 0, pad[0], pad[1]), mode="reflect")
-    out = torch.nn.functional.conv2d(tmp, w_v)
-    return out
+        # Best path: check actual dictionary membership.
+        if isinstance(translations, dict):
+            if key in translations:
+                return translations[key]
 
-def _sigmoid_soft_mask_torch(img_u8, threshold_u8, softness=0.1, device="cpu"):
-    t = _to_torch_u8_gray(img_u8).to(device)
-    thr = float(threshold_u8) / 255.0
-    s = max(float(softness), 1e-4)
-    m = torch.sigmoid((t - thr) / s)
-    return m
-    
-def _sigmoid_soft_mask_from_torch(t, threshold_u8, softness=0.1):
-    thr = float(threshold_u8) / 255.0
-    s = max(float(softness), 1e-4)
-    return torch.sigmoid((t - thr) / s)
+            old_key = aliases.get(key)
+            if old_key and old_key in translations:
+                return translations[old_key]
 
-def _blend_whites_torch_tensor(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0,
-                               device="cpu", threshold=None):
-    thr = np.percentile(v2_u8, 95) if threshold is None else float(threshold)
+            return key
 
-    v1 = _to_torch_u8_gray(v1_u8).to(device)
-    v2 = _to_torch_u8_gray(v2_u8).to(device)
+        # Fallback path if we cannot access the dictionary directly.
+        value = translator(key)
+        if value != key:
+            return value
 
-    m1 = _sigmoid_soft_mask_from_torch(v1, thr, 0.10)
-    m2 = _sigmoid_soft_mask_from_torch(v2, thr, 0.10)
-    m_unique = (m1 - m2).clamp(0, 1)
+        old_key = aliases.get(key)
+        if old_key:
+            old_value = translator(old_key)
+            if old_value != old_key:
+                return old_value
 
-    cap = float(thr) / 255.0
-    v1_cap = torch.minimum(v1, torch.tensor(cap, device=device, dtype=v1.dtype))
+        return key
 
-    trans = _gaussian_blur_torch(m_unique, sigma=float(blur_sigma), device=device).clamp(0, 1)
-    out = v2 * (1.0 - trans) + v1_cap * (trans * float(white_strength))
+    def _register_text(self, widget, key: str):
+        """
+        Register widgets that use setText().
+        QLabel, QPushButton, QCheckBox, QRadioButton.
+        """
+        self._translation_map.append((widget, key, "text"))
+        widget.setText(self._t(key))
 
-    return out, v2
+    def _register_title(self, widget, key: str):
+        """
+        Register widgets that use setTitle().
+        QGroupBox.
+        """
+        self._translation_map.append((widget, key, "title"))
+        widget.setTitle(self._t(key))
 
+    def _refresh_preset_combo(self):
+        current_data = self.preset_combo.currentData() if hasattr(self, "preset_combo") else None
 
-def _blend_whites_torch(v1_u8, v2_u8, blur_sigma=7.0, white_strength=1.0,
-                        device="cpu", threshold=None):
-    out, _ = _blend_whites_torch_tensor(
-        v1_u8,
-        v2_u8,
-        blur_sigma=blur_sigma,
-        white_strength=white_strength,
-        device=device,
-        threshold=threshold
-    )
-    return _from_torch_u8_gray(out)
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
 
-def _average_blur_torch(t, kernel=3):
-    """Fast GPU average blur used as an approximation for smoothing."""
-    pad = kernel // 2
-    t_pad = F.pad(t, (pad, pad, pad, pad), mode="reflect")
-    return F.avg_pool2d(t_pad, kernel, stride=1)
+        restore_index = 0
+        for i, (label_key, preset_key) in enumerate(self.PRESET_ITEMS):
+            self.preset_combo.addItem(self._t(label_key), preset_key)
+            if preset_key == current_data:
+                restore_index = i
 
-def _normalize_to_v2_torch_gpu(blended_t, v2_t):
-    """Normalize on GPU without CPU round-trip."""
-    bm, bs = blended_t.mean(), blended_t.std().clamp_min(1e-6)
-    vm, vs = v2_t.mean(), v2_t.std().clamp_min(1e-6)
-    return (blended_t - bm) * (vs / bs) + vm
+        self.preset_combo.setCurrentIndex(restore_index)
+        self.preset_combo.blockSignals(False)
 
-def _normalize_to_v2_torch(blended_u8, v2_u8, device="cpu"):
-    b = _to_torch_u8_gray(blended_u8).to(device)
-    v = _to_torch_u8_gray(v2_u8).to(device)
-    bm, bs = b.mean(), b.std().clamp_min(1e-6)
-    vm, vs = v.mean(), v.std().clamp_min(1e-6)
-    out = (b - bm) * (vs / bs) + vm
-    return _from_torch_u8_gray(out)
+    def refresh_labels(self):
+        """
+        Called by MainWindow when controller.language_changed fires.
+        """
+        for widget, key, widget_type in self._translation_map:
+            try:
+                if widget_type == "text":
+                    widget.setText(self._t(key))
+                elif widget_type == "title":
+                    widget.setTitle(self._t(key))
+            except RuntimeError:
+                pass
 
-# ------------ Optimized lighten_beta ------------
-def lighten_beta(v1_map, v2_map,
-                 clip_limit=2.0, tile_grid=(8,8),
-                 d=12, sC=75, sS=75, blur_k=35, white_strength=1.0,
-                 use_gpu=False):
-    if v1_map.ndim != 2 or v2_map.ndim != 2:
-        raise ValueError("Inputs must be grayscale.")
-    if isinstance(tile_grid, int):
-        tile_grid = (tile_grid, tile_grid)
+        if hasattr(self, "preset_combo"):
+            self._refresh_preset_combo()
 
-    # Cache threshold once — used by both paths
-    thr = detect_white_threshold(v2_map)
-
-    # --- GPU path: keep everything on GPU ---
-    if use_gpu and (device is not None and device.type != "cpu"):
-        with torch.inference_mode():
-            sigma = max(1.0, (int(blur_k) - 1) / 6.0)
-
-            blended_t, v2_t = _blend_whites_torch_tensor(
-                v1_map,
-                v2_map,
-                blur_sigma=sigma,
-                white_strength=float(white_strength),
-                device=device,
-                threshold=thr
+        if hasattr(self, "frame_slider"):
+            self.frame_label.setText(
+                f"{self._t('Frame')}: {self.frame_slider.value()} / {self.frame_slider.maximum()}"
             )
 
-            # GPU percentile stretch, CLAHE proxy
-            lo = torch.quantile(blended_t, 0.02)
-            hi = torch.quantile(blended_t, 0.98)
-            if hi - lo > 1e-6:
-                blended_t = (blended_t - lo) / (hi - lo)
-            blended_t = blended_t.clamp(0, 1)
+    def apply_theme(self, theme: dict):
+        self._active_theme = theme or {}
+        apply_unified_page_theme(self, self._active_theme)
 
-            # GPU smoothing proxy
-            blended_t = _average_blur_torch(blended_t, kernel=3)
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
-            # GPU normalize to V2
-            blended_t = _normalize_to_v2_torch_gpu(blended_t, v2_t)
+        # ── Right panel ──
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
 
-            blended = _from_torch_u8_gray(blended_t)
+        self.preview_label = QLabel()
+        self._register_text(self.preview_label, "Preview (scrubbable)")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(640, 360)
+        self.preview_label.setObjectName("PreviewPanel")
 
-        blended = boost_whites(blended, thr, boost_percent=30)
-        return blended
+        self.preview_controls_host = QWidget()
+        self.preview_controls_layout = QVBoxLayout(self.preview_controls_host)
+        self.preview_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_controls_layout.setSpacing(10)
 
-    # --- CPU fallback ---
-    h, w = v2_map.shape
-    tg = (min(tile_grid[0], w), min(tile_grid[1], h))
+        right_layout.addWidget(self.preview_label, 1)
+        right_layout.addWidget(self.preview_controls_host, 0)
 
-    blended = blend_whites_seamlessly(
-        v1_map,
-        v2_map,
-        blur_kernel_size=int(blur_k),
-        white_strength=float(white_strength),
-        threshold=thr
-    )
-    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tg)
-    blended = clahe.apply(blended)
-    blended = cv2.bilateralFilter(blended, int(d), float(sC), float(sS))
-    blended = normalize_to_v2(blended, v2_map)
-    blended = boost_whites(blended, thr, boost_percent=30)
-    return blended
+        # ── Left panel ──
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(320)
+
+        # Resizable left controls + right preview
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+
+        self.main_splitter.addWidget(left_scroll)
+        self.main_splitter.addWidget(right)
+
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+
+        # Starting sizes: left panel, right preview area
+        self.main_splitter.setSizes([440, 1200])
+
+        root.addWidget(self.main_splitter, 1)
+
+        # Mode
+        mode_group = QGroupBox()
+        self._register_title(mode_group, "Mode")
+        mode_layout = QHBoxLayout(mode_group)
+
+        self.rb_frames = QRadioButton()
+        self.rb_videos = QRadioButton()
+        self.rb_image = QRadioButton()
+
+        self._register_text(self.rb_frames, "Folders (frames)")
+        self._register_text(self.rb_videos, "Videos")
+        self._register_text(self.rb_image, "Image")
+        self.rb_frames.setChecked(True)
+        mode_layout.addWidget(self.rb_frames)
+        mode_layout.addWidget(self.rb_videos)
+        mode_layout.addWidget(self.rb_image)
+        left_layout.addWidget(mode_group)
+        
+        self.rb_frames.toggled.connect(lambda: self._set_mode("frames"))
+        self.rb_videos.toggled.connect(lambda: self._set_mode("videos"))
+        self.rb_image.toggled.connect(lambda: self._set_mode("image"))
+        
+        # Presets
+        preset_group = QGroupBox()
+        self._register_title(preset_group, "Presets")
+        preset_layout = QHBoxLayout(preset_group)
+
+        self.preset_combo = QComboBox()
+        self._refresh_preset_combo()
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_combo_changed)
+        preset_layout.addWidget(self.preset_combo)
+        left_layout.addWidget(preset_group)
+
+        # GPU
+        self.gpu_check = QCheckBox()
+        self._register_text(self.gpu_check, "Use GPU")
+        self.gpu_check.setChecked(True)
+        left_layout.addWidget(self.gpu_check)
+
+        # Inputs
+        inputs_group = QGroupBox()
+        self._register_title(inputs_group, "Inputs")
+        inputs_layout = QVBoxLayout(inputs_group)
+
+        v1_row = QHBoxLayout()
+        self.v1_label = QLabel()
+        self._register_text(self.v1_label, "V1:")
+        v1_row.addWidget(self.v1_label)
+        self.v1_edit = QLineEdit()
+        self.v1_edit.setReadOnly(True)
+        v1_row.addWidget(self.v1_edit)
+        v1_browse = QPushButton()
+        self._register_text(v1_browse, "Browse")
+        v1_browse.clicked.connect(self._browse_v1)
+        v1_row.addWidget(v1_browse)
+        inputs_layout.addLayout(v1_row)
+
+        v2_row = QHBoxLayout()
+        self.v2_label = QLabel()
+        self._register_text(self.v2_label, "V2:")
+        v2_row.addWidget(self.v2_label)
+        self.v2_edit = QLineEdit()
+        self.v2_edit.setReadOnly(True)
+        v2_row.addWidget(self.v2_edit)
+        v2_browse = QPushButton()
+        self._register_text(v2_browse, "Browse")
+        v2_browse.clicked.connect(self._browse_v2)
+        v2_row.addWidget(v2_browse)
+        inputs_layout.addLayout(v2_row)
+
+        left_layout.addWidget(inputs_group)
+
+        # Output
+        out_group = QGroupBox()
+        self._register_title(out_group, "Output")
+        out_layout = QVBoxLayout(out_group)
+        self.overwrite_check = QCheckBox()
+        self._register_text(self.overwrite_check, "Overwrite V2 (frames mode only)")
+        self.overwrite_check.setChecked(True)
+        out_layout.addWidget(self.overwrite_check)
+
+        out_row = QHBoxLayout()
+        self.output_label = QLabel()
+        self._register_text(self.output_label, "Output:")
+        out_row.addWidget(self.output_label)
+        self.out_edit = QLineEdit()
+        self.out_edit.setReadOnly(True)
+        out_row.addWidget(self.out_edit)
+        out_browse = QPushButton()
+        self._register_text(out_browse, "Browse")
+        out_browse.clicked.connect(self._browse_out)
+        out_row.addWidget(out_browse)
+        out_layout.addLayout(out_row)
+
+        left_layout.addWidget(out_group)
+
+        # Final size
+        size_group = QGroupBox()
+        self._register_title(size_group, "Final Size (optional)")
+        size_layout = QHBoxLayout(size_group)
+        self.width_label = QLabel()
+        self._register_text(self.width_label, "W:")
+        size_layout.addWidget(self.width_label)
+        self.w_edit = QLineEdit()
+        self.w_edit.setFixedWidth(60)
+        size_layout.addWidget(self.w_edit)
+        self.height_label = QLabel()
+        self._register_text(self.height_label, "H:")
+        size_layout.addWidget(self.height_label)
+        self.h_edit = QLineEdit()
+        self.h_edit.setFixedWidth(60)
+        size_layout.addWidget(self.h_edit)
+        self.keep_source_label = QLabel()
+        self.keep_source_label.setWordWrap(True)
+        self._register_text(self.keep_source_label, "(blank = keep source)")
+        size_layout.addWidget(self.keep_source_label, 1)
+        left_layout.addWidget(size_group)
+
+        # Blend parameters
+        params_group = QGroupBox()
+        self._register_title(params_group, "Blend Parameters")
+        params_layout = QVBoxLayout(params_group)
+        params_layout.setSpacing(8)
+
+        self.white_slider = self._add_slider_row(params_layout, "White Strength", 0.0, 2.0, self.white_strength, 0.01, "white_strength")
+        self.blur_slider = self._add_slider_row(params_layout, "Feather Blur", 1, 99, self.blur_k, 1, "blur_k")
+        self.clahe_slider = self._add_slider_row(params_layout, "CLAHE Clip", 0.5, 4.0, self.clip_limit, 0.1, "clip_limit")
+        self.tiles_slider = self._add_slider_row(params_layout, "CLAHE Tiles", 2, 32, self.tile_grid, 1, "tile_grid")
+        self.bfd_slider = self._add_slider_row(params_layout, "Bilateral d", 1, 25, self.bf_d, 1, "bf_d")
+        self.sigmaC_slider = self._add_slider_row(params_layout, "Bilateral sigmaColor", 1, 200, self.bf_sigmaColor, 1, "bf_sigmaColor")
+        self.sigmaS_slider = self._add_slider_row(params_layout, "Bilateral sigmaSpace", 1, 200, self.bf_sigmaSpace, 1, "bf_sigmaSpace")
+
+        left_layout.addWidget(params_group)
+
+        # Scrubber
+        self.scrub_group = QGroupBox()
+        self._register_title(self.scrub_group, "Preview Frame")
+        scrub_layout = QVBoxLayout(self.scrub_group)
+        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider.setRange(0, 0)
+        self.frame_slider.valueChanged.connect(self._on_preview_frame_changed)
+        scrub_layout.addWidget(self.frame_slider)
+        self.frame_label = QLabel(f"{self._t('Frame')}: 0 / 0")
+        scrub_layout.addWidget(self.frame_label)
+
+        nav_row = QHBoxLayout()
+
+        prev_btn = QPushButton()
+        next_btn = QPushButton()
+        self.preview_btn = QPushButton()
+
+        self._register_text(prev_btn, "Prev")
+        self._register_text(next_btn, "Next")
+        self._register_text(self.preview_btn, "Refresh Preview")
+
+        prev_btn.clicked.connect(lambda: self._nudge_preview(-1))
+        next_btn.clicked.connect(lambda: self._nudge_preview(1))
+        self.preview_btn.clicked.connect(self._preview_now)
+
+        nav_row.addWidget(prev_btn)
+        nav_row.addWidget(next_btn)
+        nav_row.addWidget(self.preview_btn)
+
+        scrub_layout.addLayout(nav_row)
+
+        self.preview_controls_layout.addWidget(self.scrub_group)
+
+        # Action buttons
+        actions_group = QGroupBox()
+        self._register_title(actions_group, "Actions")
+        action_row = QHBoxLayout(actions_group)
+
+        self.start_btn = QPushButton()
+        self.stop_btn = QPushButton()
+
+        self._register_text(self.start_btn, "Start Batch")
+        self._register_text(self.stop_btn, "Stop")
+        self.stop_btn.setEnabled(False)
+
+        self.start_btn.clicked.connect(self._start)
+        self.stop_btn.clicked.connect(self._stop)
+
+        action_row.addWidget(self.start_btn)
+        action_row.addWidget(self.stop_btn)
+
+        left_layout.addWidget(actions_group)
+
+        left_layout.addStretch()
+        self.apply_theme(getattr(self, "_active_theme", {}))
 
 
-# ------------ Workers ------------
-class FramesWorker(threading.Thread):
-    def __init__(self, v1_dir, v2_dir, out_mode, out_path, out_w, out_h,
-                 qlog, qprog, stop_evt, use_gpu=False, params=None):
-        super().__init__(daemon=True)
-        self.v1_dir, self.v2_dir = v1_dir, v2_dir
-        self.out_mode, self.out_path = out_mode, out_path
-        self.out_w, self.out_h = out_w, out_h
-        self.qlog, self.qprog, self.stop_evt = qlog, qprog, stop_evt
-        self.use_gpu = bool(use_gpu)
-        self.params = params or {}
+    def _add_slider_row(self, parent, label, mn, mx, default, step, attr_name):
+        row = QHBoxLayout()
 
-    def log(self, msg): self.qlog.put(msg)
-    def prog(self, done, total): self.qprog.put((done, total))
+        lbl = QLabel()
+        self._register_text(lbl, label)
+        lbl.setMinimumWidth(140)
 
-    def run(self):
+        slider = QSlider(Qt.Horizontal)
+
+        is_float_slider = isinstance(step, float)
+
+        if is_float_slider:
+            slider.setRange(int(mn * 100), int(mx * 100))
+            slider.setValue(int(default * 100))
+        else:
+            slider.setRange(int(mn), int(mx))
+            slider.setValue(int(default))
+
+        slider.setMinimumHeight(28)
+
+        val_label = QLabel()
+        val_label.setMinimumWidth(45)
+
+        def _format_value(value):
+            if is_float_slider:
+                decimals = 2 if step < 0.1 else 1
+                return f"{float(value):.{decimals}f}"
+            return str(int(value))
+
+        val_label.setText(_format_value(default))
+
+        row.addWidget(lbl)
+        row.addWidget(slider, 1)
+        row.addWidget(val_label)
+        parent.addLayout(row)
+
+        def _on_change(v):
+            if is_float_slider:
+                real = v / 100.0
+            else:
+                real = int(v)
+
+            setattr(self, attr_name, real)
+
+            val_label.setText(_format_value(real))
+            self._schedule_preview(120)
+
+        slider.valueChanged.connect(_on_change)
+
+        return slider
+
+    def _schedule_preview(self, delay_ms=200):
+        self._preview_debounce.start(delay_ms)
+
+    def _preview_now(self):
+        self._sync_blend_params_from_sliders()
+        with self._preview_lock:
+            if self._preview_thread and self._preview_thread.is_alive():
+                return
+
+            idx = self.frame_slider.value()
+            self.preview_index = idx
+
+            self._preview_thread = threading.Thread(
+                target=self._compute_preview,
+                args=(idx,),
+                daemon=True
+            )
+            self._preview_thread.start()
+
+    def _compute_preview(self, idx):
         try:
-            v1_files = sorted([f for f in os.listdir(self.v1_dir) if f.lower().endswith(".png")])
-            v2_files = sorted([f for f in os.listdir(self.v2_dir) if f.lower().endswith(".png")])
-            if not v1_files or not v2_files:
-                self.log("No PNG frames found in one of the folders.")
+            v1p, v2p = self.v1_path, self.v2_path
+            if not v1p or not v2p:
                 return
-            common_files = sorted(set(v1_files) & set(v2_files))
-            if not common_files:
-                self.log("No matching PNG filenames found between V1 and V2 folders.")
-                return
+            idx = max(0, min(int(idx), self.preview_max))
 
-            if len(common_files) != len(v1_files) or len(common_files) != len(v2_files):
-                self.log(
-                    f"Warning: processing {len(common_files)} matching frames; "
-                    f"V1 has {len(v1_files)}, V2 has {len(v2_files)}."
-                )
-
-            n = len(common_files)
-
-            if self.out_mode == "output_folder":
-                os.makedirs(self.out_path, exist_ok=True)
-
-            self.prog(0, n)
-            done = 0
-            stopped = False
-
-            for i in range(n):
-                if self.stop_evt.is_set():
-                    stopped = True
-                    self.log("Stopped by user.")
-                    break
-                fname = common_files[i]
-                v1p = os.path.join(self.v1_dir, fname)
-                v2p = os.path.join(self.v2_dir, fname)
+            if self.mode == "image":
                 v1 = cv2.imread(v1p, cv2.IMREAD_GRAYSCALE)
                 v2 = cv2.imread(v2p, cv2.IMREAD_GRAYSCALE)
                 if v1 is None or v2 is None:
-                    self.log(f"Skip unreadable frame: {v1p} / {v2p}")
-                    continue
+                    return
+                if v1.shape != v2.shape:
+                    v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
+                    
+
+                    
+            elif self.mode == "frames":
+                v1_files = sorted([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
+                v2_files = sorted([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
+                if not v1_files or not v2_files:
+                    return
+                idx = max(0, min(idx, min(len(v1_files), len(v2_files)) - 1))
+                v1 = cv2.imread(os.path.join(v1p, v1_files[idx]), cv2.IMREAD_GRAYSCALE)
+                v2 = cv2.imread(os.path.join(v2p, v2_files[idx]), cv2.IMREAD_GRAYSCALE)
+                if v1 is None or v2 is None:
+                    return
+                if v1.shape != v2.shape:
+                    v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
+            else:
+                cap1 = cv2.VideoCapture(v1p)
+                cap2 = cv2.VideoCapture(v2p)
+                if not cap1.isOpened() or not cap2.isOpened():
+                    return
+                cap1.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok1, fr1 = cap1.read()
+                ok2, fr2 = cap2.read()
+                cap1.release()
+                cap2.release()
+                if not ok1 or not ok2:
+                    return
+                v1 = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
+                v2 = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
                 if v1.shape != v2.shape:
                     v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
 
-                blended = lighten_beta(
-                    v1, v2,
-                    clip_limit=self.params.get("clip_limit", 2.0),
-                    tile_grid=(self.params.get("tile_grid", 8), self.params.get("tile_grid", 8)),
-                    d=self.params.get("bf_d", 12),
-                    sC=self.params.get("bf_sigmaColor", 75),
-                    sS=self.params.get("bf_sigmaSpace", 75),
-                    blur_k=self.params.get("blur_k", 35),
-                    white_strength=self.params.get("white_strength", 1.0),
-                    use_gpu=self.use_gpu
-                )
-                if self.out_w and self.out_h:
-                    blended = cv2.resize(blended, (self.out_w, self.out_h), interpolation=cv2.INTER_LANCZOS4)
+            from core.DB import lighten_beta, _put_label, _resize_max
 
-                if self.out_mode == "overwrite_v2":
-                    dest = v2p
-                else:
-                    dest = os.path.join(self.out_path, fname)
-
-                if not cv2.imwrite(dest, blended):
-                    self.log(f"Failed to write frame: {dest}")
-
-                done += 1
-                self.prog(done, n)
-                del v1, v2, blended
-                if (i + 1) % 1000 == 0:
-                    gc.collect()
-            if stopped:
-                self.log(f"Stopped. Processed {done}/{n} frames.")
-            else:
-                self.log("Done.")
-        except Exception as e:
-            self.log(f"Error: {e}")
-
-class VideosWorker(threading.Thread):
-    def __init__(self, v1_file, v2_file, out_file, out_w, out_h,
-                 qlog, qprog, stop_evt, use_gpu=False, params=None):
-        super().__init__(daemon=True)
-        self.v1_file, self.v2_file, self.out_file = v1_file, v2_file, out_file
-        self.out_w, self.out_h = out_w, out_h
-        self.qlog, self.qprog, self.stop_evt = qlog, qprog, stop_evt
-        self.use_gpu = bool(use_gpu)
-        self.params = params or {}
-
-    def log(self, msg): self.qlog.put(msg)
-    def prog(self, done, total): self.qprog.put((done, total))
-
-    def run(self):
-        cap1 = None
-        cap2 = None
-        writer = None
-
-        try:
-            cap1, cap2 = cv2.VideoCapture(self.v1_file), cv2.VideoCapture(self.v2_file)
-            if not cap1.isOpened() or not cap2.isOpened():
-                self.log("Could not open one of the videos.")
-                return
-
-            fps = cap2.get(cv2.CAP_PROP_FPS) or 30.0
-            total = int(cap2.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-
-            ok2, fr2 = cap2.read()
-            ok1, fr1 = cap1.read()
-            if not ok1 or not ok2:
-                self.log("Could not read first frames.")
-                return
-
-            v1g = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
-            v2g = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
-            if v1g.shape != v2g.shape:
-                v2g = cv2.resize(v2g, (v1g.shape[1], v1g.shape[0]), interpolation=cv2.INTER_AREA)
-
-            base_w, base_h = v2g.shape[1], v2g.shape[0]
-            out_w = self.out_w or base_w
-            out_h = self.out_h or base_h
-
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            os.makedirs(os.path.dirname(self.out_file) or ".", exist_ok=True)
-            writer = cv2.VideoWriter(self.out_file, fourcc, fps, (out_w, out_h), isColor=True)
-            if not writer.isOpened():
-                self.log(f"Could not open video writer: {self.out_file}")
-                return
-
-            done = 0
-            self.prog(0, total if total > 0 else 1)
-
-            # Pre-compute params dict once
-            p = {
-                "clip_limit": self.params.get("clip_limit", 2.0),
-                "tile_grid": (self.params.get("tile_grid", 8), self.params.get("tile_grid", 8)),
-                "d": self.params.get("bf_d", 12),
-                "sC": self.params.get("bf_sigmaColor", 75),
-                "sS": self.params.get("bf_sigmaSpace", 75),
-                "blur_k": self.params.get("blur_k", 35),
-                "white_strength": self.params.get("white_strength", 1.0),
+            params = {
+                "white_strength": self.white_strength,
+                "blur_k": self.blur_k,
+                "clip_limit": self.clip_limit,
+                "tile_grid": (self.tile_grid, self.tile_grid),
+                "d": self.bf_d,
+                "sC": self.bf_sigmaColor,
+                "sS": self.bf_sigmaSpace,
             }
+            out = lighten_beta(v1, v2, use_gpu=self.gpu_check.isChecked(), **params)
 
-            def process_pair(v1g, v2g):
-                blended = lighten_beta(v1g, v2g, use_gpu=self.use_gpu, **p)
-                if (out_w, out_h) != (blended.shape[1], blended.shape[0]):
-                    blended = cv2.resize(blended, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
-                return blended
+            vis_v2 = cv2.cvtColor(v2, cv2.COLOR_GRAY2BGR)
+            vis_out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+            panel = np.hstack([_put_label(vis_v2, "V2 Base"), _put_label(vis_out, f"Blended Preview (idx {idx})")])
+            panel = _resize_max(panel, max_w=840, max_h=520)
 
-            # Process first frame
-            blended = process_pair(v1g, v2g)
-            writer.write(cv2.cvtColor(blended, cv2.COLOR_GRAY2BGR))
-            done += 1
-            self.prog(done, total if total > 0 else done)
-
-            # Process remaining frames
-            stopped = False
-
-            while True:
-                if self.stop_evt.is_set():
-                    stopped = True
-                    self.log("Stopped by user.")
-                    break
-                ok1, fr1 = cap1.read()
-                ok2, fr2 = cap2.read()
-                if not ok1 or not ok2:
-                    break
-
-                v1g = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
-                v2g = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
-                if v1g.shape != v2g.shape:
-                    v2g = cv2.resize(v2g, (v1g.shape[1], v1g.shape[0]), interpolation=cv2.INTER_AREA)
-
-                blended = process_pair(v1g, v2g)
-                writer.write(cv2.cvtColor(blended, cv2.COLOR_GRAY2BGR))
-
-                done += 1
-                if done % 1000 == 0:
-                    gc.collect()
-                self.prog(done, total if total > 0 else done)
-
-            if stopped:
-                self.log(f"Stopped. Partial video saved: {self.out_file}")
-            else:
-                self.log(f"Done. Saved: {self.out_file}")
+            rgb = cv2.cvtColor(panel, cv2.COLOR_BGR2RGB)
+            self.preview_ready.emit(rgb.copy(), idx)
+            
         except Exception as e:
-            self.log(f"Error: {e}")
+            self.preview_failed.emit(str(e))
 
-        finally:
-            if writer is not None:
-                writer.release()
-            if cap1 is not None:
-                cap1.release()
-            if cap2 is not None:
-                cap2.release()
+    def _apply_preview_image(self, rgb, idx):
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(qimg)
 
+        self._preview_pixmap = pixmap
+        self.preview_label.setPixmap(
+            pixmap.scaled(
+                self.preview_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        )
 
-# ---- small helpers for preview visuals ----
-def _put_label(img_bgr, text):
-    out = img_bgr.copy()
-    cv2.rectangle(out, (0, 0), (out.shape[1], 36), (0, 0, 0), thickness=-1)
-    cv2.putText(out, text, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
-    return out
+        self.frame_label.setText(f"{self._t('Frame')}: {idx} / {self.frame_slider.maximum()}")
 
-def _resize_max(img, max_w=840, max_h=520):
-    h, w = img.shape[:2]
-    sc = min(max_w / max(w, 1), max_h / max(h, 1), 1.0)
-    if sc < 1.0:
-        img = cv2.resize(img, (int(w*sc), int(h*sc)), interpolation=cv2.INTER_AREA)
-    return img
-
-
-# ------------ Standalone App (Tkinter, kept for legacy) ------------
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Depth Blender (Frames or Videos)")
-        self.geometry("980x740")
-        self.minsize(920, 680)
-
-        self.mode = tk.StringVar(value="frames")
-        self.overwrite_v2 = tk.BooleanVar(value=True)
-        self.v1_path = tk.StringVar()
-        self.v2_path = tk.StringVar()
-        self.out_path = tk.StringVar()
-        self.w_var = tk.StringVar()
-        self.h_var = tk.StringVar()
-        self.use_gpu = tk.BooleanVar(value=(device is not None and device.type != "cpu"))
-
-        self.white_strength = tk.DoubleVar(value=1.0)
-        self.blur_k = tk.IntVar(value=35)
-        self.clip_limit = tk.DoubleVar(value=2.0)
-        self.tile_grid = tk.IntVar(value=8)
-        self.bf_d = tk.IntVar(value=12)
-        self.bf_sigmaColor = tk.IntVar(value=75)
-        self.bf_sigmaSpace = tk.IntVar(value=75)
-
-        self._preview_lock = threading.Lock()
-        self._preview_thread = None
-        self._preview_after = None
-        self._preview_imgtk = None
-
-        self.preview_index = tk.IntVar(value=0)
-        self.preview_max   = tk.IntVar(value=0)
-        self._idx_scale = None
-
-        self._build_ui()
-        self.bind("<Left>",  lambda e: self._nudge_preview(-1))
-        self.bind("<Right>", lambda e: self._nudge_preview(+1))
-
-        self.qlog = queue.Queue()
-        self.qprog = queue.Queue()
-        self.qpreview = queue.Queue(maxsize=1)
-        self.stop_evt = threading.Event()
-        self.worker = None
-        self.after(100, self._poll)
-
-    def _build_ui(self):
-        pad = {"padx": 10, "pady": 6}
-        title = ttk.Label(self, text="Depth Blender", font=("Segoe UI", 18, "bold"))
-        title.pack(fill="x", **pad)
-        top = ttk.Frame(self); top.pack(fill="x", **pad)
-        left = ttk.Frame(top); left.pack(side="left", fill="y", padx=6)
-        self._build_controls(left)
-        right = ttk.Frame(top); right.pack(side="left", fill="both", expand=True)
-        ttk.Label(right, text="Preview (scrubbable):", style="VD3D.TLabel").pack(anchor="w")
-        border = tk.Frame(right, bg="#2a2a2a", highlightthickness=0)
-        border.pack(fill="both", expand=True, padx=6, pady=6)
-        self.preview_canvas = tk.Canvas(border, bg="#1c1c1c", highlightthickness=0, bd=0, width=640, height=360)
-        self.preview_canvas.pack(fill="both", expand=True, padx=1, pady=1)
-        self._preview_canvas_img = None
-        self.preview_canvas.bind("<Configure>", lambda e: self._redraw_preview())
-        self._draw_preview_placeholder()
-        bottom = ttk.Frame(self); bottom.pack(fill="both", expand=True, **pad)
-        self._build_progress_and_log(bottom)
-        self._toggle_mode()
-        self._toggle_out_controls()
+    def _set_mode(self, mode):
+        if mode == self.mode:
+            return
+        self.mode = mode
+        # Image mode: hide overwrite checkbox, scrubber, frame controls
+        is_image = (mode == "image")
+        self.overwrite_check.setVisible(not is_image)
+        self.scrub_group.setVisible(not is_image)
+        self.frame_slider.setVisible(not is_image)
+        self.frame_label.setVisible(not is_image)
         self._update_preview_bounds()
         self._schedule_preview(0)
 
-    def _build_controls(self, parent):
-        mode_frame = ttk.LabelFrame(parent, text="Mode")
-        mode_frame.pack(fill="x", padx=6, pady=6)
-        ttk.Radiobutton(mode_frame, text="Folders (frames)", variable=self.mode, value="frames",
-                        command=self._toggle_mode).grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Radiobutton(mode_frame, text="Videos", variable=self.mode, value="videos",
-                        command=self._toggle_mode).grid(row=0, column=1, sticky="w", padx=12, pady=4)
-
-        gpu_row = ttk.Frame(parent)
-        gpu_row.pack(fill="x", padx=6, pady=0)
-        gpu_type = device.type if device else "cpu"
-        ttk.Checkbutton(gpu_row, text=f"Use GPU ({gpu_type})",
-                        variable=self.use_gpu,
-                        command=lambda: self._schedule_preview(120)).pack(anchor="w")
-        if device is None or device.type == "cpu":
-            ttk.Label(gpu_row, text="GPU not available. Using CPU.", foreground="#c77").pack(anchor="w")
-        else:
-            ttk.Label(gpu_row, text=f"GPU Mode: {device.type}", foreground="#7c7").pack(anchor="w")
-
-        paths = ttk.LabelFrame(parent, text="Inputs")
-        paths.pack(fill="x", padx=6, pady=6)
-        ttk.Label(paths, text="V1 path:").grid(row=0, column=0, sticky="e")
-        ttk.Entry(paths, textvariable=self.v1_path, width=40).grid(row=0, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse…", command=self._browse_v1).grid(row=0, column=2, padx=4)
-        ttk.Label(paths, text="V2 path:").grid(row=1, column=0, sticky="e")
-        ttk.Entry(paths, textvariable=self.v2_path, width=40).grid(row=1, column=1, sticky="we", padx=6)
-        ttk.Button(paths, text="Browse…", command=self._browse_v2).grid(row=1, column=2, padx=4)
-
-        outf = ttk.LabelFrame(parent, text="Output")
-        outf.pack(fill="x", padx=6, pady=6)
-        self.chk_over = ttk.Checkbutton(outf, text="Overwrite V2 (frames mode only)",
-                                        variable=self.overwrite_v2, command=self._toggle_out_controls)
-        self.chk_over.grid(row=0, column=0, sticky="w", padx=6)
-        ttk.Label(outf, text="Output path/file:").grid(row=1, column=0, sticky="e")
-        self.out_entry = ttk.Entry(outf, textvariable=self.out_path, width=40)
-        self.out_entry.grid(row=1, column=1, sticky="we", padx=6)
-
-        self.out_browse_btn = ttk.Button(outf, text="Browse…", command=self._browse_out)
-        self.out_browse_btn.grid(row=1, column=2, padx=4)
-
-        sizef = ttk.LabelFrame(parent, text="Final Size (optional)")
-        sizef.pack(fill="x", padx=6, pady=6)
-        ttk.Label(sizef, text="Width:").grid(row=0, column=0, sticky="e")
-        ttk.Entry(sizef, textvariable=self.w_var, width=8).grid(row=0, column=1, sticky="w", padx=6)
-        ttk.Label(sizef, text="Height:").grid(row=0, column=2, sticky="e")
-        ttk.Entry(sizef, textvariable=self.h_var, width=8).grid(row=0, column=3, sticky="w", padx=6)
-        ttk.Label(sizef, text="(Leave blank to keep source)").grid(row=0, column=4, sticky="w", padx=12)
-
-        parms = ttk.LabelFrame(parent, text="Blend Parameters (preview live)")
-        parms.pack(fill="x", padx=6, pady=6)
-        self._add_slider(parms, "White Strength", 0.0, 2.0, self.white_strength, 0)
-        self._add_slider(parms, "Feather Blur (kernel)", 1, 99, self.blur_k, 1)
-        self._add_slider(parms, "CLAHE Clip Limit", 0.5, 4.0, self.clip_limit, 2)
-        self._add_slider(parms, "CLAHE Tile Grid", 2, 32, self.tile_grid, 3)
-        self._add_slider(parms, "Bilateral d", 1, 25, self.bf_d, 4)
-        self._add_slider(parms, "Bilateral sigmaColor", 1, 200, self.bf_sigmaColor, 5)
-        self._add_slider(parms, "Bilateral sigmaSpace", 1, 200, self.bf_sigmaSpace, 6)
-
-        scrub = ttk.LabelFrame(parent, text="Preview Frame")
-        scrub.pack(fill="x", padx=6, pady=6)
-        self._idx_scale = ttk.Scale(scrub, from_=0, to=0, orient="horizontal",
-                                    command=lambda _=None: self._schedule_preview(50),
-                                    variable=self.preview_index)
-        self._idx_scale.grid(row=0, column=0, sticky="we", padx=6, pady=4)
-        scrub.grid_columnconfigure(0, weight=1)
-        ttk.Label(scrub, textvariable=self.preview_index, width=6).grid(row=0, column=1, sticky="e", padx=6)
-        btns = ttk.Frame(scrub); btns.grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=2)
-        ttk.Button(btns, text="⟨ Prev", command=lambda: self._nudge_preview(-1)).pack(side="left", padx=2)
-        ttk.Button(btns, text="Next ⟩", command=lambda: self._nudge_preview(+1)).pack(side="left", padx=2)
-
-        btns2 = ttk.Frame(parent); btns2.pack(fill="x", padx=6, pady=6)
-        self.btn_preview = ttk.Button(btns2, text="Preview Now", command=self._preview_now)
-        self.btn_start   = ttk.Button(btns2, text="Start Batch", command=self._start)
-        self.btn_stop    = ttk.Button(btns2, text="Stop",  command=self._stop, state="disabled")
-        self.btn_preview.grid(row=0, column=0, padx=4)
-        self.btn_start.grid(row=0, column=1, padx=4)
-        self.btn_stop.grid(row=0, column=2, padx=4)
-
-    def _preview_snapshot(self):
-        v1p = self.v1_path.get().strip()
-        v2p = self.v2_path.get().strip()
-
-        if not v1p or not v2p:
-            return None
-
-        return {
-            "mode": self.mode.get(),
-            "v1p": v1p,
-            "v2p": v2p,
-            "idx": int(self.preview_index.get()),
-            "use_gpu": bool(self.use_gpu.get()),
-            "params": {
-                "white_strength": float(self.white_strength.get()),
-                "blur_k": int(self.blur_k.get()),
-                "clip_limit": float(self.clip_limit.get()),
-                "tile_grid": int(self.tile_grid.get()),
-                "bf_d": int(self.bf_d.get()),
-                "bf_sigmaColor": int(self.bf_sigmaColor.get()),
-                "bf_sigmaSpace": int(self.bf_sigmaSpace.get()),
-            },
-        }
-
-    def _add_slider(self, parent, label, mn, mx, var, row):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=6)
-        s = ttk.Scale(parent, from_=mn, to=mx, orient="horizontal",
-                      command=lambda _=None: self._schedule_preview(120), variable=var)
-        s.grid(row=row, column=1, sticky="we", padx=6)
-        parent.grid_columnconfigure(1, weight=1)
-        ttk.Label(parent, textvariable=var).grid(row=row, column=2, sticky="e", padx=6)
-
-    def _build_progress_and_log(self, parent):
-        pf = ttk.Frame(parent); pf.pack(fill="x")
-        self.prog = ttk.Progressbar(pf, mode="determinate"); self.prog.pack(fill="x")
-        self.prog_lbl = ttk.Label(pf, text="Progress: 0/0"); self.prog_lbl.pack(anchor="w")
-        lf = ttk.LabelFrame(parent, text="Log"); lf.pack(fill="both", expand=True, padx=6, pady=6)
-        self.log = tk.Text(lf, height=10, wrap="word", state="disabled")
-        self.log.pack(fill="both", expand=True)
-
-    def _draw_preview_placeholder(self):
-        self.preview_canvas.delete("all")
-        self.preview_canvas.create_text(
-            self.preview_canvas.winfo_width() // 2,
-            self.preview_canvas.winfo_height() // 2,
-            text="Preview will appear here", fill="#666", font=("Segoe UI", 14, "italic"))
-
-    def _redraw_preview(self, imgtk=None):
-        if imgtk:
-            self._preview_imgtk = imgtk
-            self.preview_canvas.delete("all")
-            cw = self.preview_canvas.winfo_width()
-            ch = self.preview_canvas.winfo_height()
-            w = imgtk.width()
-            h = imgtk.height()
-            x = (cw - w) // 2
-            y = (ch - h) // 2
-            self._preview_canvas_img = self.preview_canvas.create_image(x, y, anchor="nw", image=imgtk)
-
     def _browse_v1(self):
-        if self.mode.get() == "frames":
-            p = filedialog.askdirectory(title="Select V1 frames folder")
+        if self.mode == "frames":
+            p = QFileDialog.getExistingDirectory(self, "Select V1 frames folder")
+        elif self.mode == "image":
+            p, _ = QFileDialog.getOpenFileName(self, "Select V1 depth image", "",
+                                                "Image (*.png *.jpg *.jpeg);;All (*.*)")
         else:
-            p = filedialog.askopenfilename(title="Select V1 video",
-                                           filetypes=[("Video", "*.mp4;*.mov;*.mkv;*.avi"), ("All", "*.*")])
+            p, _ = QFileDialog.getOpenFileName(self, "Select V1 video", "",
+                                                "Video (*.mp4 *.mov *.mkv *.avi);;All (*.*)")
         if p:
-            self.v1_path.set(p)
+            self.v1_path = p
+            self.v1_edit.setText(p)
             self._update_preview_bounds()
             self._schedule_preview(0)
 
     def _browse_v2(self):
-        if self.mode.get() == "frames":
-            p = filedialog.askdirectory(title="Select V2 frames folder (base)")
+        if self.mode == "frames":
+            p = QFileDialog.getExistingDirectory(self, "Select V2 frames folder")
+            
+        elif self.mode == "image":
+            p, _ = QFileDialog.getOpenFileName(self, "Select V1 depth image", "",
+                                                "Image (*.png *.jpg *.jpeg);;All (*.*)")
         else:
-            p = filedialog.askopenfilename(title="Select V2 video (base)",
-                                           filetypes=[("Video", "*.mp4;*.mov;*.mkv;*.avi"), ("All", "*.*")])
+            p, _ = QFileDialog.getOpenFileName(self, "Select V2 video", "",
+                                                "Video (*.mp4 *.mov *.mkv *.avi);;All (*.*)")
         if p:
-            self.v2_path.set(p)
+            self.v2_path = p
+            self.v2_edit.setText(p)
             self._update_preview_bounds()
             self._schedule_preview(0)
 
     def _browse_out(self):
-        if self.mode.get() == "frames":
-            if not self.overwrite_v2.get():
-                p = filedialog.askdirectory(title="Select output frames folder")
-                if p: self.out_path.set(p)
-            else:
-                messagebox.showinfo("Output", "Overwrite V2 is on. No separate output folder needed.")
+        if self.mode == "frames" and not self.overwrite_check.isChecked():
+            p = QFileDialog.getExistingDirectory(self, "Select output folder")
+        elif self.mode == "image":
+            p, _ = QFileDialog.getSaveFileName(self, "Save blended depth image", "",
+                                                "PNG (*.png);;JPEG (*.jpg);;All (*.*)")
         else:
-            p = filedialog.asksaveasfilename(title="Save output video as", defaultextension=".mp4",
-                                             filetypes=[("MP4", "*.mp4"), ("All", "*.*")])
-            if p: self.out_path.set(p)
-
-    def _toggle_mode(self):
-        if self.mode.get() == "videos":
-            self.chk_over.state(["disabled"])
-        else:
-            self.chk_over.state(["!disabled"])
-        self._toggle_out_controls()
-        self._update_preview_bounds()
-        self._schedule_preview(0)
-
-    def _toggle_out_controls(self):
-        if self.mode.get() == "frames" and self.overwrite_v2.get():
-            self.out_entry.state(["disabled"])
-            self.out_browse_btn.state(["disabled"])
-        else:
-            self.out_entry.state(["!disabled"])
-            self.out_browse_btn.state(["!disabled"])
+            p, _ = QFileDialog.getSaveFileName(self, "Save output video as", "", "MP4 (*.mp4);;All (*.*)")
+        if p:
+            self.out_path = p
+            self.out_edit.setText(p)
 
     def _nudge_preview(self, delta):
-        cur = int(self.preview_index.get())
-        mx  = int(self.preview_max.get())
-        new = max(0, min(mx, cur + int(delta)))
+        cur = self.frame_slider.value()
+        mx = self.frame_slider.maximum()
+        new = max(0, min(mx, cur + delta))
         if new != cur:
-            self.preview_index.set(new)
+            self.frame_slider.setValue(new)
             self._schedule_preview(50)
+
+    def _on_preview_frame_changed(self, value):
+        self.preview_index = value
+        self.frame_label.setText(f"{self._t('Frame')}: {value} / {self.frame_slider.maximum()}")
+        self._schedule_preview(50)
 
     def _update_preview_bounds(self):
         mx = 0
-        if self.mode.get() == "frames":
-            v1p, v2p = self.v1_path.get().strip(), self.v2_path.get().strip()
-            try:
-                v1_files = {f for f in os.listdir(v1p) if f.lower().endswith(".png")}
-                v2_files = {f for f in os.listdir(v2p) if f.lower().endswith(".png")}
-                common_files = v1_files & v2_files
-                mx = max(0, len(common_files) - 1)
-            except Exception:
-                mx = 0
+        if self.mode == "frames":
+            v1p, v2p = self.v1_path, self.v2_path
+            if os.path.isdir(v1p) and os.path.isdir(v2p):
+                n1 = len([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
+                n2 = len([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
+                mx = max(0, min(n1, n2) - 1)
         else:
-            v2p = self.v2_path.get().strip()
-            if v2p:
-                cap = cv2.VideoCapture(v2p)
+            if os.path.isfile(self.v2_path):
+                cap = cv2.VideoCapture(self.v2_path)
                 if cap.isOpened():
-                    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1)
-                    mx = max(0, total - 1)
+                    mx = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1) - 1)
                 cap.release()
-        self.preview_max.set(mx)
-        if self._idx_scale is not None:
-            self._idx_scale.configure(to=mx)
-        self.preview_index.set(min(int(self.preview_index.get()), mx))
+        self.preview_max = mx
+        self.frame_slider.setMaximum(mx)
+        self.frame_slider.setValue(min(self.frame_slider.value(), mx))
+        self.frame_label.setText(f"{self._t('Frame')}: {self.frame_slider.value()} / {mx}")
 
     def _start(self):
-        mode = self.mode.get()
-        v1, v2 = self.v1_path.get().strip(), self.v2_path.get().strip()
-        if not v1 or not v2:
-            messagebox.showerror("Missing paths", "Please select both V1 and V2 paths.")
+        self._sync_blend_params_from_sliders()
+        if not self.v1_path or not self.v2_path:
+            QMessageBox.warning(self, "Missing paths", "Select both V1 and V2 paths.")
             return
 
-        w_txt = self.w_var.get().strip()
-        h_txt = self.h_var.get().strip()
-
-        if bool(w_txt) != bool(h_txt):
-            messagebox.showerror("Invalid size", "Enter both width and height, or leave both blank.")
-            return
-
-        out_w = out_h = None
-        if w_txt and h_txt:
-            if not w_txt.isdigit() or not h_txt.isdigit():
-                messagebox.showerror("Invalid size", "Width and height must be positive integers.")
-                return
-
-            out_w = int(w_txt)
-            out_h = int(h_txt)
-
-            if out_w <= 0 or out_h <= 0:
-                messagebox.showerror("Invalid size", "Width and height must be greater than zero.")
-                return
-
-            if mode == "videos" and (out_w % 2 != 0 or out_h % 2 != 0):
-                messagebox.showerror("Invalid video size", "Video width and height should be even numbers.")
-                return
+        from core.DB import FramesWorker, VideosWorker
 
         params = {
-            "white_strength": float(self.white_strength.get()),
-            "blur_k": int(self.blur_k.get()),
-            "clip_limit": float(self.clip_limit.get()),
-            "tile_grid": int(self.tile_grid.get()),
-            "bf_d": int(self.bf_d.get()),
-            "bf_sigmaColor": int(self.bf_sigmaColor.get()),
-            "bf_sigmaSpace": int(self.bf_sigmaSpace.get()),
+            "white_strength": self.white_strength,
+            "blur_k": self.blur_k,
+            "clip_limit": self.clip_limit,
+            "tile_grid": self.tile_grid,
+            "bf_d": self.bf_d,
+            "bf_sigmaColor": self.bf_sigmaColor,
+            "bf_sigmaSpace": self.bf_sigmaSpace,
         }
 
-        self.stop_evt.clear()
-        self.btn_start.config(state="disabled"); self.btn_stop.config(state="normal")
-        self._set_prog(0, 0); self._log("Starting...")
+        out_w = int(self.w_edit.text()) if self.w_edit.text().isdigit() else None
+        out_h = int(self.h_edit.text()) if self.h_edit.text().isdigit() else None
 
-        if mode == "frames":
-            ow = self.overwrite_v2.get()
+        self.stop_evt.clear()
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        
+        self._last_progress = 0
+        self._blend_start_time = time.monotonic()
+
+        self.progress_updated.emit({
+            "progress": 0,
+            "done": 0,
+            "total": 0,
+            "fps_like": 0.0,
+            "elapsed": 0,
+            "eta": None,
+            "rate_label": "FPS",
+        })
+
+        if self.mode == "image":
+            v1 = cv2.imread(self.v1_path, cv2.IMREAD_GRAYSCALE)
+            v2 = cv2.imread(self.v2_path, cv2.IMREAD_GRAYSCALE)
+            if v1 is None or v2 is None:
+                QMessageBox.warning(self, "Read error", "Could not read one of the images.")
+                return
+            if v1.shape != v2.shape:
+                v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
+
+            from core.DB import lighten_beta
+            blended = lighten_beta(v1, v2, use_gpu=self.gpu_check.isChecked(),
+                                   white_strength=self.white_strength, blur_k=self.blur_k,
+                                   clip_limit=self.clip_limit, tile_grid=(self.tile_grid, self.tile_grid),
+                                   d=self.bf_d, sC=self.bf_sigmaColor, sS=self.bf_sigmaSpace)
+            if out_w and out_h:
+                blended = cv2.resize(blended, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+
+            out_path = self.out_path or os.path.join(os.path.dirname(self.v2_path), "blended_depth.png")
+            cv2.imwrite(out_path, blended)
+            self._log(f"Saved blended image: {out_path}")
+            return
+
+        if self.mode == "frames":
+            ow = self.overwrite_check.isChecked()
             out_mode = "overwrite_v2" if ow else "output_folder"
-            out_path = self.out_path.get().strip()
-            if not ow and not out_path:
-                messagebox.showerror("Missing output folder", "Pick an output folder or enable Overwrite V2.")
-                self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
+            out = self.out_path
+            if not ow and not out:
+                QMessageBox.warning(self, "Missing output", "Pick an output folder or enable Overwrite V2.")
+                self.start_btn.setEnabled(True)
+                self.stop_btn.setEnabled(False)
                 return
             self.worker = FramesWorker(
-                v1, v2, out_mode, out_path, out_w, out_h,
+                self.v1_path, self.v2_path, out_mode, out, out_w, out_h,
                 self.qlog, self.qprog, self.stop_evt,
-                use_gpu=self.use_gpu.get(), params=params
+                use_gpu=self.gpu_check.isChecked(), params=params
             )
         else:
-            out_file = self.out_path.get().strip()
+            out_file = self.out_path
             if not out_file:
-                messagebox.showerror("Missing output file", "Choose where to save the output video.")
-                self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
+                QMessageBox.warning(self, "Missing output", "Choose where to save the output video.")
+                self.start_btn.setEnabled(True)
+                self.stop_btn.setEnabled(False)
                 return
             self.worker = VideosWorker(
-                v1, v2, out_file, out_w, out_h,
+                self.v1_path, self.v2_path, out_file, out_w, out_h,
                 self.qlog, self.qprog, self.stop_evt,
-                use_gpu=self.use_gpu.get(), params=params
+                use_gpu=self.gpu_check.isChecked(), params=params
             )
 
         self.worker.start()
+        
+
+    def _on_preset_combo_changed(self, index):
+        preset_key = self.preset_combo.itemData(index)
+        if preset_key:
+            self._apply_preset(preset_key)
+
+    def _apply_preset(self, name):
+        presets = {
+            "Default (Balanced)": {
+                "white_strength": 1.0, "blur_k": 35, "clip_limit": 2.0,
+                "tile_grid": 8, "bf_d": 12, "bf_sigmaColor": 75, "bf_sigmaSpace": 75,
+            },
+            "Sharp Edges": {
+                "white_strength": 1.2, "blur_k": 20, "clip_limit": 3.0,
+                "tile_grid": 6, "bf_d": 8, "bf_sigmaColor": 50, "bf_sigmaSpace": 50,
+            },
+            "Smooth Blend": {
+                "white_strength": 0.8, "blur_k": 55, "clip_limit": 1.5,
+                "tile_grid": 12, "bf_d": 16, "bf_sigmaColor": 100, "bf_sigmaSpace": 100,
+            },
+            "Metric + Mono": {
+                "white_strength": 0.7, "blur_k": 50, "clip_limit": 2.0,
+                "tile_grid": 8, "bf_d": 14, "bf_sigmaColor": 80, "bf_sigmaSpace": 80,
+            },
+            "High Contrast": {
+                "white_strength": 1.5, "blur_k": 25, "clip_limit": 4.0,
+                "tile_grid": 4, "bf_d": 6, "bf_sigmaColor": 40, "bf_sigmaSpace": 40,
+            },
+        }
+        p = presets.get(name)
+        if not p:
+            return
+
+        # Apply to state
+        for k, v in p.items():
+            setattr(self, k, v)
+
+        # Update sliders (suppress signals so they don't trigger preview spam)
+        slider_map = {
+            "white_strength": self.white_slider,
+            "blur_k": self.blur_slider,
+            "clip_limit": self.clahe_slider,
+            "tile_grid": self.tiles_slider,
+            "bf_d": self.bfd_slider,
+            "bf_sigmaColor": self.sigmaC_slider,
+            "bf_sigmaSpace": self.sigmaS_slider,
+        }
+        for k, slider in slider_map.items():
+            slider.blockSignals(True)
+            v = p[k]
+            # Convert float sliders that use int scaling
+            if k in ("white_strength", "clip_limit"):
+                slider.setValue(int(v * 100))
+            else:
+                slider.setValue(int(v))
+            slider.blockSignals(False)
+
+        self._schedule_preview(0)
 
     def _stop(self):
         if self.worker and self.worker.is_alive():
             self.stop_evt.set()
             self._log("Stopping requested...")
 
-    def _schedule_preview(self, delay_ms=200):
-        if self._preview_after is not None:
-            try: self.after_cancel(self._preview_after)
-            except Exception: pass
-        self._preview_after = self.after(int(max(0, delay_ms)), self._preview_now)
+    def _log(self, msg):
+        from core.debug_flags import debug_print
+        debug_print(f"[Depth Blender] {msg}")
 
-    def _preview_now(self):
-        with self._preview_lock:
-            if self._preview_thread and self._preview_thread.is_alive():
-                return
-
-            snapshot = self._preview_snapshot()
-            if snapshot is None:
-                return
-
-            self._preview_thread = threading.Thread(
-                target=self._compute_preview,
-                args=(snapshot,),
-                daemon=True
-            )
-            self._preview_thread.start()
-
-    def _compute_preview(self, snapshot):
-        try:
-            mode = snapshot["mode"]
-            v1p = snapshot["v1p"]
-            v2p = snapshot["v2p"]
-            idx = snapshot["idx"]
-            if mode == "frames":
-                v1_files = sorted([f for f in os.listdir(v1p) if f.lower().endswith(".png")])
-                v2_files = sorted([f for f in os.listdir(v2p) if f.lower().endswith(".png")])
-                common_files = sorted(set(v1_files) & set(v2_files))
-                if not common_files:
-                    return
-
-                idx = max(0, min(idx, len(common_files) - 1))
-                fname = common_files[idx]
-
-                v1 = cv2.imread(os.path.join(v1p, fname), cv2.IMREAD_GRAYSCALE)
-                v2 = cv2.imread(os.path.join(v2p, fname), cv2.IMREAD_GRAYSCALE)
-                if v1 is None or v2 is None: return
-                if v1.shape != v2.shape:
-                    v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
-            else:
-                cap1 = None
-                cap2 = None
-
-                try:
-                    cap1, cap2 = cv2.VideoCapture(v1p), cv2.VideoCapture(v2p)
-                    if not cap1.isOpened() or not cap2.isOpened():
-                        return
-
-                    cap1.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                    cap2.set(cv2.CAP_PROP_POS_FRAMES, idx)
-
-                    ok1, fr1 = cap1.read()
-                    ok2, fr2 = cap2.read()
-
-                    if not ok1 or not ok2:
-                        return
-
-                    v1 = cv2.cvtColor(fr1, cv2.COLOR_BGR2GRAY)
-                    v2 = cv2.cvtColor(fr2, cv2.COLOR_BGR2GRAY)
-
-                    if v1.shape != v2.shape:
-                        v2 = cv2.resize(v2, (v1.shape[1], v1.shape[0]), interpolation=cv2.INTER_AREA)
-
-                finally:
-                    if cap1 is not None:
-                        cap1.release()
-                    if cap2 is not None:
-                        cap2.release()
-
-            out = lighten_beta(
-                v1,
-                v2,
-                use_gpu=snapshot["use_gpu"],
-                **snapshot["params"]
-            )
-            vis_v2 = cv2.cvtColor(v2, cv2.COLOR_GRAY2BGR)
-            vis_out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
-            panel = np.hstack([_put_label(vis_v2, "V2 Base"), _put_label(vis_out, f"Blended Preview (idx {idx})")])
-            panel = _resize_max(panel, max_w=840, max_h=520)
-            rgb = cv2.cvtColor(panel, cv2.COLOR_BGR2RGB)
-
-            try:
-                while True:
-                    self.qpreview.get_nowait()
-            except queue.Empty:
-                pass
-
-            try:
-                self.qpreview.put_nowait(rgb)
-            except queue.Full:
-                pass
-        except Exception as e:
-            self.qlog.put(f"Preview error: {e}")
 
     def _set_prog(self, done, total):
-        self.prog["maximum"] = max(total, 1)
-        self.prog["value"] = done
-        self.prog_lbl.config(text=f"Progress: {done}/{total}")
+        total = max(int(total or 1), 1)
+        done = max(0, min(int(done or 0), total))
 
-    def _log(self, msg):
-        self.log.config(state="normal")
-        self.log.insert("end", msg + "\n")
-        self.log.see("end")
-        self.log.config(state="disabled")
+        self._last_progress = (done / total) * 100.0
+
+        start = self._blend_start_time or time.monotonic()
+        elapsed = max(0.001, time.monotonic() - start)
+        fps = done / elapsed if done > 0 else 0.0
+
+        remaining = max(0, total - done)
+        eta = (remaining / fps) if fps > 0 else None
+
+        self.progress_updated.emit({
+            "progress": self._last_progress,
+            "done": done,
+            "total": total,
+            "fps_like": fps,
+            "elapsed": elapsed,
+            "eta": eta,
+            "rate_label": "FPS",
+        })
+        
+    def _start_poller(self):
+        self._poller = QTimer()
+        self._poller.timeout.connect(self._poll)
+        self._poller.start(100)
 
     def _poll(self):
         try:
             while True:
-                self._log(self.qlog.get_nowait())
+                msg = self.qlog.get_nowait()
+                self._log(msg)
         except queue.Empty:
             pass
         try:
@@ -958,20 +895,9 @@ class App(tk.Tk):
         except queue.Empty:
             pass
             
-        latest_rgb = None
-        try:
-            while True:
-                latest_rgb = self.qpreview.get_nowait()
-        except queue.Empty:
-            pass
-
-        if latest_rgb is not None:
-            imgtk = ImageTk.PhotoImage(Image.fromarray(latest_rgb))
-            self._redraw_preview(imgtk)
         if self.worker and not self.worker.is_alive():
-            self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
-        self.after(100, self._poll)
-
-
-if __name__ == "__main__":
-    App().mainloop()
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.start_btn.setText(self._t("Start Batch"))
+        elif self.worker and self.worker.is_alive():
+            self.start_btn.setText(self._t("Processing..."))
