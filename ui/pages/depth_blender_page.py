@@ -81,6 +81,16 @@ class DepthBlenderPage(QWidget):
         self.preview_failed.connect(lambda msg: self._log(f"Preview error: {msg}"))
 
         self._start_poller()
+        
+        
+    def _sync_blend_params_from_sliders(self):
+        self.white_strength = self.white_slider.value() / 100.0
+        self.blur_k = int(self.blur_slider.value())
+        self.clip_limit = self.clahe_slider.value() / 100.0
+        self.tile_grid = int(self.tiles_slider.value())
+        self.bf_d = int(self.bfd_slider.value())
+        self.bf_sigmaColor = int(self.sigmaC_slider.value())
+        self.bf_sigmaSpace = int(self.sigmaS_slider.value())
 
     def _t(self, key: str) -> str:
         """
@@ -373,13 +383,13 @@ class DepthBlenderPage(QWidget):
         params_layout = QVBoxLayout(params_group)
         params_layout.setSpacing(8)
 
-        self.white_slider = self._add_slider_row(params_layout, "White Strength", 0.0, 2.0, self.white_strength, 0.01)
-        self.blur_slider = self._add_slider_row(params_layout, "Feather Blur", 1, 99, self.blur_k, 1)
-        self.clahe_slider = self._add_slider_row(params_layout, "CLAHE Clip", 0.5, 4.0, self.clip_limit, 0.1)
-        self.tiles_slider = self._add_slider_row(params_layout, "CLAHE Tiles", 2, 32, self.tile_grid, 1)
-        self.bfd_slider = self._add_slider_row(params_layout, "Bilateral d", 1, 25, self.bf_d, 1)
-        self.sigmaC_slider = self._add_slider_row(params_layout, "Bilateral sigmaColor", 1, 200, self.bf_sigmaColor, 1)
-        self.sigmaS_slider = self._add_slider_row(params_layout, "Bilateral sigmaSpace", 1, 200, self.bf_sigmaSpace, 1)
+        self.white_slider = self._add_slider_row(params_layout, "White Strength", 0.0, 2.0, self.white_strength, 0.01, "white_strength")
+        self.blur_slider = self._add_slider_row(params_layout, "Feather Blur", 1, 99, self.blur_k, 1, "blur_k")
+        self.clahe_slider = self._add_slider_row(params_layout, "CLAHE Clip", 0.5, 4.0, self.clip_limit, 0.1, "clip_limit")
+        self.tiles_slider = self._add_slider_row(params_layout, "CLAHE Tiles", 2, 32, self.tile_grid, 1, "tile_grid")
+        self.bfd_slider = self._add_slider_row(params_layout, "Bilateral d", 1, 25, self.bf_d, 1, "bf_d")
+        self.sigmaC_slider = self._add_slider_row(params_layout, "Bilateral sigmaColor", 1, 200, self.bf_sigmaColor, 1, "bf_sigmaColor")
+        self.sigmaS_slider = self._add_slider_row(params_layout, "Bilateral sigmaSpace", 1, 200, self.bf_sigmaSpace, 1, "bf_sigmaSpace")
 
         left_layout.addWidget(params_group)
 
@@ -440,42 +450,62 @@ class DepthBlenderPage(QWidget):
         self.apply_theme(getattr(self, "_active_theme", {}))
 
 
-    def _add_slider_row(self, parent, label, mn, mx, default, step):
+    def _add_slider_row(self, parent, label, mn, mx, default, step, attr_name):
         row = QHBoxLayout()
+
         lbl = QLabel()
         self._register_text(lbl, label)
         lbl.setMinimumWidth(140)
+
         slider = QSlider(Qt.Horizontal)
-        if isinstance(step, float):
+
+        is_float_slider = isinstance(step, float)
+
+        if is_float_slider:
             slider.setRange(int(mn * 100), int(mx * 100))
             slider.setValue(int(default * 100))
         else:
             slider.setRange(int(mn), int(mx))
             slider.setValue(int(default))
-        slider.setMinimumHeight(28) 
-        val_label = QLabel(str(default))
+
+        slider.setMinimumHeight(28)
+
+        val_label = QLabel()
         val_label.setMinimumWidth(45)
+
+        def _format_value(value):
+            if is_float_slider:
+                decimals = 2 if step < 0.1 else 1
+                return f"{float(value):.{decimals}f}"
+            return str(int(value))
+
+        val_label.setText(_format_value(default))
+
         row.addWidget(lbl)
         row.addWidget(slider, 1)
         row.addWidget(val_label)
         parent.addLayout(row)
 
-        # Update label on change, trigger preview debounce
         def _on_change(v):
-            if isinstance(step, float):
+            if is_float_slider:
                 real = v / 100.0
             else:
-                real = v
-            val_label.setText(f"{real:.1f}" if isinstance(step, float) else str(int(real)))
+                real = int(v)
+
+            setattr(self, attr_name, real)
+
+            val_label.setText(_format_value(real))
             self._schedule_preview(120)
 
         slider.valueChanged.connect(_on_change)
+
         return slider
 
     def _schedule_preview(self, delay_ms=200):
         self._preview_debounce.start(delay_ms)
 
     def _preview_now(self):
+        self._sync_blend_params_from_sliders()
         with self._preview_lock:
             if self._preview_thread and self._preview_thread.is_alive():
                 return
@@ -669,6 +699,8 @@ class DepthBlenderPage(QWidget):
         if not self.v1_path or not self.v2_path:
             QMessageBox.warning(self, "Missing paths", "Select both V1 and V2 paths.")
             return
+
+        self._sync_blend_params_from_sliders()
 
         from core.DB import FramesWorker, VideosWorker
 
