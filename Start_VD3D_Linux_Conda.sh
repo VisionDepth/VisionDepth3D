@@ -12,7 +12,7 @@ else
 fi
 
 conda activate VD3D
-python VisionDepth3D.py
+python app.py
 
 read -p "Press Enter to exit..."
 conda deactivate
