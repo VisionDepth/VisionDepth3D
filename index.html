@@ -1,0 +1,2779 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VisionDepth3D — Cinematic 2D to 3D Conversion Software</title>
+  <meta name="description" content="VisionDepth3D is a premium depth-driven 3D movie conversion platform for transforming 2D film and video into immersive stereoscopic 3D with advanced rendering, AI depth analysis, enhancement tools, and creator-focused workflow controls." />
+
+  <meta property="og:title" content="VisionDepth3D — Cinematic 2D to 3D Conversion Software" />
+  <meta property="og:description" content="Advanced 3D movie conversion, AI depth workflows, stereo rendering, immersive output, and premium creator tools for cinema-focused media processing." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="" />
+  <meta property="og:image" content="" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="VisionDepth3D — Cinematic 2D to 3D Conversion Software" />
+  <meta name="twitter:description" content="A premium platform for depth-driven video processing, stereoscopic 3D conversion, and immersive cinematic workflows." />
+  <meta name="twitter:image" content="" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #050816;
+      --bg-2: #070b1c;
+      --bg-3: #0c1227;
+      --surface: rgba(13, 19, 40, 0.72);
+      --surface-strong: rgba(15, 23, 49, 0.92);
+      --surface-soft: rgba(255,255,255,0.04);
+      --card: rgba(11, 17, 36, 0.8);
+      --line: rgba(255,255,255,0.1);
+      --line-strong: rgba(124, 211, 255, 0.22);
+      --text: #edf4ff;
+      --muted: #98a9c7;
+      --muted-2: #73819a;
+      --accent: #69d8ff;
+      --accent-2: #7b8cff;
+      --accent-3: #70ffc8;
+      --accent-4: #a96dff;
+      --glow: 0 0 0 1px rgba(105,216,255,0.08), 0 20px 60px rgba(17, 29, 64, 0.55), 0 0 60px rgba(105,216,255,0.09);
+      --shadow: 0 20px 60px rgba(0,0,0,0.45);
+      --radius: 22px;
+      --radius-lg: 30px;
+      --radius-sm: 14px;
+      --max: 1240px;
+      --nav-h: 78px;
+      --grid: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      font-family: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 700px at 10% -10%, rgba(123,140,255,0.18), transparent 55%),
+        radial-gradient(1100px 800px at 100% 0%, rgba(105,216,255,0.18), transparent 54%),
+        radial-gradient(800px 500px at 50% 30%, rgba(112,255,200,0.06), transparent 60%),
+        linear-gradient(180deg, #040611 0%, #060918 42%, #050814 100%);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: var(--grid);
+      background-size: 44px 44px;
+      opacity: 0.08;
+      mask-image: radial-gradient(circle at center, black 30%, transparent 88%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto -20% -30% -20%;
+      height: 60vh;
+      background: radial-gradient(circle at center, rgba(105,216,255,0.14), transparent 50%);
+      filter: blur(80px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
+
+    .container {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    .section {
+      position: relative;
+      padding: 108px 0;
+    }
+
+    .section::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 50%;
+      width: min(96%, 1320px);
+      height: 1px;
+      transform: translateX(-50%);
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.035);
+      color: #d8e8ff;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      font-weight: 700;
+      backdrop-filter: blur(12px);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-3));
+      box-shadow: 0 0 18px rgba(105,216,255,0.65);
+    }
+
+    h1, h2, h3, h4, p { margin: 0; }
+    .title-xl {
+      font-size: clamp(44px, 7vw, 88px);
+      line-height: 0.96;
+      letter-spacing: -0.05em;
+      font-weight: 900;
+    }
+    .title-lg {
+      font-size: clamp(30px, 4vw, 54px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+      font-weight: 800;
+    }
+    .title-md {
+      font-size: clamp(20px, 2.2vw, 28px);
+      line-height: 1.12;
+      letter-spacing: -0.03em;
+      font-weight: 700;
+    }
+    .lead {
+      color: var(--muted);
+      font-size: clamp(16px, 1.5vw, 19px);
+      max-width: 66ch;
+    }
+    .section-head {
+      display: grid;
+      gap: 18px;
+      margin-bottom: 34px;
+      max-width: 840px;
+    }
+
+    .text-gradient {
+      background: linear-gradient(90deg, #f9fbff 0%, #b8d7ff 26%, #73d8ff 52%, #98ffdf 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      height: var(--nav-h);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      background: linear-gradient(180deg, rgba(4,6,17,0.82), rgba(4,6,17,0.52));
+      backdrop-filter: blur(20px) saturate(1.2);
+    }
+
+    .nav-inner {
+      min-height: var(--nav-h);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.1);
+      background:
+        radial-gradient(circle at 30% 30%, rgba(255,255,255,0.22), transparent 38%),
+        conic-gradient(from 210deg, #63d8ff, #7286ff, #6df6d1, #63d8ff);
+      box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), 0 0 30px rgba(99,216,255,0.18);
+    }
+
+    .logo::after {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border-radius: 10px;
+      background:
+        linear-gradient(135deg, rgba(4,8,20,0.25), rgba(4,8,20,0.74)),
+        url("assets/logo.png") center/contain no-repeat;
+      backdrop-filter: blur(10px);
+    }
+
+    .brand-text {
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand-name {
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      font-size: 18px;
+      color: #f4f8ff;
+    }
+
+    .brand-sub {
+      color: var(--muted-2);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .nav-links a {
+      color: #dbe6fb;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 12px;
+      border-radius: 12px;
+      transition: 0.25s ease;
+      opacity: 0.86;
+    }
+
+    .nav-links a:hover {
+      opacity: 1;
+      background: rgba(255,255,255,0.05);
+    }
+
+    .menu-btn {
+      display: none;
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .btn {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 52px;
+      padding: 0 18px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+      color: var(--text);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), var(--shadow);
+      transition: transform .2s ease, border-color .25s ease, box-shadow .25s ease, background .25s ease;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      border-color: rgba(105,216,255,0.42);
+      box-shadow: 0 24px 55px rgba(15, 30, 70, 0.55), 0 0 0 1px rgba(105,216,255,0.14);
+    }
+
+    .btn.primary {
+      border-color: rgba(105,216,255,0.45);
+      background:
+        linear-gradient(180deg, rgba(130,201,255,0.22), rgba(80,123,255,0.14)),
+        linear-gradient(90deg, rgba(105,216,255,0.16), rgba(123,140,255,0.16));
+      box-shadow: 0 20px 50px rgba(34, 90, 173, 0.32), 0 0 0 1px rgba(105,216,255,0.18), inset 0 1px 0 rgba(255,255,255,0.09);
+    }
+
+    .btn.secondary {
+      background: rgba(255,255,255,0.04);
+    }
+
+    .btn.ghost {
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .btn.small {
+      min-height: 42px;
+      padding: 0 14px;
+      font-size: 14px;
+      border-radius: 13px;
+    }
+
+    .btn svg {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+    }
+
+    .hero {
+      padding: 52px 0 56px;
+      position: relative;
+      overflow: clip;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -10% -10% auto -10%;
+      height: 80vh;
+      background:
+        radial-gradient(circle at 20% 25%, rgba(105,216,255,0.16), transparent 30%),
+        radial-gradient(circle at 85% 12%, rgba(123,140,255,0.18), transparent 32%),
+        radial-gradient(circle at 60% 52%, rgba(112,255,200,0.07), transparent 26%);
+      filter: blur(22px);
+      pointer-events: none;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.04fr 0.96fr;
+      gap: 34px;
+      align-items: center;
+      min-height: calc(100vh - var(--nav-h) - 32px);
+    }
+
+    .hero-copy {
+      display: grid;
+      gap: 22px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero-copy .lead {
+      max-width: 63ch;
+      font-size: clamp(17px, 1.45vw, 20px);
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 6px;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .meta-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      color: #d8e4fb;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .meta-pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-3));
+      box-shadow: 0 0 14px rgba(105,216,255,0.45);
+    }
+
+    .hero-panel {
+      position: relative;
+      padding: 20px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(255,255,255,0.1);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+        linear-gradient(135deg, rgba(10,16,35,0.96), rgba(7,11,24,0.92));
+      box-shadow: var(--glow);
+      overflow: hidden;
+      min-height: 640px;
+    }
+
+    .hero-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(600px 240px at 70% 0%, rgba(105,216,255,0.15), transparent 60%),
+        radial-gradient(440px 240px at 14% 100%, rgba(123,140,255,0.14), transparent 60%);
+      pointer-events: none;
+    }
+
+    .panel-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .panel-dots {
+      display: flex;
+      gap: 8px;
+    }
+
+    .panel-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.18);
+    }
+
+    .panel-dots span:nth-child(1) { background: #ff6a7a; }
+    .panel-dots span:nth-child(2) { background: #ffd36a; }
+    .panel-dots span:nth-child(3) { background: #5effb1; }
+
+    .panel-label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #bfd0ec;
+      opacity: 0.9;
+    }
+
+    .cinema-screen {
+      position: relative;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.09);
+      background:
+        linear-gradient(180deg, rgba(10,14,29,0.6), rgba(6,9,19,0.75)),
+        #050915;
+      min-height: 380px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02), 0 30px 80px rgba(0,0,0,0.48);
+    }
+
+    .scanline {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent 18%, transparent 82%, rgba(255,255,255,0.03));
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .screen-overlay {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 20% 30%, rgba(105,216,255,0.18), transparent 22%),
+        radial-gradient(circle at 76% 24%, rgba(123,140,255,0.18), transparent 22%),
+        linear-gradient(180deg, transparent 0%, rgba(2,3,8,0.18) 100%);
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .slides {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      transition: transform 0.55s cubic-bezier(.22,.61,.36,1);
+      will-change: transform;
+    }
+
+    .slide {
+      min-width: 100%;
+      min-height: 380px;
+      position: relative;
+      display: grid;
+      place-items: center;
+      padding: 26px;
+      background:
+        radial-gradient(circle at 12% 20%, rgba(112,255,200,0.08), transparent 24%),
+        radial-gradient(circle at 80% 18%, rgba(105,216,255,0.08), transparent 24%),
+        linear-gradient(180deg, rgba(11,17,36,0.9), rgba(7,11,24,0.98));
+    }
+
+    .slide img {
+      width: 100%;
+      height: 100%;
+      max-height: 328px;
+      object-fit: contain;
+      filter: drop-shadow(0 20px 50px rgba(0,0,0,0.42));
+      position: relative;
+      z-index: 1;
+    }
+
+    .slide-caption {
+      position: absolute;
+      left: 18px;
+      bottom: 16px;
+      z-index: 5;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(5,10,22,0.58);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(10px);
+      font-size: 12px;
+      color: #d8e6ff;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .slide-btn {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 6;
+      width: 46px;
+      height: 46px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(7,12,25,0.58);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      transition: 0.2s ease;
+    }
+
+    .slide-btn:hover {
+      background: rgba(10,17,34,0.82);
+      border-color: rgba(105,216,255,0.32);
+    }
+
+    .slide-btn.prev { left: 14px; }
+    .slide-btn.next { right: 14px; }
+
+    .dots {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      z-index: 6;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      border: none;
+      background: rgba(255,255,255,0.24);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2);
+      cursor: pointer;
+      transition: 0.25s ease;
+    }
+
+    .dot.active {
+      width: 26px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      box-shadow: 0 0 16px rgba(105,216,255,0.38);
+    }
+
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 18px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .stat-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.035);
+      backdrop-filter: blur(10px);
+    }
+
+    .stat-value {
+      font-size: clamp(22px, 2vw, 28px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      color: #f4f8ff;
+    }
+
+    .stat-label {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hero-bottom {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .glass-card {
+      position: relative;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.09);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.028));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero-workflow-card {
+      padding: 18px;
+    }
+
+    .mini-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #b8c9e6;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .pipe-node {
+      display: grid;
+      gap: 8px;
+      padding: 14px 12px;
+      min-height: 108px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.032);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .pipe-node::before {
+      content: "";
+      position: absolute;
+      inset: auto -10% -60% -10%;
+      height: 60px;
+      background: radial-gradient(circle, rgba(105,216,255,0.16), transparent 60%);
+      filter: blur(14px);
+    }
+
+    .pipe-step {
+      font-size: 12px;
+      color: var(--muted-2);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .pipe-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #eff5ff;
+    }
+
+    .pipe-text {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .hero-note {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .hero-note p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .hero-note ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .hero-note li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      color: #dce8fb;
+      font-size: 14px;
+    }
+
+    .hero-note li::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      margin-top: 6px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-3));
+      box-shadow: 0 0 14px rgba(105,216,255,0.5);
+      flex: 0 0 9px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .feature-grid {
+      grid-template-columns: repeat(12, 1fr);
+    }
+
+    .feature-card {
+      padding: 24px;
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.048), rgba(255,255,255,0.022)),
+        linear-gradient(180deg, rgba(9,14,31,0.88), rgba(6,10,22,0.86));
+      box-shadow: var(--shadow);
+      transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+      position: relative;
+      overflow: hidden;
+      min-height: 220px;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-5px);
+      border-color: rgba(105,216,255,0.24);
+      box-shadow: 0 30px 70px rgba(0,0,0,0.46), 0 0 0 1px rgba(105,216,255,0.08);
+    }
+
+    .feature-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -8% -18% -8%;
+      height: 120px;
+      background: radial-gradient(circle at center, rgba(105,216,255,0.16), transparent 62%);
+      filter: blur(20px);
+      opacity: 0.85;
+      pointer-events: none;
+    }
+
+    .feature-card.large { grid-column: span 6; }
+    .feature-card.medium { grid-column: span 4; }
+    .feature-card.small { grid-column: span 3; }
+
+    .icon-box {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, rgba(105,216,255,0.14), rgba(123,140,255,0.08));
+      margin-bottom: 18px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+
+    .icon-box svg {
+      width: 22px;
+      height: 22px;
+      color: #e8f6ff;
+    }
+
+    .feature-card h3 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 10px;
+    }
+
+    .feature-card p {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 38ch;
+    }
+
+    .feature-list {
+      margin-top: 16px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .feature-list span {
+      color: #d9e7fb;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .feature-list span::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-3));
+      box-shadow: 0 0 12px rgba(105,216,255,0.45);
+      flex: 0 0 7px;
+    }
+
+    .workflow-shell {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 30px;
+      align-items: stretch;
+    }
+
+    .workflow-panel,
+    .why-panel,
+    .download-shell,
+    .vault-shell,
+    .license-shell,
+    .footer-shell,
+    .faq-shell {
+      border-radius: 28px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.025)),
+        linear-gradient(180deg, rgba(8,12,26,0.92), rgba(6,9,20,0.95));
+      box-shadow: var(--glow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .workflow-panel::before,
+    .why-panel::before,
+    .download-shell::before,
+    .vault-shell::before,
+    .license-shell::before,
+    .faq-shell::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(105,216,255,0.06), transparent 35%),
+        radial-gradient(circle at 100% 100%, rgba(123,140,255,0.05), transparent 30%);
+      pointer-events: none;
+    }
+
+    .workflow-panel {
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.018)),
+        linear-gradient(180deg, rgba(8,12,26,0.96), rgba(6,9,20,0.98));
+      box-shadow: 0 18px 48px rgba(0,0,0,0.4), 0 0 0 1px rgba(105,216,255,0.05);
+    }
+
+    .workflow-left {
+      padding: 34px;
+      display: grid;
+      gap: 22px;
+    }
+
+    .workflow-stage {
+      display: grid;
+      gap: 18px;
+    }
+
+    .stage-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      padding: 22px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, rgba(13,20,40,0.9), rgba(9,14,29,0.96));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 10px 26px rgba(0,0,0,0.18);
+      position: relative;
+    }
+
+    .stage-item + .stage-item {
+      margin-top: 2px;
+    }
+
+    .stage-num {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      color: #eef7ff;
+      background: linear-gradient(180deg, rgba(105,216,255,0.2), rgba(123,140,255,0.1));
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.07);
+    }
+
+    .stage-content h3 {
+      font-size: 18px;
+      letter-spacing: -0.02em;
+      margin-bottom: 7px;
+    }
+
+    .stage-content p {
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 45ch;
+    }
+
+    .workflow-right {
+      padding: 34px;
+      display: grid;
+      gap: 20px;
+      align-content: start;
+    }
+
+    .process-visual {
+      min-height: 100%;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background:
+        radial-gradient(circle at 20% 20%, rgba(105,216,255,0.09), transparent 24%),
+        radial-gradient(circle at 75% 18%, rgba(123,140,255,0.09), transparent 25%),
+        linear-gradient(180deg, rgba(12,18,37,0.96), rgba(7,11,24,0.99));
+      padding: 26px;
+      display: grid;
+      gap: 20px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 14px 34px rgba(0,0,0,0.22);
+    }
+
+	.visual-graph {
+	  position: relative;
+	  min-height: 420px;
+	  border-radius: 20px;
+	  overflow: hidden;
+	  background:
+		linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
+		linear-gradient(180deg, rgba(255,255,255,0.018), rgba(255,255,255,0.008));
+	  background-size: 34px 34px, 34px 34px, auto;
+	  border: 1px solid rgba(255,255,255,0.09);
+	}
+
+	.pipeline-svg {
+	  position: absolute;
+	  inset: 0;
+	  width: 100%;
+	  height: 100%;
+	  z-index: 1;
+	  pointer-events: none;
+	}
+
+	.pipeline-path {
+	  fill: none;
+	  stroke: rgba(105,216,255,0.52);
+	  stroke-width: 2.25;
+	  stroke-linecap: round;
+	  stroke-linejoin: round;
+	  filter: drop-shadow(0 0 8px rgba(105,216,255,0.18));
+	}
+
+	.pipeline-node-dot {
+	  fill: rgba(105,216,255,0.95);
+	  filter: drop-shadow(0 0 10px rgba(105,216,255,0.42));
+	}
+	
+	.node {
+	  position: absolute;
+	  width: 176px;
+	  padding: 16px;
+	  border-radius: 18px;
+	  border: 1px solid rgba(255,255,255,0.11);
+	  background: linear-gradient(180deg, rgba(10,16,32,0.95), rgba(8,12,25,0.98));
+	  backdrop-filter: blur(4px);
+	  box-shadow: 0 16px 32px rgba(0,0,0,0.26);
+	  z-index: 2;
+	}
+    .node strong {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+	.node.one { top: 34px; left: 26px; }
+	.node.two { top: 34px; right: 26px; }
+	.node.three { bottom: 34px; left: 26px; }
+	.node.four { bottom: 34px; right: 26px; }
+
+    .visual-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .metric {
+      padding: 18px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, rgba(11,17,34,0.92), rgba(8,12,26,0.98));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+
+    .metric b {
+      display: block;
+      font-size: 22px;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .why-grid {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .why-panel {
+      padding: 28px;
+    }
+
+    .advantage-list {
+      display: grid;
+      gap: 14px;
+      margin-top: 6px;
+    }
+
+    .advantage {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 14px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.07);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .advantage-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      color: #eef7ff;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: linear-gradient(180deg, rgba(105,216,255,0.18), rgba(123,140,255,0.1));
+    }
+
+    .advantage h3 {
+      font-size: 17px;
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+    }
+
+    .advantage p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .comparison {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .compare-card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.035);
+    }
+
+    .compare-card h3 {
+      font-size: 17px;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .compare-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    .compare-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      font-size: 14px;
+      color: #dae7fb;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+
+    .compare-list li:last-child {
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+
+    .badge-good {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(112,255,200,0.08);
+      border: 1px solid rgba(112,255,200,0.2);
+      color: #caffea;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .badge-good::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-3);
+      box-shadow: 0 0 12px rgba(112,255,200,0.55);
+    }
+
+    .badge-mid {
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #d5e4ff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .download-shell {
+      padding: 30px;
+    }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: 1fr 0.88fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .download-main {
+      display: grid;
+      gap: 18px;
+      align-content: start;
+    }
+
+    .download-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    .system-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-top: 4px;
+    }
+
+    .spec-card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .spec-card h3 {
+      font-size: 16px;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .spec-card ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 10px;
+    }
+
+    .spec-card li {
+      display: flex;
+      gap: 10px;
+      color: #dce8fb;
+      font-size: 14px;
+    }
+
+    .spec-card li::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-top: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-3));
+      box-shadow: 0 0 12px rgba(105,216,255,0.4);
+      flex: 0 0 7px;
+    }
+
+    .download-side {
+      display: grid;
+      gap: 14px;
+    }
+
+    .signal-card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .signal-card h3 {
+      font-size: 16px;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .signal-card p,
+    .signal-card li {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .signal-card ul {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .vault-shell {
+      padding: 34px;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.02)),
+        linear-gradient(180deg, rgba(8,12,26,0.97), rgba(6,9,20,0.99));
+      box-shadow: 0 20px 52px rgba(0,0,0,0.42), 0 0 0 1px rgba(169,109,255,0.06);
+    }
+
+    .vault-grid {
+      display: grid;
+      grid-template-columns: 0.92fr 1.08fr;
+      gap: 32px;
+      align-items: stretch;
+    }
+
+    .vault-copy {
+      display: grid;
+      gap: 18px;
+      align-content: start;
+      padding-right: 8px;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(105,216,255,0.24);
+      background: rgba(105,216,255,0.08);
+      color: #ddf5ff;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .status-badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent-3);
+      box-shadow: 0 0 14px rgba(112,255,200,0.55);
+    }
+
+    .coming-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(169,109,255,0.25);
+      background: rgba(169,109,255,0.08);
+      color: #eadcff;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .coming-badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent-4);
+      box-shadow: 0 0 16px rgba(169,109,255,0.55);
+    }
+
+	.vault-visual {
+	  position: relative;
+	  min-height: 640px;
+	  border-radius: 24px;
+	  border: 1px solid rgba(255,255,255,0.1);
+	  background:
+		radial-gradient(circle at 10% 15%, rgba(105,216,255,0.1), transparent 20%),
+		radial-gradient(circle at 88% 12%, rgba(169,109,255,0.12), transparent 20%),
+		radial-gradient(circle at 60% 78%, rgba(112,255,200,0.06), transparent 20%),
+		linear-gradient(180deg, rgba(12,18,37,0.98), rgba(6,9,20,1));
+	  overflow: hidden;
+	  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 16px 36px rgba(0,0,0,0.26);
+	}
+
+    .vault-ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset;
+      opacity: 0.72;
+    }
+
+	.vault-ring.r1 { width: 410px; height: 410px; left: 50%; top: 46%; transform: translate(-50%,-50%); }
+	.vault-ring.r2 { width: 285px; height: 285px; left: 50%; top: 46%; transform: translate(-50%,-50%); }
+	.vault-ring.r3 { width: 132px; height: 132px; left: 50%; top: 46%; transform: translate(-50%,-50%); background: radial-gradient(circle, rgba(169,109,255,0.14), rgba(105,216,255,0.06)); }
+
+	.platform-card {
+	  position: absolute;
+	  width: 176px;
+	  padding: 16px;
+	  border-radius: 18px;
+	  border: 1px solid rgba(255,255,255,0.12);
+	  background: linear-gradient(180deg, rgba(10,16,32,0.96), rgba(8,12,25,0.99));
+	  backdrop-filter: blur(4px);
+	  box-shadow: 0 16px 34px rgba(0,0,0,0.28);
+	  z-index: 2;
+	}
+
+    .platform-card strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+    }
+
+    .platform-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+	.platform-card.app { top: 46px; left: 34px; }
+	.platform-card.web { top: 46px; right: 34px; }
+	.platform-card.tv { bottom: 34px; left: 50%; transform: translateX(-50%); }
+
+    .platform-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .platform-status.live {
+      color: #d9fff2;
+      background: rgba(112,255,200,0.08);
+      border: 1px solid rgba(112,255,200,0.2);
+    }
+
+    .platform-status.live::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-3);
+      box-shadow: 0 0 12px rgba(112,255,200,0.48);
+    }
+
+    .platform-status.soon {
+      color: #f0ddff;
+      background: rgba(169,109,255,0.08);
+      border: 1px solid rgba(169,109,255,0.22);
+    }
+
+    .platform-status.soon::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-4);
+      box-shadow: 0 0 12px rgba(169,109,255,0.46);
+    }
+
+	.vault-core {
+	  position: absolute;
+	  inset: 46% auto auto 50%;
+	  transform: translate(-50%, -50%);
+	  width: 164px;
+	  height: 164px;
+	  border-radius: 28px;
+	  border: 1px solid rgba(255,255,255,0.12);
+	  background:
+		radial-gradient(circle at 30% 30%, rgba(255,255,255,0.12), transparent 30%),
+		linear-gradient(180deg, rgba(169,109,255,0.14), rgba(105,216,255,0.1));
+	  display: grid;
+	  place-items: center;
+	  text-align: center;
+	  box-shadow: 0 0 36px rgba(105,216,255,0.1);
+	  z-index: 1;
+	}
+
+    .vault-core b {
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .vault-core small {
+      display: block;
+      margin-top: 6px;
+      color: #d6e4fb;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .license-shell {
+      padding: 28px;
+    }
+
+    .license-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .license-card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .license-card h3 {
+      font-size: 16px;
+      margin-bottom: 8px;
+      letter-spacing: -0.02em;
+    }
+
+    .license-card p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .faq-shell {
+      padding: 28px;
+    }
+
+    .faq-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    details {
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      padding: 0 18px;
+      overflow: hidden;
+    }
+
+    summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 18px 4px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+
+    summary::after {
+      content: "+";
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.04);
+      color: #dce8fb;
+      font-size: 18px;
+      flex: 0 0 28px;
+    }
+
+    details[open] summary::after {
+      content: "–";
+    }
+
+    details p {
+      color: var(--muted);
+      font-size: 14px;
+      padding: 0 4px 18px;
+      max-width: 78ch;
+    }
+
+    .footer {
+      padding: 40px 0 60px;
+      position: relative;
+    }
+
+    .footer-shell {
+      padding: 28px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: center;
+      border-radius: 28px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)),
+        linear-gradient(180deg, rgba(8,12,26,0.92), rgba(6,9,20,0.95));
+      box-shadow: var(--glow);
+    }
+
+    .footer-brand {
+      display: grid;
+      gap: 10px;
+    }
+
+    .footer-brand p {
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 60ch;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .footer-links a {
+      color: #dce8fb;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity .8s ease, transform .8s ease;
+    }
+
+    .reveal.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 1180px) {
+      .hero-grid,
+      .workflow-shell,
+      .why-grid,
+      .download-grid,
+      .vault-grid,
+      .hero-bottom {
+        grid-template-columns: 1fr;
+      }
+
+      .feature-card.large,
+      .feature-card.medium,
+      .feature-card.small {
+        grid-column: span 6;
+      }
+
+      .license-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .pipeline {
+        grid-template-columns: repeat(5, minmax(120px, 1fr));
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+
+      .vault-grid {
+        gap: 26px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .nav-links {
+        position: fixed;
+        top: calc(var(--nav-h) + 8px);
+        left: 20px;
+        right: 20px;
+        display: none;
+        flex-direction: column;
+        align-items: stretch;
+        padding: 14px;
+        border-radius: 20px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(7,10,22,0.95);
+        backdrop-filter: blur(18px);
+        box-shadow: var(--shadow);
+      }
+
+      .nav-links.open {
+        display: flex;
+      }
+
+      .nav-links a,
+      .nav-links .btn {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .menu-btn {
+        display: inline-flex;
+      }
+
+      .hero {
+        padding-top: 26px;
+      }
+
+      .hero-grid {
+        min-height: auto;
+      }
+
+      .hero-panel {
+        min-height: auto;
+      }
+
+      .hero-stats,
+      .visual-metrics,
+      .system-grid,
+      .license-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .feature-card.large,
+      .feature-card.medium,
+      .feature-card.small {
+        grid-column: span 12;
+      }
+
+      .feature-grid {
+        grid-template-columns: repeat(12, 1fr);
+      }
+
+      .pipeline {
+        grid-template-columns: repeat(5, 220px);
+      }
+
+      .workflow-shell {
+        gap: 22px;
+      }
+
+      .workflow-left,
+      .workflow-right {
+        padding: 24px;
+      }
+
+      .platform-card {
+        position: relative;
+        width: auto;
+      }
+
+      .vault-visual {
+        min-height: auto;
+        padding: 24px;
+        display: grid;
+        gap: 18px;
+      }
+
+      .visual-graph {
+        min-height: 520px;
+      }
+
+      .vault-core,
+      .vault-ring,
+      .platform-card.app,
+      .platform-card.web,
+      .platform-card.tv {
+        position: relative;
+        inset: auto;
+        transform: none;
+      }
+
+      .vault-core {
+        width: auto;
+        height: auto;
+        min-height: 138px;
+        order: -1;
+      }
+
+      .footer-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-links {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .container {
+        width: min(var(--max), calc(100% - 24px));
+      }
+
+      .section {
+        padding: 80px 0;
+      }
+
+      .hero-panel,
+      .workflow-left,
+      .workflow-right,
+      .why-panel,
+      .download-shell,
+      .vault-shell,
+      .license-shell,
+      .faq-shell,
+      .footer-shell {
+        padding: 18px;
+      }
+
+      .cinema-screen {
+        min-height: 290px;
+      }
+
+      .slide {
+        min-height: 290px;
+        padding: 16px;
+      }
+
+      .slide img {
+        max-height: 220px;
+      }
+
+      .hero-actions,
+      .download-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .btn {
+        width: 100%;
+      }
+
+      .title-xl {
+        letter-spacing: -0.06em;
+      }
+
+      .stage-item,
+      .metric,
+      .platform-card {
+        padding: 16px;
+      }
+
+      .status-row {
+        gap: 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a href="#" class="brand" aria-label="VisionDepth3D home">
+        <span class="logo" aria-hidden="true"></span>
+        <span class="brand-text">
+          <span class="brand-name">VisionDepth3D</span>
+          <span class="brand-sub">Cinematic Depth Platform</span>
+        </span>
+      </a>
+
+      <button class="menu-btn" id="menuToggle" aria-label="Toggle navigation" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      </button>
+
+      <div class="nav-links" id="navLinks">
+        <a href="#features">Features</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#why">Why VisionDepth3D</a>
+        <a href="#visionvault">VisionVault</a>
+        <a href="#download">Download</a>
+        <a href="#faq">FAQ</a>
+        <a class="btn small secondary" href="#download">Get VisionDepth3D</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="container">
+      <div class="hero-grid">
+        <div class="hero-copy reveal">
+          <span class="eyebrow">Depth-driven 3D movie conversion software</span>
+          <h1 class="title-xl">
+            Turn flat video into
+            <span class="text-gradient">immersive stereoscopic cinema.</span>
+          </h1>
+          <p class="lead">
+            VisionDepth3D is an advanced 2D to 3D conversion and depth-based video processing platform built for creators, film enthusiasts, collectors, and serious media users who want premium control over cinematic stereo output. From AI depth analysis to refined stereo rendering and enhancement workflows, it is designed to make immersive 3D production feel powerful, modern, and precise.
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn primary" href="#" id="heroDownload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 3v11"></path>
+                <path d="M7.5 10.5 12 15l4.5-4.5"></path>
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
+              </svg>
+              Download for Windows
+            </a>
+            <a class="btn secondary" href="#features">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 12h16"></path>
+                <path d="m13 5 7 7-7 7"></path>
+              </svg>
+              Explore Features
+            </a>
+            <a class="btn ghost" href="#workflow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M5 12h14"></path>
+                <path d="m13 6 6 6-6 6"></path>
+              </svg>
+              View Workflow
+            </a>
+            <a class="btn ghost" href="#why">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="12" cy="12" r="9"></circle>
+                <path d="M12 8h.01M11 12h1v4h1"></path>
+              </svg>
+              Learn More
+            </a>
+          </div>
+
+          <div class="hero-meta">
+            <span class="meta-pill">Windows first</span>
+            <span class="meta-pill">CUDA ready</span>
+            <span class="meta-pill">Source-available</span>
+            <span class="meta-pill">No cloud dependency</span>
+          </div>
+        </div>
+
+        <div class="hero-panel reveal">
+          <div class="panel-topbar">
+            <div class="panel-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <div class="panel-label">VisionDepth3D Interface Preview</div>
+          </div>
+
+          <div class="cinema-screen" aria-label="VisionDepth3D preview carousel">
+            <div class="screen-overlay"></div>
+            <div class="scanline"></div>
+
+            <div class="slides" id="slides">
+              <div class="slide">
+                <img src="assets/3Dpreview.png" alt="VisionDepth3D cinematic preview" loading="lazy" />
+                <div class="slide-caption">Immersive preview environment</div>
+              </div>
+              <div class="slide">
+                <img src="assets/3Dtab.png" alt="VisionDepth3D stereo generation tab" loading="lazy" />
+                <div class="slide-caption">Stereo rendering controls</div>
+              </div>
+              <div class="slide">
+                <img src="assets/frametools.png" alt="VisionDepth3D frame tools" loading="lazy" />
+                <div class="slide-caption">Frame tools and precision processing</div>
+              </div>
+              <div class="slide">
+                <img src="assets/DepthBlendTab.png" alt="VisionDepth3D depth blend tools" loading="lazy" />
+                <div class="slide-caption">Depth blending and refinement</div>
+              </div>
+              <div class="slide">
+                <img src="assets/HelpHotkeys.png" alt="VisionDepth3D help interface" loading="lazy" />
+                <div class="slide-caption">Fast navigation and workflow speed</div>
+              </div>
+              <div class="slide">
+                <img src="assets/Hotkeys.png" alt="VisionDepth3D hotkeys panel" loading="lazy" />
+                <div class="slide-caption">Built for efficient desktop operation</div>
+              </div>
+              <div class="slide">
+                <img src="assets/logo.png" alt="VisionDepth3D logo" loading="lazy" />
+                <div class="slide-caption">Independent media technology brand</div>
+              </div>
+            </div>
+
+            <button class="slide-btn prev" id="prevBtn" aria-label="Previous slide">&#8249;</button>
+            <button class="slide-btn next" id="nextBtn" aria-label="Next slide">&#8250;</button>
+            <div class="dots" id="dots"></div>
+          </div>
+
+          <div class="hero-stats">
+            <div class="stat-card">
+              <div class="stat-value">25+</div>
+              <div class="stat-label">Depth model options supported across modern AI workflows</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">17k+</div>
+              <div class="stat-label">Downloads from users exploring stereo conversion locally</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">206+</div>
+              <div class="stat-label">GitHub stars following the VisionDepth project</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-bottom reveal">
+        <div class="glass-card hero-workflow-card">
+          <div class="mini-label">Core processing pipeline</div>
+          <div class="pipeline">
+            <div class="pipe-node">
+              <div class="pipe-step">01</div>
+              <div class="pipe-title">Input Video</div>
+              <div class="pipe-text">Load film, video, or source media into the workspace.</div>
+            </div>
+            <div class="pipe-node">
+              <div class="pipe-step">02</div>
+              <div class="pipe-title">Depth Analysis</div>
+              <div class="pipe-text">Estimate scene depth with AI-powered model support.</div>
+            </div>
+            <div class="pipe-node">
+              <div class="pipe-step">03</div>
+              <div class="pipe-title">Stereo Generation</div>
+              <div class="pipe-text">Build left and right eye views using depth-driven parallax.</div>
+            </div>
+            <div class="pipe-node">
+              <div class="pipe-step">04</div>
+              <div class="pipe-title">Enhancement</div>
+              <div class="pipe-text">Refine output with interpolation, blending, and upscale tools.</div>
+            </div>
+            <div class="pipe-node">
+              <div class="pipe-step">05</div>
+              <div class="pipe-title">3D Output</div>
+              <div class="pipe-text">Export for displays, headsets, collectors, and immersive playback.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card hero-note">
+          <div class="mini-label">Built for serious 3D results</div>
+          <p>
+            VisionDepth3D focuses on visual quality, creative control, and local processing workflows that respect your media pipeline.
+          </p>
+          <ul>
+            <li>Depth-driven stereo rendering designed for cinematic presentation</li>
+            <li>Flexible exports including SBS, anaglyph, interlaced, and VR-ready modes</li>
+            <li>Enhancement tools for sharper output, smoother motion, and cleaner depth results</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="section" id="features">
+      <div class="container">
+        <div class="section-head reveal">
+          <span class="eyebrow">Feature-rich conversion platform</span>
+          <h2 class="title-lg">A modern toolkit for <span class="text-gradient">depth-driven cinematic workflows</span></h2>
+          <p class="lead">
+            VisionDepth3D is more than a simple converter. It is a creator-focused media platform built around AI depth estimation, advanced stereo rendering, enhancement tools, and export flexibility for immersive viewing environments.
+          </p>
+        </div>
+
+        <div class="grid feature-grid">
+          <article class="feature-card large reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z"></path>
+                <path d="m4 7 8 4 8-4"></path>
+                <path d="M12 11v10"></path>
+              </svg>
+            </div>
+            <h3>Advanced Depth Model Support</h3>
+            <p>
+              Work with a broad collection of modern depth estimation models including DPT, ZoeDepth, Depth Anything V2, Marigold, and additional compatible pipelines for scene understanding and depth extraction.
+            </p>
+            <div class="feature-list">
+              <span>Support for 25+ depth model paths and workflows</span>
+              <span>Compatible with PyTorch and ONNX-based setups</span>
+              <span>Built for experimentation, refinement, and local control</span>
+            </div>
+          </article>
+
+          <article class="feature-card medium reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                <path d="M8 9h8M8 13h5"></path>
+              </svg>
+            </div>
+            <h3>Stereo Rendering Engine</h3>
+            <p>
+              Generate stereoscopic views with depth-weighted shifting, scene-aware control, and output-focused rendering designed to improve immersion while keeping comfort and structure in mind.
+            </p>
+          </article>
+
+          <article class="feature-card medium reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 18 10 6l4 8 2-4 4 8"></path>
+              </svg>
+            </div>
+            <h3>Enhancement and Quality Recovery</h3>
+            <p>
+              Improve final presentation with Real-ESRGAN upscaling, RIFE interpolation, depth blending, and post-process refinement for sharper, cleaner, more premium-looking output.
+            </p>
+          </article>
+
+          <article class="feature-card small reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M4 7h16M4 12h16M4 17h10"></path>
+              </svg>
+            </div>
+            <h3>Live 3D Preview</h3>
+            <p>Preview stereo output in real time across desktop and external display workflows.</p>
+          </article>
+
+          <article class="feature-card small reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M7 17 17 7"></path>
+                <path d="M7 7h10v10"></path>
+              </svg>
+            </div>
+            <h3>Batch Rendering</h3>
+            <p>Process folders, matched video-depth pairs, and larger media jobs with progress tracking.</p>
+          </article>
+
+          <article class="feature-card small reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="4" width="7" height="7" rx="1.5"></rect>
+                <rect x="13" y="4" width="7" height="7" rx="1.5"></rect>
+                <rect x="4" y="13" width="7" height="7" rx="1.5"></rect>
+                <rect x="13" y="13" width="7" height="7" rx="1.5"></rect>
+              </svg>
+            </div>
+            <h3>Workflow Utilities</h3>
+            <p>Use built-in frame tools, audio controls, hotkeys, and production-friendly utility panels.</p>
+          </article>
+
+          <article class="feature-card medium reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 20V10"></path>
+                <path d="m7 15 5-5 5 5"></path>
+                <path d="M5 4h14"></path>
+              </svg>
+            </div>
+            <h3>Upscaling and Motion Smoothing</h3>
+            <p>
+              Deliver a cleaner finish with integrated upscaling and frame interpolation for users targeting sharper displays, smoother playback, or more polished archive conversions.
+            </p>
+          </article>
+
+          <article class="feature-card medium reveal">
+            <div class="icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M3 12h3m12 0h3M12 3v3m0 12v3M5.6 5.6l2.2 2.2m8.4 8.4 2.2 2.2m0-12.8-2.2 2.2m-8.4 8.4-2.2 2.2"></path>
+              </svg>
+            </div>
+            <h3>Advanced Rendering Controls</h3>
+            <p>
+              Fine-tune windowing, zero parallax behavior, edge handling, scene response, and export options for a more deliberate and comfortable 3D presentation.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="workflow">
+      <div class="container">
+        <div class="section-head reveal">
+          <span class="eyebrow">How it works</span>
+          <h2 class="title-lg">A refined pipeline from <span class="text-gradient">2D source to immersive 3D output</span></h2>
+          <p class="lead">
+            VisionDepth3D follows a clear production flow designed for users who want modern AI-assisted depth processing without losing access to practical rendering and enhancement controls.
+          </p>
+        </div>
+
+        <div class="workflow-shell">
+          <div class="workflow-panel reveal">
+            <div class="workflow-left">
+              <div class="workflow-stage">
+                <div class="stage-item">
+                  <div class="stage-num">01</div>
+                  <div class="stage-content">
+                    <h3>Input Video</h3>
+                    <p>Start with a film, episode, clip, or source sequence and prepare it inside a desktop workflow built for local media processing.</p>
+                  </div>
+                </div>
+
+                <div class="stage-item">
+                  <div class="stage-num">02</div>
+                  <div class="stage-content">
+                    <h3>Depth Analysis</h3>
+                    <p>Generate or import depth data using supported AI models, custom weights, or blended maps for more precise scene structure.</p>
+                  </div>
+                </div>
+
+                <div class="stage-item">
+                  <div class="stage-num">03</div>
+                  <div class="stage-content">
+                    <h3>Stereo Generation</h3>
+                    <p>Build left and right eye imagery through depth-driven stereo warping, parallax control, and scene-aware adjustments.</p>
+                  </div>
+                </div>
+
+                <div class="stage-item">
+                  <div class="stage-num">04</div>
+                  <div class="stage-content">
+                    <h3>Enhancement</h3>
+                    <p>Refine the result with interpolation, edge recovery, upscaling, floating window adjustments, and output-specific tuning.</p>
+                  </div>
+                </div>
+
+                <div class="stage-item">
+                  <div class="stage-num">05</div>
+                  <div class="stage-content">
+                    <h3>Final 3D Output</h3>
+                    <p>Export to formats suitable for stereo displays, collectors, desktop playback, anaglyph viewing, interlaced screens, or VR-oriented presentation.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="workflow-panel reveal">
+            <div class="workflow-right">
+              <div class="process-visual">
+                <div class="mini-label">Pipeline visualization</div>
+
+					<div class="visual-graph">
+					  <svg class="pipeline-svg" viewBox="0 0 1000 560" preserveAspectRatio="none" aria-hidden="true">
+						<!-- Source Media -> Upscale -->
+						<path class="pipeline-path" d="M202 118 H798" />
+						<circle class="pipeline-node-dot" cx="202" cy="118" r="4" />
+						<circle class="pipeline-node-dot" cx="798" cy="118" r="4" />
+
+						<!-- Upscale -> Depth Engine -->
+						<path class="pipeline-path" d="M798 118 V280 H202 V442" />
+						<circle class="pipeline-node-dot" cx="798" cy="280" r="4" />
+						<circle class="pipeline-node-dot" cx="202" cy="280" r="4" />
+						<circle class="pipeline-node-dot" cx="202" cy="442" r="4" />
+
+						<!-- Depth Engine -> Stereo Build -->
+						<path class="pipeline-path" d="M202 442 H798" />
+						<circle class="pipeline-node-dot" cx="798" cy="442" r="4" />
+					  </svg>
+
+					  <div class="node one">
+						<strong>2D Source</strong>
+						<span>2D video, film files, clips, and archive footage enter the conversion workflow.</span>
+					  </div>
+
+					  <div class="node two">
+						<strong>Upscale</strong>
+						<span>Source material is enhanced for stronger detail and a cleaner visual foundation.</span>
+					  </div>
+
+					  <div class="node three">
+						<strong>Depth Engine</strong>
+						<span>AI depth workflows analyze scene structure and generate refined depth information.</span>
+					  </div>
+
+					  <div class="node four">
+						<strong>3D Stereo Gen</strong>
+						<span>Processed media is converted into immersive stereoscopic output with export-ready results.</span>
+					  </div>
+					</div>
+                <div class="visual-metrics">
+                  <div class="metric">
+                    <b>Half SBS</b>
+                    <span>Compact stereo delivery for broad compatibility</span>
+                  </div>
+                  <div class="metric">
+                    <b>Full SBS</b>
+                    <span>Higher-resolution side-by-side export workflows</span>
+                  </div>
+                  <div class="metric">
+                    <b>VR / Alt Modes</b>
+                    <span>Anaglyph, interlaced, and VR-oriented options</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="why">
+      <div class="container">
+        <div class="section-head reveal">
+          <span class="eyebrow">Why VisionDepth3D</span>
+          <h2 class="title-lg">Built for viewers and creators who want <span class="text-gradient">serious cinematic depth</span></h2>
+          <p class="lead">
+            VisionDepth3D stands apart by focusing on immersion, practical creative control, and a modern local-first workflow rather than treating 3D conversion as a novelty effect.
+          </p>
+        </div>
+
+        <div class="why-grid">
+          <div class="why-panel reveal">
+            <h3 class="title-md" style="margin-bottom:18px;">What makes the platform different</h3>
+            <div class="advantage-list">
+              <div class="advantage">
+                <div class="advantage-mark">01</div>
+                <div>
+                  <h3>Depth-driven, not surface-level</h3>
+                  <p>VisionDepth3D is designed around real depth workflows, letting users work with model output, blend maps, and refine how scene structure drives stereo conversion.</p>
+                </div>
+              </div>
+
+              <div class="advantage">
+                <div class="advantage-mark">02</div>
+                <div>
+                  <h3>Focused on cinematic comfort</h3>
+                  <p>Rendering tools emphasize more stable depth behavior, better control over parallax, and a more considered viewing experience across longer-form content.</p>
+                </div>
+              </div>
+
+              <div class="advantage">
+                <div class="advantage-mark">03</div>
+                <div>
+                  <h3>Designed for control and iteration</h3>
+                  <p>From model selection to export format, the workflow supports experimentation without removing the practical knobs advanced users expect.</p>
+                </div>
+              </div>
+
+              <div class="advantage">
+                <div class="advantage-mark">04</div>
+                <div>
+                  <h3>Local-first processing</h3>
+                  <p>No forced cloud workflow, no dependency on remote rendering, and no need to send sensitive media to external services just to create immersive output.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="comparison reveal">
+            <div class="compare-card">
+              <h3>VisionDepth3D strengths</h3>
+              <ul class="compare-list">
+                <li><span>AI depth workflows with multiple model options</span><span class="badge-good">Included</span></li>
+                <li><span>Advanced stereo rendering and 3D export flexibility</span><span class="badge-good">Included</span></li>
+                <li><span>Enhancement tools for upscale and motion refinement</span><span class="badge-good">Included</span></li>
+                <li><span>Collector and enthusiast-friendly local workflow</span><span class="badge-good">Included</span></li>
+                <li><span>Built for film, archive, and immersive playback use cases</span><span class="badge-good">Included</span></li>
+              </ul>
+            </div>
+
+            <div class="compare-card">
+              <h3>Platform positioning</h3>
+              <p style="color:var(--muted); margin-bottom:14px;">
+                VisionDepth3D is aimed at users who care about output quality, depth fidelity, viewing comfort, and the flexibility to shape their own 3D workflow.
+              </p>
+              <ul class="compare-list">
+                <li><span>Creators and editors</span><span class="badge-mid">Production-ready</span></li>
+                <li><span>Film enthusiasts and collectors</span><span class="badge-mid">Premium fit</span></li>
+                <li><span>Desktop power users</span><span class="badge-mid">Local workflow</span></li>
+                <li><span>Immersive media experimentation</span><span class="badge-mid">Depth-focused</span></li>
+              </ul>
+            </div>
+
+            <div class="compare-card">
+              <h3>The VisionDepth3D method</h3>
+              <p style="color:var(--muted);">
+                The underlying approach combines depth-weighted parallax behavior, subject-aware control, edge-sensitive handling, scene response tuning, and GPU-accelerated stereo processing for more refined 3D results.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="download">
+      <div class="container">
+        <div class="download-shell reveal">
+          <div class="section-head" style="margin-bottom:26px;">
+            <span class="eyebrow">Download VisionDepth3D</span>
+            <h2 class="title-lg">Start building <span class="text-gradient">immersive 3D output on your own system</span></h2>
+            <p class="lead">
+              Download the Windows build and explore a serious 3D movie conversion workflow with local rendering, depth analysis, stereo generation, and enhancement tools designed for premium results.
+            </p>
+          </div>
+
+          <div class="download-grid">
+            <div class="download-main">
+              <div class="download-actions">
+                <a class="btn primary" href="#" id="dlWin">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M12 3v11"></path>
+                    <path d="M7.5 10.5 12 15l4.5-4.5"></path>
+                    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path>
+                  </svg>
+                  Download Windows Installer
+                </a>
+                <a class="btn secondary" href="#" id="dlItch">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <rect x="3" y="6" width="18" height="12" rx="2"></rect>
+                    <path d="M8 6v12M16 6v12"></path>
+                  </svg>
+                  Get it on Itch.io
+                </a>
+                <a class="btn ghost" href="#" id="dlGithub">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 .5a12 12 0 00-3.79 23.4c.6.1.82-.26.82-.58v-2.1c-3.34.72-4.04-1.6-4.04-1.6-.55-1.4-1.34-1.77-1.34-1.77-1.1-.76.08-.74.08-.74 1.22.08 1.87 1.26 1.87 1.26 1.08 1.86 2.83 1.32 3.52 1.01.1-.78.43-1.32.78-1.62-2.66-.3-5.46-1.34-5.46-5.97 0-1.32.47-2.4 1.25-3.25-.13-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.24a11.44 11.44 0 016 0c2.3-1.56 3.3-1.24 3.3-1.24.66 1.64.25 2.86.12 3.16.78.85 1.25 1.93 1.25 3.25 0 4.64-2.8 5.66-5.47 5.96.44.38.83 1.12.83 2.27v3.36c0 .32.22.69.83.58A12 12 0 0012 .5"/>
+                  </svg>
+                  View on GitHub
+                </a>
+              </div>
+
+              <div class="system-grid">
+                <div class="spec-card">
+                  <h3>Recommended environment</h3>
+                  <ul>
+                    <li>Windows 10 or 11 desktop workflow</li>
+                    <li>16 GB RAM recommended for smoother media handling</li>
+                    <li>NVIDIA GTX 10 series or newer recommended</li>
+                    <li>CUDA acceleration for stronger processing speed</li>
+                  </ul>
+                </div>
+
+                <div class="spec-card">
+                  <h3>Supported output formats</h3>
+                  <ul>
+                    <li>Half Side by Side</li>
+                    <li>Full Side by Side</li>
+                    <li>VR180 equirect TB and SBS</li>
+                    <li>Anaglyph and interlaced exports</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="download-side">
+              <div class="signal-card">
+                <h3>What you get</h3>
+                <ul>
+                  <li>Local depth and stereo processing workflow</li>
+                  <li>Support for AI depth models and custom pipelines</li>
+                  <li>Enhancement tools for upscaling and interpolation</li>
+                  <li>No telemetry-first product model and no required cloud rendering</li>
+                </ul>
+              </div>
+
+              <div class="signal-card">
+                <h3>License overview</h3>
+                <p>
+                  VisionDepth3D is available for personal, non-commercial use under the VisionDepth3D License Agreement. Commercial, business, or revenue-generating use requires written permission.
+                </p>
+              </div>
+
+              <div class="signal-card">
+                <h3>Support and project access</h3>
+                <p>
+                  Explore releases, updates, community feedback, and source-available project details through GitHub and Itch.io.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="visionvault">
+      <div class="container">
+        <div class="vault-shell reveal">
+          <div class="vault-grid">
+            <div class="vault-copy">
+              <div class="status-row">
+                <span class="status-badge">Now Available</span>
+                <span class="coming-badge">Android TV App Coming Soon</span>
+              </div>
+              <h2 class="title-lg">Meet <span class="text-gradient">VisionVault</span></h2>
+              <p class="lead">
+                VisionVault is now available as a companion platform from the VisionDepth brand, built for movie collection management and discovery. Designed for collectors and media enthusiasts, it expands the VisionDepth ecosystem beyond conversion and into organization, browsing, and connected library experiences.
+              </p>
+              <p class="lead" style="font-size:16px;">
+                The Collector App and Web UI are available now, giving users a premium way to organize, explore, and access their film libraries across devices. The Android TV app is still in development and coming soon, bringing the VisionVault experience to the big screen.
+              </p>
+
+              <div class="feature-list" style="margin-top:2px;">
+                <span>Collector app available now for managing and exploring personal film libraries</span>
+                <span>Web UI available now for connected browsing, discovery, and multi-device access</span>
+                <span>Android TV app coming soon for a cinematic living-room experience</span>
+                <span>A premium collector ecosystem built to extend the VisionDepth experience</span>
+              </div>
+            </div>
+
+            <div class="vault-visual" aria-label="VisionVault ecosystem preview">
+              <div class="vault-ring r1"></div>
+              <div class="vault-ring r2"></div>
+              <div class="vault-ring r3"></div>
+
+              <div class="platform-card app">
+                <div class="platform-status live">Available Now</div>
+                <strong>Collector App</strong>
+                <span>Track, organize, and browse your film collection with a premium local-first interface.</span>
+              </div>
+
+              <div class="platform-card web">
+                <div class="platform-status live">Available Now</div>
+                <strong>Web UI</strong>
+                <span>Explore your library through a sleek connected browser experience with multi-device access.</span>
+              </div>
+
+              <div class="platform-card tv">
+                <div class="platform-status soon">Coming Soon</div>
+                <strong>Android TV App</strong>
+                <span>Bring your collection to the big screen with a cinematic browsing and playback companion.</span>
+              </div>
+
+              <div class="vault-core">
+                <div>
+                  <b>VisionVault</b>
+                  <small>Live Ecosystem</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="faq">
+      <div class="container">
+        <div class="faq-shell reveal">
+          <div class="section-head" style="margin-bottom:20px;">
+            <span class="eyebrow">FAQ</span>
+            <h2 class="title-lg">Answers for creators, collectors, and power users</h2>
+            <p class="lead">
+              A few of the most common questions around performance, compatibility, licensing, and workflow flexibility.
+            </p>
+          </div>
+
+          <div class="faq-list">
+            <details>
+              <summary>Does VisionDepth3D run on AMD or Apple GPUs?</summary>
+              <p>
+                VisionDepth3D can run on CPU across supported environments, but GPU acceleration is currently centered on NVIDIA through CUDA and ONNX-oriented workflows. Alternative backends may be possible where supported, while broader Apple Silicon and expanded GPU options remain future-facing development targets.
+              </p>
+            </details>
+
+            <details>
+              <summary>Can I use my own depth model?</summary>
+              <p>
+                Yes. Advanced users can add compatible model weights and integrate supported depth workflows depending on the model format. Both PyTorch and ONNX-oriented paths are part of the broader design philosophy for flexible local experimentation.
+              </p>
+            </details>
+
+            <details>
+              <summary>What license does the software use?</summary>
+              <p>
+                VisionDepth3D is available for personal, non-commercial use under the VisionDepth3D License Agreement. Commercial, business, or revenue-generating use requires written permission from the licensor. Third-party components remain subject to their own licenses. Full terms are available in the project license documentation.
+              </p>
+            </details>
+
+            <details>
+              <summary>Where can I get support or follow development?</summary>
+              <p>
+                Support and project visibility are available through GitHub, the Itch.io page, and related project channels. Those platforms are the best places to track updates, releases, and issue reporting.
+              </p>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="license">
+      <div class="container">
+        <div class="license-shell reveal">
+          <div class="section-head" style="margin-bottom:24px;">
+            <span class="eyebrow">License and usage</span>
+            <h2 class="title-lg">Clear terms for a serious software platform</h2>
+            <p class="lead">
+              VisionDepth3D is shared with a source-available model and a defined personal-use license structure. Review the full license for complete terms.
+            </p>
+          </div>
+
+          <div class="license-grid">
+            <div class="license-card">
+              <h3>Usage Grant</h3>
+              <p>Free for personal, non-commercial use within the boundaries of the VisionDepth3D License Agreement.</p>
+            </div>
+            <div class="license-card">
+              <h3>Commercial Use</h3>
+              <p>Commercial or revenue-generating use requires written permission from the licensor before deployment.</p>
+            </div>
+            <div class="license-card">
+              <h3>Restrictions</h3>
+              <p>Redistribution, resale, sublicensing, reverse engineering, and derivative works are restricted under the stated license terms.</p>
+            </div>
+            <div class="license-card">
+              <h3>Ownership</h3>
+              <p>All platform rights remain with the licensor except where third-party components carry their own independent licensing.</p>
+            </div>
+            <div class="license-card">
+              <h3>Third-Party Components</h3>
+              <p>External frameworks, models, and supporting tools remain governed by their respective licenses and requirements.</p>
+            </div>
+            <div class="license-card">
+              <h3>Warranty</h3>
+              <p>The software is provided as is, without warranty of any kind, whether express or implied.</p>
+            </div>
+          </div>
+
+          <p style="margin-top:18px; color:var(--muted); font-size:14px;">
+            Full license:
+            <a href="https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/LICENSE.txt" target="_blank" rel="noopener" style="color:#dff3ff;">LICENSE on GitHub</a>
+            · Commercial licensing:
+            <a href="mailto:redsky90@gmail.com" style="color:#dff3ff;">redsky90@gmail.com</a>
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-shell reveal">
+        <div class="footer-brand">
+          <div class="brand" style="pointer-events:none;">
+            <span class="logo" aria-hidden="true"></span>
+            <span class="brand-text">
+              <span class="brand-name">VisionDepth3D</span>
+              <span class="brand-sub">Independent Media Technology</span>
+            </span>
+          </div>
+          <p>
+            VisionDepth3D is a premium cinematic software brand focused on 2D to 3D movie conversion, depth-driven video processing, and immersive media workflows for creators, collectors, and film enthusiasts.
+          </p>
+          <p>© <span id="year"></span> VisionDepth3D. All rights reserved.</p>
+        </div>
+
+        <div class="footer-links">
+          <a href="#" id="footerGithub">GitHub</a>
+          <a href="#" id="footerItch">Itch.io</a>
+          <a href="#download">Download</a>
+          <a href="#visionvault">VisionVault</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const LINKS = {
+      itch: "https://visiondepth3d.itch.io/visiondepth3d",
+      github: "https://github.com/VisionDepth/VisionDepth3D",
+      winInstaller: "https://github.com/VisionDepth/VisionDepth3D/releases/download/Installer/VisionDepth3D_Setup_Downloader.exe"
+    };
+
+    function applyLinks() {
+      const byId = (id) => document.getElementById(id);
+      const set = (el, href) => { if (el && href) el.setAttribute("href", href); };
+
+      set(byId("heroDownload"), LINKS.winInstaller || LINKS.github);
+      set(byId("dlWin"), LINKS.winInstaller || LINKS.github);
+      set(byId("dlItch"), LINKS.itch);
+      set(byId("dlGithub"), LINKS.github);
+      set(byId("footerGithub"), LINKS.github);
+      set(byId("footerItch"), LINKS.itch);
+    }
+
+    function initMenu() {
+      const toggle = document.getElementById("menuToggle");
+      const nav = document.getElementById("navLinks");
+      if (!toggle || !nav) return;
+
+      toggle.addEventListener("click", () => {
+        const isOpen = nav.classList.toggle("open");
+        toggle.setAttribute("aria-expanded", String(isOpen));
+      });
+
+      nav.querySelectorAll("a").forEach((link) => {
+        link.addEventListener("click", () => {
+          nav.classList.remove("open");
+          toggle.setAttribute("aria-expanded", "false");
+        });
+      });
+    }
+
+    function initSlider() {
+      const slides = document.getElementById("slides");
+      const prev = document.getElementById("prevBtn");
+      const next = document.getElementById("nextBtn");
+      const dotsWrap = document.getElementById("dots");
+      if (!slides || !prev || !next || !dotsWrap) return;
+
+      const total = slides.children.length;
+      let index = 0;
+      let auto;
+
+      const dots = Array.from({ length: total }, (_, i) => {
+        const dot = document.createElement("button");
+        dot.className = "dot" + (i === 0 ? " active" : "");
+        dot.setAttribute("aria-label", `Go to slide ${i + 1}`);
+        dot.addEventListener("click", () => {
+          index = i;
+          update();
+          restartAuto();
+        });
+        dotsWrap.appendChild(dot);
+        return dot;
+      });
+
+      function update() {
+        slides.style.transform = `translateX(-${index * 100}%)`;
+        dots.forEach((dot, i) => dot.classList.toggle("active", i === index));
+      }
+
+      function go(dir) {
+        index = (index + dir + total) % total;
+        update();
+      }
+
+      function startAuto() {
+        auto = setInterval(() => go(1), 4800);
+      }
+
+      function restartAuto() {
+        clearInterval(auto);
+        startAuto();
+      }
+
+      prev.addEventListener("click", () => {
+        go(-1);
+        restartAuto();
+      });
+
+      next.addEventListener("click", () => {
+        go(1);
+        restartAuto();
+      });
+
+      let startX = 0;
+      let dragging = false;
+
+      slides.addEventListener("touchstart", (e) => {
+        dragging = true;
+        startX = e.touches[0].clientX;
+      }, { passive: true });
+
+      slides.addEventListener("touchend", (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const delta = e.changedTouches[0].clientX - startX;
+        if (Math.abs(delta) > 40) {
+          go(delta > 0 ? -1 : 1);
+          restartAuto();
+        }
+      }, { passive: true });
+
+      update();
+      startAuto();
+    }
+
+    function initReveal() {
+      const items = document.querySelectorAll(".reveal");
+      if (!("IntersectionObserver" in window) || !items.length) {
+        items.forEach(el => el.classList.add("is-visible"));
+        return;
+      }
+
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            observer.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.14 });
+
+      items.forEach((item) => observer.observe(item));
+    }
+
+    document.getElementById("year").textContent = new Date().getFullYear();
+    applyLinks();
+    initMenu();
+    initSlider();
+    initReveal();
+  </script>
+</body>
+</html>
