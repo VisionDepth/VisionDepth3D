@@ -25,20 +25,40 @@ try:
     import torch.nn.functional as F
     torch.set_grad_enabled(False)
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    def pick_torch_device():
+        # NVIDIA CUDA
+        if torch.cuda.is_available():
+            return torch.device("cuda"), "CUDA"
 
-    print(f"Depth Blender Compute device: {device.type.upper()}")
+        # Apple Metal
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps"), "MPS"
+
+        # AMD / Intel / Any GPU via DirectML on Windows
+        try:
+            import torch_directml
+            dml_device = torch_directml.device()
+
+            # quick sanity test
+            _ = torch.zeros(1, device=dml_device)
+
+            return dml_device, "DirectML"
+        except Exception:
+            pass
+
+        # CPU fallback
+        return torch.device("cpu"), "CPU"
+
+    device, device_name = pick_torch_device()
+
+    print(f"Depth Blender Compute device: {device_name} ({device})")
 
 except Exception as e:
     print(f"Depth Blender: PyTorch not available: {e}")
     torch = None
     F = None
     device = None
+    device_name = "Unavailable"
 
 # ------------ Core blending ------------
 def detect_white_threshold(image, percentile=95):
@@ -549,14 +569,16 @@ class App(tk.Tk):
 
         gpu_row = ttk.Frame(parent)
         gpu_row.pack(fill="x", padx=6, pady=0)
-        gpu_type = device.type if device else "cpu"
-        ttk.Checkbutton(gpu_row, text=f"Use GPU ({gpu_type})",
+        gpu_type = device_name if device is not None else "CPU"
+        ttk.Checkbutton(
+            gpu_row,
+            text=f"Use GPU ({gpu_type})",
                         variable=self.use_gpu,
                         command=lambda: self._schedule_preview(120)).pack(anchor="w")
         if device is None or device.type == "cpu":
             ttk.Label(gpu_row, text="GPU not available. Using CPU.", foreground="#c77").pack(anchor="w")
         else:
-            ttk.Label(gpu_row, text=f"GPU Mode: {device.type}", foreground="#7c7").pack(anchor="w")
+            ttk.Label(gpu_row, text=f"GPU Mode: {gpu_type}", foreground="#7c7").pack(anchor="w")
 
         paths = ttk.LabelFrame(parent, text="Inputs")
         paths.pack(fill="x", padx=6, pady=6)
