@@ -12,12 +12,13 @@
 </p>
 <h3 align="center">
   <a href="https://github.com/VisionDepth/VisionDepth3D/releases">
-    <img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="GitHub Downloads">
+    <img src="https://img.shields.io/badge/historical%20downloads-21K%2B-brightgreen" alt="21K+ Historical Downloads">
+  </a>
+  <a href="https://github.com/VisionDepth/VisionDepth3D/releases">
+    <img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Current GitHub Release Downloads">
   </a>
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python Version">
-  <img src="https://img.shields.io/github/last-commit/VisionDepth/VisionDepth3D" alt="Last Commit">
   <img src="https://img.shields.io/github/stars/VisionDepth/VisionDepth3D?style=social" alt="GitHub Stars">
-
 </h3>
 
 <p align="center">
