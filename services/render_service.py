@@ -10,8 +10,6 @@ from core.ffmpeg_utils import require_tool, app_base_dir, bundle_base_dir
 from models.app_state import AppState
 from core.debug_flags import debug_print, is_debug_enabled
 
-from licensing import features
-
 from core.render_3d import (
     process_video,
     parse_timecode,
