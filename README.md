@@ -431,27 +431,7 @@ python -c "import torch; print('PyTorch installed:', torch.__version__)"
 
 ## 📌 Step 5: Launch VisionDepth3D
 
-After all dependencies are installed, launch VisionDepth3D with the correct script for your setup.
-
-Windows Conda:
-
-```bash
-Start_VD3D_Conda.bat
-```
-
-Windows standard install:
-
-```bash
-Start_VD3D_Windows.bat
-```
-
-Linux:
-
-```bash
-Start_VD3D_Linux.bat
-```
-
-Or run directly:
+After all dependencies are installed, launch VisionDepth3D with this directly inside the terminal:
 
 ```bash
 python app.py
@@ -506,26 +486,14 @@ When a new version of **VisionDepth3D** is released, follow these steps to ensur
    Place your `weights` folder back inside the newly downloaded main directory:  
    `VisionDepth3D-main/weights`
 
-4. **Update the Path in Startup Scripts**  
-   Open the startup script matching your platform:
-
-   - `Start_VD3D_Windows.bat`
-   - `Start_VD3D_Conda.bat`
-   - `Start_VD3D_Linux.sh`
-
-   Edit the script and replace any **old folder path** with the **new path** to your updated `VisionDepth3D-main`.
-
-5. **Activate Conda Environment (if needed)**  
+4. **Activate Conda Environment and open program**  
    If you are using the Conda starter script:
    - Open a terminal or Anaconda Prompt.
    - Run:
      ```bash
      cd path/to/updated/VisionDepth3D-main
-     Start_VD3D_Conda.bat
+     python app.py
      ```
-
-6. **Launch the App**  
-   Once everything is in place, run the appropriate script or shortcut to launch VisionDepth3D with your latest settings.
 
 ---
 
