@@ -49,10 +49,19 @@
 
 # Notice
 
-VisionDepth3D is licensed under a proprietary, no-derivatives license.  
-Forking, redistributing, modifying, or creating derivative works is strictly prohibited unless permission is granted by the developer.
+VisionDepth3D is now distributed through official installer builds.
 
-VisionDepth3D uses third-party tools and AI model integrations. Third-party models, weights, libraries, and tools remain owned by their respective creators and may have their own license terms.
+This repository serves as the public release, documentation, legal notice, installer download, issue tracking, and bug reporting page for VisionDepth3D.
+
+Current protected application source code is maintained privately and is no longer distributed as public source.
+
+VisionDepth3D may use, integrate, download, reference, or interoperate with third-party tools, libraries, frameworks, AI models, and model weights. Third-party components remain owned by their respective creators, authors, organizations, and rights holders, and may be subject to their own separate license terms.
+
+VisionDepth3D is licensed under a proprietary, no-derivatives license.
+
+Forking, copying, redistributing, modifying, repackaging, publishing, or creating derivative works from VisionDepth3D or any protected application files is not permitted without express written permission from Johnathan Carpenter / VisionDepth.
+
+Older public source snapshots, forks, or archived copies do not represent current official VisionDepth3D builds. Only installer builds released through the official VisionDepth3D release channels should be considered current, supported, and official.
 
 ---
 
