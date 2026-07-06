@@ -78,7 +78,17 @@ VisionDepth3D may use, integrate, download, reference, or interoperate with thir
 
 VisionDepth3D uses a **Free** and **Pro** tier structure.
 
-The Free tier is intended for testing, evaluation, casual use, and trying the core VisionDepth3D workflow before upgrading. The Pro tier unlocks the full desktop production workflow for users who want fewer limits, more control, and access to advanced workflows.
+**VisionDepth3D Pro is a one-time license unlock for $59.99. It is not a subscription.**
+
+The Free tier is intended for personal testing, evaluation, casual use, and trying the core VisionDepth3D workflow before upgrading. Free exports may include limits such as render length limits, output resolution limits, watermarking, locked advanced tools, locked batch workflows, and limited model access.
+
+The Pro tier unlocks the full desktop production workflow for individual creators who want fewer limits, more control, watermark-free output, and access to advanced workflows.
+
+VisionDepth3D Pro allows individual professional and commercial use of VisionDepth3D software features and rendered outputs, provided the user has the necessary rights to the input media they process and complies with all applicable third-party model, library, tool, and media license terms.
+
+A Pro license grants access to VisionDepth3D Pro software features. It does not grant ownership of VisionDepth3D, third-party AI models, third-party libraries, FFmpeg, films, shows, games, music, images, videos, characters, or any other third-party content.
+
+For team, studio, company-wide, resale, redistribution, hosted service, or custom business use, written permission or a separate commercial/studio agreement may be required.
 
 | Feature / Workflow                  |              Free |                     Pro |
 | ----------------------------------- | ----------------: | ----------------------: |
