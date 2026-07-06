@@ -47,6 +47,14 @@
 ---
 
 # Notice
+VisionDepth3D is now distributed through official installer builds.
+
+This repository contains public release notes, documentation, legal notices, and installer downloads, issues and bug reporting.
+
+Current protected application source code is maintained privately and is no longer distributed as public source.
+
+---
+
 VisionDepth3D is licensed under a proprietary, no-derivatives license.  
 Forking, redistributing, modifying, or creating derivative works is strictly prohibited.
 
