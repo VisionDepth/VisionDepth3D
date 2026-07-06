@@ -22,28 +22,21 @@
 </h3>
 
 <p align="center">
-  <em style="font-size: 14px; color: #888;">
-    Click to download or support the project 💙
-  </em>
-  <br>
-
+  <em>Click to download or support the project 💙</em>
+  <br><br>
   <a href="https://visiondepth3d.itch.io/visiondepth3d" target="_blank" rel="noopener">
     <img src="assets/widget-preview.png"
          alt="Download VisionDepth3D on Itch.io"
          width="208" height="167"
-         style="border-radius: 8px; margin-top: 6px;">
+         style="border-radius: 8px;">
   </a>
-  <br>
-  
-  <p align="center">
-	  <a href="https://visiondepth.github.io/VisionDepth3D/" target="_blank" rel="noopener"
-	     style="display:inline-block; margin-top:8px; padding:10px 16px; border-radius:12px;
-	            border:1px solid #39c6ff; background:linear-gradient(180deg, rgba(57,198,255,.15), rgba(57,198,255,.08));
-	            color:#39c6ff; font-weight:700; text-decoration:none;">
-	    Official website out now →
-	  </a>
-	</p>
+</p>
 
+<p align="center">
+  <a href="https://visiondepth.github.io/VisionDepth3D/" target="_blank" rel="noopener">
+    <strong>Official website out now →</strong>
+  </a>
+</p>
 
 ---
 
@@ -55,11 +48,11 @@ This repository serves as the public release, documentation, legal notice, insta
 
 Current protected application source code is maintained privately and is no longer distributed as public source.
 
-VisionDepth3D is licensed under a proprietary, no-derivatives license.
-
-Forking, copying, redistributing, modifying, repackaging, publishing, or creating derivative works from VisionDepth3D or any protected application files is not permitted without express written permission from Johnathan Carpenter / VisionDepth.
+VisionDepth3D is licensed under a proprietary, no-derivatives license. Forking, copying, redistributing, modifying, repackaging, publishing, or creating derivative works from VisionDepth3D or protected application files is not permitted without express written permission from Johnathan Carpenter / VisionDepth.
 
 Older public source snapshots, forks, or archived copies do not represent current official VisionDepth3D builds. Only installer builds released through the official VisionDepth3D release channels should be considered current, supported, and official.
+
+VisionDepth3D may use, integrate, download, reference, or interoperate with third-party tools, libraries, frameworks, AI models, and model weights. Third-party components remain owned by their respective creators, authors, organizations, and rights holders, and may be subject to their own separate license terms.
 
 ---
 
@@ -73,10 +66,11 @@ Older public source snapshots, forks, or archived copies do not represent curren
 - [Live 3D](#live-3d--realtime-stereo)
 - [Output Formats](#output-formats--aspect-ratios)
 - [Official Depth Model List](#official-depth-model-list)
-- [Install Guide](#guide-sheet-install)
-- [Updating VisionDepth3D](#guide-sheet-updating-visiondepth3d)
+- [Install and Update Guide](#install-and-update-guide)
+- [Documentation](#documentation)
 - [Legal and Third-Party Notices](#legal-and-third-party-notices)
 - [Acknowledgments & Credits](#acknowledgments--credits)
+- [Dev Notes](#dev-notes)
 
 ---
 
@@ -84,9 +78,7 @@ Older public source snapshots, forks, or archived copies do not represent curren
 
 VisionDepth3D uses a **Free** and **Pro** tier structure.
 
-The Free tier lets users try the core VisionDepth3D workflow, including single video/image conversion, depth generation, basic 3D output formats, preview tools, and limited FPS interpolation.
-
-The Pro tier unlocks the full production workflow, including unlimited render length, no watermark, batch processing, advanced keyframes, advanced encoding, Live 3D, VR/VR180 output, full Depth Blender workflows, Real-ESRGAN upscaling, high FPS multipliers, 4K output, job queue support, and the expanded official model list.
+The Free tier is intended for testing, evaluation, casual use, and trying the core VisionDepth3D workflow before upgrading. The Pro tier unlocks the full desktop production workflow for users who want fewer limits, more control, and access to advanced workflows.
 
 | Feature / Workflow                  |              Free |                     Pro |
 | ----------------------------------- | ----------------: | ----------------------: |
@@ -131,11 +123,9 @@ The Pro tier unlocks the full production workflow, including unlimited render le
 | License activation                  |      Not required | Required for Pro unlock |
 | Local/private desktop processing    |                 ✅ |                       ✅ |
 
-## What Free Includes
+## Free Tier Summary
 
-VisionDepth3D Free includes the core local desktop workflow for testing and personal evaluation.
-
-Free includes:
+VisionDepth3D Free includes the core local desktop workflow:
 
 * Single video 3D conversion up to 3 minutes
 * Single image 3D conversion
@@ -146,61 +136,35 @@ Free includes:
 * Basic Depth Blender image workflow
 * Basic RIFE FPS interpolation up to 2x
 * Frame extraction
-* GPU Depth Blender processing
-* Local desktop processing without uploading your videos or images to the cloud
+* Local processing without uploading your videos or images to the cloud
 
 Free exports include a VisionDepth3D watermark and are limited to 1080p output height.
 
-## What Pro Unlocks
+## Pro Tier Summary
 
-VisionDepth3D Pro is a one-time license unlock for the full desktop production workflow.
-
-Pro unlocks:
+VisionDepth3D Pro is a one-time license unlock for the full desktop production workflow:
 
 * Unlimited video length with no Free-tier render limit
 * No Free-tier watermark
 * No fixed output height limit
-* Batch video conversion
-* Batch image-folder workflows
-* Depth video-folder batch processing
-* Depth image-folder batch processing
-* Advanced keyframes
-* Advanced encoding controls
-* Advanced depth inference controls
-* VR and VR180 output
-* Passive interlaced output
+* Batch video and image-folder workflows
+* Advanced keyframes, scene detection, and advanced stereo tuning
+* Advanced encoding and depth inference controls
+* VR, VR180, and passive interlaced output
 * Live 3D
 * Full Depth Blender frame-folder and video workflows
 * Threaded FPS processing
-* Scene detection
 * Real-ESRGAN upscaling
 * High FPS multipliers
 * 4K output workflows
 * Job queue support
 * Expanded official Pro model list
-* Local desktop processing without uploading your videos or images to the cloud
 
-VisionDepth3D Pro is sold as access to the VisionDepth3D desktop application and Pro software features. It does not grant ownership of third-party AI models or override the original licenses of third-party models, libraries, or tools.
-
-## Third-Party Model Notice
-
-VisionDepth3D uses and integrates third-party AI models, libraries, and tools. Each third-party model remains under its original license and terms.
-
-The Free and Pro tiers control access to VisionDepth3D software features and official model integrations inside the app. They do not change the license of any third-party model.
-
-For details, see the files in the `legal/` folder:
-
-```text
-legal/README.md
-legal/THIRD_PARTY_MODEL_ACKNOWLEDGMENTS.md
-legal/MODEL_LICENSE_NOTICE.md
-legal/ABOUT_LEGAL_BLURB.md
-```
-
+VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It does not grant ownership of third-party AI models or override the original licenses of third-party models, libraries, or tools.
 
 ---
 
-<h2 align="center">All-in-One 3D Suite</h2>
+# All-in-One 3D Suite
 
 <h3 align="center">3D Generator / Stereo Composer</h3>
 
@@ -372,32 +336,16 @@ Models marked as non-commercial, research-only, CC-BY-NC, missing-license, or re
 | Pro | **DPT BEiT Large 512** | `hf` | MIT | [`Intel/dpt-beit-large-512`](https://huggingface.co/Intel/dpt-beit-large-512) |
 | Pro | **Prompt Depth Anything VITS Transparent** | `hf` | Apache-2.0 | [`depth-anything/prompt-depth-anything-vits-transparent-hf`](https://huggingface.co/depth-anything/prompt-depth-anything-vits-transparent-hf) |
 
-## Model Licensing Notice
-
-VisionDepth3D does not claim ownership of third-party AI models.
-
-Some repositories use one license for source code and a different license for model weights. VisionDepth3D treats the **model weight license** separately from the source-code license.
-
-Official VisionDepth3D Free and Pro builds avoid listing models as official features when the model or weights are marked as:
-
-- CC-BY-NC
-- non-commercial
-- research-only
-- missing-license
-- unclear commercial usage rights
-- review-only
-
 Users are responsible for following the license terms of any third-party model, library, or tool they download or use.
 
 ---
 
-## Guide Sheet: Install
+# Install and Update Guide
 
 ### Recommended Install Method
 
 VisionDepth3D is now installed through the official **VisionDepth3D Setup Hub**.
 
-The source code is no longer distributed as the recommended public installation method. This change helps protect the project from unauthorized edits, forks, redistribution, and modified builds.
 
 To install VisionDepth3D:
 
@@ -466,7 +414,7 @@ DirectML support may vary depending on your GPU, drivers, Windows version, and m
 
 ---
 
-## Guide Sheet: Updating VisionDepth3D
+## Updating VisionDepth3D
 
 Updating VisionDepth3D uses the same Setup Hub workflow.
 
@@ -524,17 +472,9 @@ Pro activation is stored locally after successful license activation. If you rei
 
 ---
 
-## Source Code Notice
-
-VisionDepth3D is no longer distributed publicly as a source-code installation.
-
-Public releases are provided through the official Setup Hub and installer builds. This helps protect the project from unauthorized modification, redistribution, forks, and unofficial builds.
-
-VisionDepth3D remains licensed under its proprietary no-derivatives license. Forking, redistributing, modifying, or creating derivative works is not permitted unless explicitly authorized by the developer.
-
 ---
 
-## Documentation
+# Documentation
 
 VisionDepth3D includes guides and workflow documentation.
 
@@ -547,7 +487,7 @@ Start here:
 
 ---
 
-## Legal and Third-Party Notices
+# Legal and Third-Party Notices
 
 The root `legal/` folder should be included with official builds.
 
@@ -563,21 +503,24 @@ legal/
 
 These files explain:
 
-- third-party model acknowledgments
-- model license notes
-- official Free/Pro model policy
-- excluded non-commercial or review-only model categories
-- FFmpeg and third-party tool notices
+* third-party model acknowledgments
+* model license notes
+* official Free/Pro model policy
+* excluded non-commercial or review-only model categories
+* FFmpeg and third-party tool notices
+
+VisionDepth3D does not claim ownership of third-party AI models, model weights, libraries, frameworks, or external tools.
+
+Some repositories use one license for source code and a different license for model weights. VisionDepth3D treats the model weight license separately from the source-code license.
 
 VisionDepth3D uses FFmpeg for video/audio processing through subprocess calls. FFmpeg licensing depends on how the FFmpeg binary was built. Users and distributors should follow the applicable FFmpeg license terms for the binary included or used with VisionDepth3D.
 
 ---
 
-## Acknowledgments & Credits
+# Acknowledgments & Credits
 
 Thank you to the researchers, developers, and open-source contributors behind the depth estimation models, video tools, AI libraries, and multimedia frameworks that make projects like VisionDepth3D possible.
 
-VisionDepth3D integrates with third-party models and libraries while keeping their original ownership and licenses intact.
 
 Special thanks to the creators and maintainers of:
 
@@ -597,7 +540,7 @@ Special thanks to the creators and maintainers of:
 
 ---
 
-## Dev Notes
+# Dev Notes
 
 VisionDepth3D is developed by a solo developer and continues to grow through testing, user feedback, bug reports, and community support.
 
