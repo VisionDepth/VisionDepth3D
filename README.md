@@ -152,7 +152,7 @@ Free exports include a VisionDepth3D watermark and are limited to 1080p output h
 
 ## Pro Tier Summary
 
-VisionDepth3D Pro is a one-time license unlock for the full desktop production workflow:
+VisionDepth3D Pro is a one-time license unlock for $59.99 that enables the full individual desktop production workflow.
 
 * Unlimited video length with no Free-tier render limit
 * No Free-tier watermark
@@ -169,6 +169,7 @@ VisionDepth3D Pro is a one-time license unlock for the full desktop production w
 * 4K output workflows
 * Job queue support
 * Expanded official Pro model list
+* Individual professional/commercial use of VisionDepth3D software features and rendered outputs
 
 VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It does not grant ownership of third-party AI models or override the original licenses of third-party models, libraries, or tools.
 
