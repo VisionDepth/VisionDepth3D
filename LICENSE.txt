@@ -24,11 +24,17 @@ The Free tier may include limits such as render length limits, output resolution
 
 ### 1.2 VisionDepth3D Pro
 
-VisionDepth3D Pro is a paid license unlock that enables additional Software features, subject to successful activation and the license limits stated at the time of purchase.
+### 1.2 VisionDepth3D Pro
+
+VisionDepth3D Pro is a paid, one-time license unlock that enables additional Software features, subject to successful activation and the license limits stated at the time of purchase.
 
 Pro may unlock features such as longer renders, watermark-free output, batch workflows, advanced keyframes, advanced stereo controls, advanced encoding options, additional official model integrations, Live 3D, upscale workflows, and other Pro-only features.
 
-A Pro license grants access to VisionDepth3D Pro software features. It does not grant ownership of VisionDepth3D, third-party AI models, third-party libraries, FFmpeg, or any other third-party component.
+VisionDepth3D Pro is intended as an individual creator license for the desktop application. A valid Pro license allows personal, professional, and commercial use of VisionDepth3D software features and rendered outputs, provided that the User has the necessary rights to the input media being processed and complies with all applicable third-party model, library, tool, media, copyright, and platform license terms.
+
+A Pro license does not grant ownership of VisionDepth3D, third-party AI models, third-party libraries, FFmpeg, films, shows, games, music, images, videos, characters, or any other third-party content.
+
+Unless otherwise stated in writing, a Pro license is for individual desktop use and does not permit redistribution, resale, sublicensing, rental, leasing, hosting as a service, multi-user team deployment, company-wide deployment, automated paid processing services, or inclusion in another commercial product or service.
 
 ---
 
@@ -52,6 +58,7 @@ You may not, directly or indirectly:
 * Reverse engineer, decompile, disassemble, decrypt, bypass, tamper with, or attempt to extract protected portions of the Software, except to the limited extent expressly allowed by applicable law.
 * Remove, disable, bypass, alter, or obscure license checks, activation systems, feature locks, Free-tier limits, Pro-tier restrictions, watermarks, notices, credits, or third-party acknowledgments.
 * Use a Free-tier copy of the Software for commercial, professional, paid, client, business, or revenue-generating work without written permission or a valid Pro license.
+* Use a Pro license for redistribution, resale, sublicensing, rental, leasing, hosted services, multi-user team deployment, company-wide deployment, automated paid processing services, or inclusion in another commercial product or service without express written permission from Licensor.
 * Use the Software to create, distribute, or assist in creating competing software, modified builds, unofficial forks, unofficial installers, unauthorized plugins, or unauthorized model bundles.
 * Use the Software in a way that violates third-party rights, copyright law, model license terms, platform rules, or applicable law.
 * Misrepresent modified, unofficial, repackaged, or redistributed versions as official VisionDepth3D builds.
@@ -91,6 +98,8 @@ VisionDepth3D does not grant you rights to media, characters, films, games, musi
 You are responsible for ensuring that your use of input media and generated outputs complies with copyright law, licensing terms, platform rules, and applicable law.
 
 Licensor is not responsible for how Users use generated outputs.
+
+If you have a valid VisionDepth3D Pro license, you may use VisionDepth3D-rendered outputs for personal, professional, or commercial projects, provided that you have the necessary rights to the input media and comply with all applicable third-party model, library, tool, media, copyright, and platform license terms.
 
 ---
 
