@@ -1,0 +1,228 @@
+# VisionDepth3D End User License Agreement
+
+Copyright (c) 2026 Johnathan Carpenter. All rights reserved.
+
+This End User License Agreement ("Agreement") is a legal agreement between you ("User") and Johnathan Carpenter / VisionDepth ("Licensor") regarding the use of VisionDepth3D, VisionDepth3D Setup Hub, related installer packages, documentation, configuration files, user interface assets, protected application files, and related software components provided by the Licensor (collectively, the "Software").
+
+By downloading, installing, activating, accessing, or using the Software, you acknowledge that you have read, understood, and agree to be bound by this Agreement.
+
+If you do not agree to this Agreement, do not download, install, activate, access, or use the Software.
+
+---
+
+## 1. License Grant
+
+Subject to your compliance with this Agreement, Licensor grants you a limited, non-exclusive, non-transferable, revocable license to install and use the Software only as permitted by your active tier.
+
+VisionDepth3D may be provided in Free and Pro tiers.
+
+### 1.1 VisionDepth3D Free
+
+VisionDepth3D Free may be used for personal testing, evaluation, and non-commercial use, subject to the limitations, watermarks, locked features, and restrictions shown inside the Software.
+
+The Free tier may include limits such as render length limits, output resolution limits, watermarking, locked batch workflows, locked advanced tools, locked output formats, and limited model access.
+
+### 1.2 VisionDepth3D Pro
+
+VisionDepth3D Pro is a paid license unlock that enables additional Software features, subject to successful activation and the license limits stated at the time of purchase.
+
+Pro may unlock features such as longer renders, watermark-free output, batch workflows, advanced keyframes, advanced stereo controls, advanced encoding options, additional official model integrations, Live 3D, upscale workflows, and other Pro-only features.
+
+A Pro license grants access to VisionDepth3D Pro software features. It does not grant ownership of VisionDepth3D, third-party AI models, third-party libraries, FFmpeg, or any other third-party component.
+
+---
+
+## 2. Ownership
+
+The Software is licensed, not sold.
+
+Licensor retains all ownership, rights, title, and interest in and to the Software, including but not limited to the application code, protected modules, interface design, branding, documentation, workflow logic, stereo conversion pipeline, installer workflow, configuration structure, and all related intellectual property.
+
+This Agreement does not transfer any ownership rights to the User.
+
+---
+
+## 3. Restrictions
+
+You may not, directly or indirectly:
+
+* Modify, alter, adapt, translate, or create derivative works based on the Software.
+* Fork, copy, clone, repackage, mirror, redistribute, or publish the Software or any portion of it.
+* Upload, share, resell, rent, lease, sublicense, or otherwise provide the Software to any third party.
+* Reverse engineer, decompile, disassemble, decrypt, bypass, tamper with, or attempt to extract protected portions of the Software, except to the limited extent expressly allowed by applicable law.
+* Remove, disable, bypass, alter, or obscure license checks, activation systems, feature locks, Free-tier limits, Pro-tier restrictions, watermarks, notices, credits, or third-party acknowledgments.
+* Use a Free-tier copy of the Software for commercial, professional, paid, client, business, or revenue-generating work without written permission or a valid Pro license.
+* Use the Software to create, distribute, or assist in creating competing software, modified builds, unofficial forks, unofficial installers, unauthorized plugins, or unauthorized model bundles.
+* Use the Software in a way that violates third-party rights, copyright law, model license terms, platform rules, or applicable law.
+* Misrepresent modified, unofficial, repackaged, or redistributed versions as official VisionDepth3D builds.
+
+---
+
+## 4. Official Distribution and Setup Hub
+
+Official public releases of VisionDepth3D are distributed through approved installer builds and the VisionDepth3D Setup Hub.
+
+The public source code is not provided as an installation method unless explicitly authorized by the Licensor.
+
+Users may not redistribute installer files, `.bin` files, protected application files, Setup Hub builds, or downloaded release packages except through official links authorized by the Licensor.
+
+Unofficial mirrors, repackaged installers, modified builds, forked versions, and redistributed copies are not permitted.
+
+---
+
+## 5. License Activation and Device Limits
+
+VisionDepth3D Pro may require online license activation through a third-party licensing or payment provider.
+
+A Pro license may be subject to activation limits, device limits, license validation checks, and other restrictions stated at the time of purchase.
+
+Licensor may revoke or disable a license if the license is shared, abused, refunded, charged back, fraudulently obtained, used to bypass restrictions, or used in violation of this Agreement.
+
+If activation fails, expires, is removed, or is revoked, the Software may fall back to Free-tier behavior.
+
+---
+
+## 6. User Content and Output
+
+You retain any rights you already have in your own input videos, images, audio, depth maps, project files, and rendered outputs.
+
+VisionDepth3D does not grant you rights to media, characters, films, games, music, images, videos, or other content that you do not already own or have permission to use.
+
+You are responsible for ensuring that your use of input media and generated outputs complies with copyright law, licensing terms, platform rules, and applicable law.
+
+Licensor is not responsible for how Users use generated outputs.
+
+---
+
+## 7. Third-Party Components, Models, Libraries, and Tools
+
+The Software may integrate, download, reference, execute, or interoperate with third-party AI models, libraries, frameworks, tools, and binaries.
+
+Third-party components remain owned by their respective authors, organizations, contributors, and rights holders. They are licensed separately under their own license terms.
+
+This Agreement applies only to VisionDepth3D and Licensor-owned portions of the Software. It does not replace, override, sublicense, or modify the license terms of any third-party component.
+
+Third-party components may include, but are not limited to:
+
+* AI depth estimation models
+* AI interpolation models
+* AI upscaling models
+* PyTorch
+* ONNXRuntime
+* Hugging Face Transformers and Diffusers
+* OpenCV
+* NumPy
+* Pillow
+* FFmpeg and ffprobe
+* Other open-source or third-party dependencies
+
+A list of third-party model acknowledgments and licensing notes may be provided in the `legal/` folder, including files such as:
+
+```text
+legal/README.md
+legal/THIRD_PARTY_MODEL_ACKNOWLEDGMENTS.md
+legal/MODEL_LICENSE_NOTICE.md
+legal/ABOUT_LEGAL_BLURB.md
+```
+
+Model availability may vary by build, tier, license status, commercial-safety review, or official release policy.
+
+Some models may be hidden, disabled, removed, or excluded from official builds due to non-commercial terms, unclear licensing, research-only restrictions, missing license information, or review status.
+
+Purchasing VisionDepth3D Pro does not grant ownership of third-party models or expand the permissions granted by third-party model licenses.
+
+---
+
+## 8. FFmpeg Notice
+
+The Software may include, invoke, or interoperate with FFmpeg and ffprobe for video/audio processing, encoding, muxing, demuxing, frame extraction, audio extraction, and related multimedia operations.
+
+FFmpeg is licensed separately by the FFmpeg project. Depending on how FFmpeg is built and configured, FFmpeg may be licensed under the GNU Lesser General Public License (LGPL) or the GNU General Public License (GPL).
+
+No ownership of FFmpeg is claimed by Licensor.
+
+If FFmpeg binaries are included with the Software, those binaries remain subject to the applicable FFmpeg license terms. If the User provides their own FFmpeg installation, the User is responsible for ensuring that their FFmpeg installation complies with its applicable license.
+
+More information about FFmpeg is available from the FFmpeg project:
+
+https://ffmpeg.org
+
+---
+
+## 9. Updates and Changes
+
+Licensor may update, modify, remove, rename, lock, unlock, replace, or discontinue Software features, models, installers, download links, activation methods, tier limits, or workflows at any time.
+
+Updates may be required for continued access to Pro features, license validation, bug fixes, compatibility, or security.
+
+Licensor is not required to maintain compatibility with older builds, unofficial builds, modified versions, forks, or unsupported installations.
+
+---
+
+## 10. No Warranty
+
+The Software is provided "as is" and "as available" without warranties of any kind, whether express, implied, statutory, or otherwise.
+
+Licensor makes no guarantees regarding performance, compatibility, uptime, model accuracy, depth accuracy, stereo quality, output quality, fitness for a particular purpose, merchantability, non-infringement, reliability, security, or error-free operation.
+
+AI-generated depth maps, stereo conversions, interpolated frames, upscaled frames, and rendered outputs may contain errors, artifacts, distortions, flicker, incorrect depth, visual discomfort, or other issues.
+
+You use the Software at your own risk.
+
+---
+
+## 11. Limitation of Liability
+
+To the fullest extent permitted by applicable law, Licensor shall not be liable for any direct, indirect, incidental, consequential, special, exemplary, punitive, or other damages arising from or related to the Software, including but not limited to:
+
+* loss of data
+* loss of profits
+* loss of revenue
+* business interruption
+* hardware issues
+* software conflicts
+* corrupted output
+* failed renders
+* license activation issues
+* model download issues
+* third-party dependency issues
+* user misuse
+* copyright or platform disputes involving User content
+
+This limitation applies even if Licensor has been advised of the possibility of such damages.
+
+---
+
+## 12. Termination
+
+This Agreement is effective until terminated.
+
+The license granted under this Agreement automatically terminates if you violate any term of this Agreement.
+
+Upon termination, you must stop using the Software and delete all copies in your possession or control.
+
+Licensor may revoke access, disable activation, restrict Pro features, or block future use if the Software or license is misused, shared, modified, redistributed, reverse engineered, refunded, charged back, or used in violation of this Agreement.
+
+---
+
+## 13. Governing Law
+
+This Agreement shall be governed by and interpreted in accordance with the laws of the Province of Ontario and the applicable federal laws of Canada, without regard to conflict of law principles.
+
+---
+
+## 14. Contact
+
+For questions about this Agreement, licensing, permissions, or commercial use, contact:
+
+[redsky90@gmail.com](mailto:redsky90@gmail.com)
+
+---
+
+## 15. Entire Agreement
+
+This Agreement, together with any applicable purchase terms, activation terms, third-party notices, and legal notices included with the Software, forms the entire agreement between the User and Licensor regarding the Software.
+
+If any part of this Agreement is found unenforceable, the remaining provisions will remain in effect.
+
+The failure of Licensor to enforce any provision of this Agreement does not waive the right to enforce it later.
