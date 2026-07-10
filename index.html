@@ -4,17 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>VisionDepth3D — Cinematic 2D to 3D Conversion Software</title>
-  <meta name="description" content="VisionDepth3D is a premium depth-driven 3D movie conversion platform for transforming 2D film and video into immersive stereoscopic 3D with advanced rendering, AI depth analysis, enhancement tools, and creator-focused workflow controls." />
+  <meta name="description" content="VisionDepth3D is a local 2D-to-3D conversion suite with a functional Free tier and a $59.99 USD one-time Pro license for advanced stereo rendering, AI depth workflows, batch tools, VR output, and creator-focused production controls." />
 
   <meta property="og:title" content="VisionDepth3D — Cinematic 2D to 3D Conversion Software" />
-  <meta property="og:description" content="Advanced 3D movie conversion, AI depth workflows, stereo rendering, immersive output, and premium creator tools for cinema-focused media processing." />
+  <meta property="og:description" content="Start free with local 2D-to-3D conversion, then unlock VisionDepth3D Pro for $59.99 USD one time—no subscription." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="" />
   <meta property="og:image" content="" />
 
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="VisionDepth3D — Cinematic 2D to 3D Conversion Software" />
-  <meta name="twitter:description" content="A premium platform for depth-driven video processing, stereoscopic 3D conversion, and immersive cinematic workflows." />
+  <meta name="twitter:description" content="Free local 2D-to-3D conversion with a $59.99 USD one-time Pro upgrade for advanced creator workflows." />
   <meta name="twitter:image" content="" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1189,6 +1189,261 @@
       font-weight: 700;
     }
 
+
+    .pricing-shell {
+      padding: 34px;
+      border-radius: 30px;
+      border: 1px solid rgba(255,255,255,0.09);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(105,216,255,0.09), transparent 30%),
+        radial-gradient(circle at 92% 8%, rgba(123,140,255,0.11), transparent 32%),
+        linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02)),
+        linear-gradient(180deg, rgba(8,12,26,0.97), rgba(6,9,20,0.99));
+      box-shadow: var(--glow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .tier-card {
+      position: relative;
+      display: grid;
+      gap: 20px;
+      align-content: start;
+      padding: 28px;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.09);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.048), rgba(255,255,255,0.02)),
+        linear-gradient(180deg, rgba(10,16,34,0.96), rgba(7,11,24,0.98));
+      box-shadow: 0 20px 48px rgba(0,0,0,0.30);
+      overflow: hidden;
+    }
+
+    .tier-card.pro {
+      border-color: rgba(105,216,255,0.34);
+      box-shadow:
+        0 24px 60px rgba(0,0,0,0.36),
+        0 0 0 1px rgba(105,216,255,0.10),
+        0 0 46px rgba(105,216,255,0.09);
+    }
+
+    .tier-card.pro::before {
+      content: "";
+      position: absolute;
+      inset: -20% -10% auto 35%;
+      height: 240px;
+      background: radial-gradient(circle, rgba(105,216,255,0.18), transparent 65%);
+      filter: blur(18px);
+      pointer-events: none;
+    }
+
+    .tier-ribbon {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(112,255,200,0.22);
+      background: rgba(112,255,200,0.08);
+      color: #ceffed;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .tier-kicker {
+      color: #c8d7ef;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .tier-name {
+      margin-top: 6px;
+      font-size: clamp(26px, 3vw, 38px);
+      font-weight: 850;
+      letter-spacing: -0.045em;
+    }
+
+    .tier-price-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      min-height: 64px;
+    }
+
+    .tier-price {
+      font-size: clamp(42px, 5vw, 64px);
+      line-height: 0.9;
+      font-weight: 900;
+      letter-spacing: -0.06em;
+      color: #f6f9ff;
+    }
+
+    .tier-price-meta {
+      color: var(--muted);
+      font-size: 13px;
+      padding-bottom: 6px;
+      line-height: 1.35;
+    }
+
+    .tier-description {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 52ch;
+    }
+
+    .tier-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    .tier-list li {
+      display: flex;
+      gap: 11px;
+      color: #dce9fb;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .tier-list li::before {
+      content: "✓";
+      width: 21px;
+      height: 21px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 21px;
+      margin-top: 1px;
+      color: #dffff2;
+      font-size: 12px;
+      font-weight: 900;
+      border: 1px solid rgba(112,255,200,0.20);
+      background: rgba(112,255,200,0.08);
+    }
+
+    .tier-actions {
+      display: grid;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .tier-fineprint {
+      color: var(--muted-2);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .comparison-wrap {
+      margin-top: 24px;
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 22px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.025);
+    }
+
+    .comparison-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 22px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .comparison-heading h3 {
+      font-size: 18px;
+      letter-spacing: -0.025em;
+    }
+
+    .comparison-heading span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tier-table-scroll {
+      overflow-x: auto;
+    }
+
+    .tier-table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+    }
+
+    .tier-table th,
+    .tier-table td {
+      padding: 15px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.065);
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .tier-table th {
+      color: #f0f6ff;
+      background: rgba(255,255,255,0.025);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .tier-table th:not(:first-child),
+    .tier-table td:not(:first-child) {
+      text-align: center;
+      width: 24%;
+    }
+
+    .tier-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .tier-table td:first-child {
+      color: #dce8fb;
+      font-weight: 600;
+    }
+
+    .tier-table td:not(:first-child) {
+      color: var(--muted);
+    }
+
+    .tier-yes {
+      color: #caffea;
+      font-weight: 800;
+    }
+
+    .tier-limit {
+      color: #dce8fb;
+      font-weight: 700;
+    }
+
+    .tier-locked {
+      color: #7f8da7;
+      font-weight: 700;
+    }
+
+    .pricing-note {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.075);
+      background: rgba(255,255,255,0.028);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     .download-shell {
       padding: 30px;
     }
@@ -1647,6 +1902,7 @@
       .hero-grid,
       .workflow-shell,
       .why-grid,
+      .pricing-grid,
       .download-grid,
       .vault-grid,
       .hero-bottom {
@@ -1802,6 +2058,8 @@
       .workflow-left,
       .workflow-right,
       .why-panel,
+      .pricing-shell,
+      .tier-card,
       .download-shell,
       .vault-shell,
       .license-shell,
@@ -1870,10 +2128,11 @@
         <a href="#features">Features</a>
         <a href="#workflow">Workflow</a>
         <a href="#why">Why VisionDepth3D</a>
+        <a href="#pricing">Free vs Pro</a>
         <a href="#visionvault">VisionVault</a>
         <a href="#download">Download</a>
         <a href="#faq">FAQ</a>
-        <a class="btn small secondary" href="#download">Get VisionDepth3D</a>
+        <a class="btn small secondary" href="#pricing">View Pricing</a>
       </div>
     </div>
   </nav>
@@ -1888,7 +2147,7 @@
             <span class="text-gradient">immersive stereoscopic cinema.</span>
           </h1>
           <p class="lead">
-            VisionDepth3D is an advanced 2D to 3D conversion and depth-based video processing platform built for creators, film enthusiasts, collectors, and serious media users who want premium control over cinematic stereo output. From AI depth analysis to refined stereo rendering and enhancement workflows, it is designed to make immersive 3D production feel powerful, modern, and precise.
+            VisionDepth3D is a local, depth-driven 2D-to-3D conversion suite built for creators, film enthusiasts, collectors, and serious media users. Start with the functional Free tier, then unlock the complete production workflow with VisionDepth3D Pro for a one-time $59.99 USD purchase.
           </p>
 
           <div class="hero-actions">
@@ -1900,12 +2159,12 @@
               </svg>
               Download for Windows
             </a>
-            <a class="btn secondary" href="#features">
+            <a class="btn secondary" href="#" id="heroPro">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M4 12h16"></path>
-                <path d="m13 5 7 7-7 7"></path>
+                <path d="M12 3 4.5 7v5c0 4.8 3.1 8 7.5 9 4.4-1 7.5-4.2 7.5-9V7L12 3Z"></path>
+                <path d="m9 12 2 2 4-4"></path>
               </svg>
-              Explore Features
+              Get Pro — $59.99
             </a>
             <a class="btn ghost" href="#workflow">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -1924,10 +2183,10 @@
           </div>
 
           <div class="hero-meta">
-            <span class="meta-pill">Windows first</span>
-            <span class="meta-pill">CUDA ready</span>
-            <span class="meta-pill">Source-available</span>
-            <span class="meta-pill">No cloud dependency</span>
+            <span class="meta-pill">Free tier available</span>
+            <span class="meta-pill">$59.99 one-time Pro</span>
+            <span class="meta-pill">No subscription</span>
+            <span class="meta-pill">Local processing</span>
           </div>
         </div>
 
@@ -2358,11 +2617,180 @@
             </div>
 
             <div class="compare-card">
-              <h3>The VisionDepth3D method</h3>
+              <h3>The VD3D Hybrid3D Method</h3>
               <p style="color:var(--muted);">
-                The underlying approach combines depth-weighted parallax behavior, subject-aware control, edge-sensitive handling, scene response tuning, and GPU-accelerated stereo processing for more refined 3D results.
+                The VD3D Hybrid3D Method combines continuous depth-driven stereo warping with depth-ordered reconstruction, subject-aware control, edge-sensitive protection, temporal stabilization, and GPU-accelerated processing for stronger spatial structure and cleaner 3D results.
               </p>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="section" id="pricing">
+      <div class="container">
+        <div class="pricing-shell reveal">
+          <div class="section-head" style="margin-bottom:28px;">
+            <span class="eyebrow">Free vs Pro</span>
+            <h2 class="title-lg">Start free. Unlock the full studio for <span class="text-gradient">$59.99 USD</span></h2>
+            <p class="lead">
+              VisionDepth3D Free gives you a functional way to test the core local 2D-to-3D workflow. Upgrade once to Pro when you are ready for watermark-free output, advanced controls, batch processing, VR workflows, enhancement tools, and individual professional or commercial use.
+            </p>
+          </div>
+
+          <div class="pricing-grid">
+            <article class="tier-card">
+              <div>
+                <div class="tier-kicker">Explore the core workflow</div>
+                <h3 class="tier-name">VisionDepth3D Free</h3>
+              </div>
+
+              <div class="tier-price-row">
+                <div class="tier-price">$0</div>
+                <div class="tier-price-meta">No license key<br>required</div>
+              </div>
+
+              <p class="tier-description">
+                Built for testing, evaluation, personal projects, and learning how the VisionDepth3D workflow performs on your own media and hardware.
+              </p>
+
+              <ul class="tier-list">
+                <li>Single video 3D conversion up to 3 minutes</li>
+                <li>Single image 3D conversion</li>
+                <li>Single image and video depth generation</li>
+                <li>Half-SBS, Full-SBS, and Anaglyph output</li>
+                <li>Basic 3D Assistant and depth preview tools</li>
+                <li>Basic Depth Blender image workflow</li>
+                <li>RIFE interpolation up to 2× and frame extraction</li>
+                <li>Local processing with output up to 1080p</li>
+              </ul>
+
+              <div class="tier-actions">
+                <a class="btn secondary" href="#" id="pricingFree">Download Free</a>
+                <div class="tier-fineprint">Free exports include a VisionDepth3D watermark.</div>
+              </div>
+            </article>
+
+            <article class="tier-card pro">
+              <span class="tier-ribbon">One-time license</span>
+
+              <div>
+                <div class="tier-kicker">Complete creator workflow</div>
+                <h3 class="tier-name">VisionDepth3D Pro</h3>
+              </div>
+
+              <div class="tier-price-row">
+                <div class="tier-price">$59.99</div>
+                <div class="tier-price-meta">USD one time<br>No subscription</div>
+              </div>
+
+              <p class="tier-description">
+                Unlock the full individual desktop production workflow with fewer limits, deeper control, advanced output options, and no Free-tier watermark.
+              </p>
+
+              <ul class="tier-list">
+                <li>No 3-minute Free-tier video limit</li>
+                <li>No fixed Free-tier output-height limit</li>
+                <li>Watermark-free exports</li>
+                <li>Batch video and image-folder processing</li>
+                <li>Advanced keyframes, scene detection, and stereo tuning</li>
+                <li>VR, VR180, passive interlaced, and Live 3D workflows</li>
+                <li>Real-ESRGAN, higher FPS multipliers, and threaded processing</li>
+                <li>Job queue, advanced encoding, and expanded model access</li>
+                <li>Individual professional and commercial use</li>
+              </ul>
+
+              <div class="tier-actions">
+                <a class="btn primary" href="#" id="pricingPro">Upgrade to Pro — $59.99</a>
+                <div class="tier-fineprint">Activate Pro in the same desktop application with your license key.</div>
+              </div>
+            </article>
+          </div>
+
+          <div class="comparison-wrap">
+            <div class="comparison-heading">
+              <h3>Feature comparison</h3>
+              <span>Key differences at a glance</span>
+            </div>
+
+            <div class="tier-table-scroll">
+              <table class="tier-table">
+                <thead>
+                  <tr>
+                    <th>Feature</th>
+                    <th>Free</th>
+                    <th>Pro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>3D Generator and Depth Engine</td>
+                    <td><span class="tier-yes">Included</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Single video conversion</td>
+                    <td><span class="tier-limit">Up to 3 minutes</span></td>
+                    <td><span class="tier-yes">No fixed limit</span></td>
+                  </tr>
+                  <tr>
+                    <td>Maximum output height</td>
+                    <td><span class="tier-limit">Up to 1080p</span></td>
+                    <td><span class="tier-yes">No fixed limit</span></td>
+                  </tr>
+                  <tr>
+                    <td>Watermark</td>
+                    <td><span class="tier-limit">Applied</span></td>
+                    <td><span class="tier-yes">None</span></td>
+                  </tr>
+                  <tr>
+                    <td>Half-SBS, Full-SBS, and Anaglyph</td>
+                    <td><span class="tier-yes">Included</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>VR, VR180, and passive interlaced output</td>
+                    <td><span class="tier-locked">Locked</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Batch video and image-folder workflows</td>
+                    <td><span class="tier-locked">Locked</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Advanced keyframes and scene detection</td>
+                    <td><span class="tier-locked">Locked</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Real-ESRGAN and higher FPS multipliers</td>
+                    <td><span class="tier-locked">Locked</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Live 3D and job queue</td>
+                    <td><span class="tier-locked">Locked</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Professional and commercial use</td>
+                    <td><span class="tier-locked">Not included</span></td>
+                    <td><span class="tier-yes">Individual use included</span></td>
+                  </tr>
+                  <tr>
+                    <td>Local/private desktop processing</td>
+                    <td><span class="tier-yes">Included</span></td>
+                    <td><span class="tier-yes">Included</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="pricing-note">
+            A Pro license unlocks VisionDepth3D software features; it does not transfer ownership of VisionDepth3D or override third-party model, library, tool, or media licenses. Users must have the rights required for the media they process. Team, studio, company-wide, hosted-service, resale, redistribution, and custom business use may require written permission or a separate agreement.
           </div>
         </div>
       </div>
@@ -2372,10 +2800,10 @@
       <div class="container">
         <div class="download-shell reveal">
           <div class="section-head" style="margin-bottom:26px;">
-            <span class="eyebrow">Download VisionDepth3D</span>
-            <h2 class="title-lg">Start building <span class="text-gradient">immersive 3D output on your own system</span></h2>
+            <span class="eyebrow">Download and activate</span>
+            <h2 class="title-lg">Download Free now. <span class="text-gradient">Upgrade inside the same app.</span></h2>
             <p class="lead">
-              Download the Windows build and explore a serious 3D movie conversion workflow with local rendering, depth analysis, stereo generation, and enhancement tools designed for premium results.
+              Install VisionDepth3D Free to test the core local workflow. When you purchase Pro for $59.99 USD, activate your license key in the same desktop application to unlock the complete production toolset.
             </p>
           </div>
 
@@ -2390,12 +2818,12 @@
                   </svg>
                   Download Windows Installer
                 </a>
-                <a class="btn secondary" href="#" id="dlItch">
+                <a class="btn secondary" href="#" id="dlPro">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <rect x="3" y="6" width="18" height="12" rx="2"></rect>
-                    <path d="M8 6v12M16 6v12"></path>
+                    <path d="M12 3 4.5 7v5c0 4.8 3.1 8 7.5 9 4.4-1 7.5-4.2 7.5-9V7L12 3Z"></path>
+                    <path d="m9 12 2 2 4-4"></path>
                   </svg>
-                  Get it on Itch.io
+                  Buy Pro — $59.99
                 </a>
                 <a class="btn ghost" href="#" id="dlGithub">
                   <svg viewBox="0 0 24 24" fill="currentColor">
@@ -2430,26 +2858,26 @@
 
             <div class="download-side">
               <div class="signal-card">
-                <h3>What you get</h3>
+                <h3>Free download</h3>
                 <ul>
-                  <li>Local depth and stereo processing workflow</li>
-                  <li>Support for AI depth models and custom pipelines</li>
-                  <li>Enhancement tools for upscaling and interpolation</li>
-                  <li>No telemetry-first product model and no required cloud rendering</li>
+                  <li>Core single-video and single-image 3D workflow</li>
+                  <li>Single-image and video depth generation</li>
+                  <li>Half-SBS, Full-SBS, and Anaglyph output</li>
+                  <li>Local processing with no required cloud rendering</li>
                 </ul>
               </div>
 
               <div class="signal-card">
-                <h3>License overview</h3>
+                <h3>Pro activation</h3>
                 <p>
-                  VisionDepth3D is available for personal, non-commercial use under the VisionDepth3D License Agreement. Commercial, business, or revenue-generating use requires written permission.
+                  VisionDepth3D Pro is a $59.99 USD one-time purchase. Enter your license key in the desktop app to remove Free-tier limits and unlock the full individual production workflow.
                 </p>
               </div>
 
               <div class="signal-card">
                 <h3>Support and project access</h3>
                 <p>
-                  Explore releases, updates, community feedback, and source-available project details through GitHub and Itch.io.
+                  Explore official releases, documentation, updates, community feedback, and issue reporting through GitHub and Itch.io.
                 </p>
               </div>
             </div>
@@ -2545,9 +2973,30 @@
             </details>
 
             <details>
-              <summary>What license does the software use?</summary>
+              <summary>Is VisionDepth3D Pro a subscription?</summary>
               <p>
-                VisionDepth3D is available for personal, non-commercial use under the VisionDepth3D License Agreement. Commercial, business, or revenue-generating use requires written permission from the licensor. Third-party components remain subject to their own licenses. Full terms are available in the project license documentation.
+                No. VisionDepth3D Pro is a one-time $59.99 USD license purchase with no recurring subscription fee. The license key unlocks Pro features in the same desktop application used by the Free tier.
+              </p>
+            </details>
+
+            <details>
+              <summary>What is included in VisionDepth3D Free?</summary>
+              <p>
+                Free includes the core single-video and single-image 3D workflow, depth generation, Half-SBS, Full-SBS, Anaglyph output, basic guided controls, basic depth tools, frame extraction, and RIFE interpolation up to 2×. Free video renders are limited to 3 minutes, output height is limited to 1080p, and exports include a VisionDepth3D watermark.
+              </p>
+            </details>
+
+            <details>
+              <summary>What does upgrading to Pro unlock?</summary>
+              <p>
+                Pro removes the Free-tier video-length, output-height, and watermark limits. It also unlocks batch workflows, advanced keyframes, scene detection, advanced stereo and encoding controls, VR and VR180 output, passive interlaced output, Live 3D, full Depth Blender workflows, Real-ESRGAN, higher FPS multipliers, threaded processing, the job queue, and expanded official model access.
+              </p>
+            </details>
+
+            <details>
+              <summary>Can I use VisionDepth3D Pro commercially?</summary>
+              <p>
+                Pro includes individual professional and commercial use of VisionDepth3D software features and rendered outputs, provided you have the necessary rights to the input media and comply with all third-party model, library, tool, and media licenses. Team, studio, company-wide, hosted-service, resale, redistribution, and custom business use may require written permission or a separate agreement.
               </p>
             </details>
 
@@ -2569,26 +3018,26 @@
             <span class="eyebrow">License and usage</span>
             <h2 class="title-lg">Clear terms for a serious software platform</h2>
             <p class="lead">
-              VisionDepth3D is shared with a source-available model and a defined personal-use license structure. Review the full license for complete terms.
+              VisionDepth3D uses a Free and Pro desktop license structure. Free supports evaluation and personal use, while Pro unlocks individual professional and commercial production rights subject to the full license and all third-party terms.
             </p>
           </div>
 
           <div class="license-grid">
             <div class="license-card">
-              <h3>Usage Grant</h3>
-              <p>Free for personal, non-commercial use within the boundaries of the VisionDepth3D License Agreement.</p>
+              <h3>Free Tier</h3>
+              <p>Free supports personal testing, evaluation, casual use, and use of the core workflow within the limits described on this page and in the license agreement.</p>
             </div>
             <div class="license-card">
-              <h3>Commercial Use</h3>
-              <p>Commercial or revenue-generating use requires written permission from the licensor before deployment.</p>
+              <h3>Pro Tier</h3>
+              <p>A $59.99 USD one-time Pro license unlocks the full individual desktop workflow and individual professional or commercial use of supported software features and rendered outputs.</p>
             </div>
             <div class="license-card">
               <h3>Restrictions</h3>
               <p>Redistribution, resale, sublicensing, reverse engineering, and derivative works are restricted under the stated license terms.</p>
             </div>
             <div class="license-card">
-              <h3>Ownership</h3>
-              <p>All platform rights remain with the licensor except where third-party components carry their own independent licensing.</p>
+              <h3>Teams and Studios</h3>
+              <p>Team, studio, company-wide, hosted-service, resale, redistribution, or custom business use may require written permission or a separate commercial agreement.</p>
             </div>
             <div class="license-card">
               <h3>Third-Party Components</h3>
@@ -2603,7 +3052,7 @@
           <p style="margin-top:18px; color:var(--muted); font-size:14px;">
             Full license:
             <a href="https://github.com/VisionDepth/VisionDepth3D/blob/Main-Stable/LICENSE.txt" target="_blank" rel="noopener" style="color:#dff3ff;">LICENSE on GitHub</a>
-            · Commercial licensing:
+            · Studio or custom licensing:
             <a href="mailto:redsky90@gmail.com" style="color:#dff3ff;">redsky90@gmail.com</a>
           </p>
         </div>
@@ -2631,6 +3080,7 @@
         <div class="footer-links">
           <a href="#" id="footerGithub">GitHub</a>
           <a href="#" id="footerItch">Itch.io</a>
+          <a href="#pricing">Free vs Pro</a>
           <a href="#download">Download</a>
           <a href="#visionvault">VisionVault</a>
         </div>
@@ -2641,6 +3091,7 @@
   <script>
     const LINKS = {
       itch: "https://visiondepth3d.itch.io/visiondepth3d",
+      proPurchase: "https://visiondepth3d.itch.io/visiondepth3d",
       github: "https://github.com/VisionDepth/VisionDepth3D",
       winInstaller: "https://github.com/VisionDepth/VisionDepth3D/releases/download/Installer/VisionDepth3D_Setup_Downloader.exe"
     };
@@ -2650,8 +3101,11 @@
       const set = (el, href) => { if (el && href) el.setAttribute("href", href); };
 
       set(byId("heroDownload"), LINKS.winInstaller || LINKS.github);
+      set(byId("heroPro"), LINKS.proPurchase || LINKS.itch);
+      set(byId("pricingFree"), LINKS.winInstaller || LINKS.github);
+      set(byId("pricingPro"), LINKS.proPurchase || LINKS.itch);
       set(byId("dlWin"), LINKS.winInstaller || LINKS.github);
-      set(byId("dlItch"), LINKS.itch);
+      set(byId("dlPro"), LINKS.proPurchase || LINKS.itch);
       set(byId("dlGithub"), LINKS.github);
       set(byId("footerGithub"), LINKS.github);
       set(byId("footerItch"), LINKS.itch);
