@@ -12,7 +12,7 @@
 </p>
 <h3 align="center">
   <a href="https://github.com/VisionDepth/VisionDepth3D/releases">
-    <img src="https://img.shields.io/badge/historical%20downloads-23K%2B-brightgreen" alt="26K+ Historical Downloads">
+    <img src="https://img.shields.io/badge/historical%20downloads-26K%2B-brightgreen" alt="26K+ Historical Downloads">
   </a>
   <a href="https://github.com/VisionDepth/VisionDepth3D/releases">
     <img src="https://img.shields.io/github/downloads/VisionDepth/VisionDepth3D/total.svg" alt="Current GitHub Release Downloads">
