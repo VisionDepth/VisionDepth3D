@@ -40,24 +40,9 @@
 
 ---
 
-# Notice
-
-VisionDepth3D is now distributed through official installer builds.
-
-This repository serves as the public release, documentation, legal notice, installer download, issue tracking, and bug reporting page for VisionDepth3D.
-
-Current protected application source code is maintained privately and is no longer distributed as public source.
-
-VisionDepth3D is licensed under a proprietary, no-derivatives license. Forking, copying, redistributing, modifying, repackaging, publishing, or creating derivative works from VisionDepth3D or protected application files is not permitted without express written permission from Johnathan Carpenter / VisionDepth.
-
-Older public source snapshots, forks, or archived copies do not represent current official VisionDepth3D builds. Only installer builds released through the official VisionDepth3D release channels should be considered current, supported, and official.
-
-VisionDepth3D may use, integrate, download, reference, or interoperate with third-party tools, libraries, frameworks, AI models, and model weights. Third-party components remain owned by their respective creators, authors, organizations, and rights holders, and may be subject to their own separate license terms.
-
----
-
 ## Table of Contents
 
+- [Notice](#notice)
 - [Free vs Pro](#free-vs-pro)
 - [All-in-One 3D Suite](#all-in-one-3d-suite)
 - [Depth Estimation](#depth-estimation-ai-depth-engine)
@@ -74,104 +59,80 @@ VisionDepth3D may use, integrate, download, reference, or interoperate with thir
 
 ---
 
+# Notice
+
+VisionDepth3D is now distributed through official installer builds.
+
+This repository serves as the public release, documentation, legal notice, installer download, issue tracking, and bug reporting page for VisionDepth3D.
+
+Current protected application source code is maintained privately and is no longer distributed as public source.
+
+VisionDepth3D is licensed under a proprietary, no-derivatives license. Forking, copying, redistributing, modifying, repackaging, publishing, or creating derivative works from VisionDepth3D or protected application files is not permitted without express written permission from Johnathan Carpenter / VisionDepth.
+
+Older public source snapshots, forks, or archived copies do not represent current official VisionDepth3D builds. Only installer builds released through the official VisionDepth3D release channels should be considered current, supported, and official.
+
+VisionDepth3D may use, integrate, download, reference, or interoperate with third-party tools, libraries, frameworks, AI models, and model weights. Third-party components remain owned by their respective creators, authors, organizations, and rights holders, and may be subject to their own separate license terms.
+
+---
+
 # Free vs Pro
 
-VisionDepth3D uses a **Free** and **Pro** tier structure.
+VisionDepth3D is available in **Free** and **Pro** tiers.
 
-**VisionDepth3D Pro is a one-time license unlock for $59.99. It is not a subscription.**
+**VisionDepth3D Pro is a one-time $59.99 license unlock. There is no subscription.**
 
-The Free tier is intended for personal testing, evaluation, casual use, and trying the core VisionDepth3D workflow before upgrading. Free exports may include limits such as render length limits, output resolution limits, watermarking, locked advanced tools, locked batch workflows, and limited model access.
+The Free tier is designed for testing, evaluation, casual use, and exploring the core VisionDepth3D workflow before upgrading.
 
-The Pro tier unlocks the full desktop production workflow for individual creators who want fewer limits, more control, watermark-free output, and access to advanced workflows.
+## VisionDepth3D Free
 
-VisionDepth3D Pro allows individual professional and commercial use of VisionDepth3D software features and rendered outputs, provided the user has the necessary rights to the input media they process and complies with all applicable third-party model, library, tool, and media license terms.
+Free includes the core local 2D-to-3D workflow:
 
-A Pro license grants access to VisionDepth3D Pro software features. It does not grant ownership of VisionDepth3D, third-party AI models, third-party libraries, FFmpeg, films, shows, games, music, images, videos, characters, or any other third-party content.
+- Single video 3D conversion up to **3 minutes**
+- Single image 3D conversion
+- Single video and image depth generation
+- Half-SBS, Full-SBS, and Anaglyph output
+- Basic 3D Assistant controls
+- Basic depth previews
+- Basic Depth Blender image workflow
+- RIFE frame interpolation up to **2x**
+- Frame extraction
+- Local/private desktop processing
 
-For team, studio, company-wide, resale, redistribution, hosted service, or custom business use, written permission or a separate commercial/studio agreement may be required.
+Free exports are limited to **1080p output height** and include a **VisionDepth3D watermark**.
 
-| Feature / Workflow                  |              Free |                     Pro |
-| ----------------------------------- | ----------------: | ----------------------: |
-| 3D Generator tab                    |                 ✅ |                       ✅ |
-| Depth Engine tab                    |                 ✅ |                       ✅ |
-| Depth Blender tab                   |         ✅ Limited |                  ✅ Full |
-| FPS / Upscale tab                   |         ✅ Limited |                  ✅ Full |
-| Live 3D tab                         |         🔒 Locked |                       ✅ |
-| Single video 3D conversion          | ✅ Up to 3 minutes |             ✅ Unlimited |
-| Single image 3D conversion          |                 ✅ |                       ✅ |
-| Video length limit                  |         3 minutes |          No fixed limit |
-| Output height limit                 |       Up to 1080p |          No fixed limit |
-| Free-tier watermark                 |         ✅ Applies |          ❌ No watermark |
-| Half-SBS output                     |                 ✅ |                       ✅ |
-| Full-SBS output                     |                 ✅ |                       ✅ |
-| Anaglyph output                     |                 ✅ |                       ✅ |
-| VR / VR180 output                   |         🔒 Locked |                       ✅ |
-| Passive interlaced output           |         🔒 Locked |                       ✅ |
-| Batch video conversion              |         🔒 Locked |                       ✅ |
-| Image-folder conversion             |         🔒 Locked |                       ✅ |
-| Advanced keyframes                  |         🔒 Locked |                       ✅ |
-| Advanced encoding controls          |         🔒 Locked |                       ✅ |
-| Depth single image                  |                 ✅ |                       ✅ |
-| Depth single video                  | ✅ Up to 3 minutes |             ✅ Unlimited |
-| Depth image-folder batch            |         🔒 Locked |                       ✅ |
-| Depth video-folder batch            |         🔒 Locked |                       ✅ |
-| Depth preview samples               |                 ✅ |                       ✅ |
-| Advanced depth inference controls   |         🔒 Locked |                       ✅ |
-| Basic Depth Blender image workflow  |                 ✅ |                       ✅ |
-| Depth Blender frame-folder workflow |         🔒 Locked |                       ✅ |
-| Depth Blender video workflow        |         🔒 Locked |                       ✅ |
-| GPU Depth Blender processing        |                 ✅ |                       ✅ |
-| Extract frames                      |                 ✅ |                       ✅ |
-| Basic RIFE FPS interpolation        |        ✅ Up to 2x |                       ✅ |
-| High FPS multipliers                |         🔒 Locked |                       ✅ |
-| Scene detection                     |         🔒 Locked |                       ✅ |
-| Threaded FPS pipeline               |         🔒 Locked |                       ✅ |
-| Real-ESRGAN upscale                 |         🔒 Locked |                       ✅ |
-| 4K output workflows                 |         🔒 Locked |                       ✅ |
-| Job queue                           |         🔒 Locked |                       ✅ |
-| Expanded official Pro model list    |         🔒 Locked |                       ✅ |
-| License activation                  |      Not required | Required for Pro unlock |
-| Local/private desktop processing    |                 ✅ |                       ✅ |
+Some advanced models, batch workflows, rendering formats, and production tools are reserved for Pro.
 
-## Free Tier Summary
+## VisionDepth3D Pro
 
-VisionDepth3D Free includes the core local desktop workflow:
+VisionDepth3D Pro unlocks the full individual desktop production workflow:
 
-* Single video 3D conversion up to 3 minutes
-* Single image 3D conversion
-* Single video and single image depth generation
-* Half-SBS, Full-SBS, and Anaglyph output
-* Basic 3D Assistant / guided controls
-* Basic depth preview tools
-* Basic Depth Blender image workflow
-* Basic RIFE FPS interpolation up to 2x
-* Frame extraction
-* Local processing without uploading your videos or images to the cloud
+- **No fixed video length limit**
+- **No Free-tier watermark**
+- **No fixed output height limit**
+- Full 3D Generator controls and advanced stereo tuning
+- Advanced 3D keyframes
+- VR and VR180 output
+- Passive interlaced output
+- Live 3D
+- Batch video and image-folder processing
+- Advanced depth inference controls
+- Expanded official depth model access
+- Full Depth Blender video and frame-folder workflows
+- High FPS RIFE interpolation
+- AI Super-Resolution and upscaling workflows
+- Scene detection and extraction
+- Accelerated RIFE + SR processing
+- Advanced encoding controls
+- 4K and higher-resolution workflows
+- Job queue support
 
-Free exports include a VisionDepth3D watermark and are limited to 1080p output height.
+**Pro: $59.99 USD one-time**
 
-## Pro Tier Summary
+Pro licenses may be used by individual creators for professional and commercial work, provided they have the necessary rights to the media being processed and comply with applicable third-party licenses.
 
-VisionDepth3D Pro is a one-time license unlock for $59.99 that enables the full individual desktop production workflow.
+A Pro license unlocks VisionDepth3D software features. It does not transfer ownership or licensing rights for third-party AI models, libraries, FFmpeg, media, characters, films, games, music, images, or other third-party content.
 
-* Unlimited video length with no Free-tier render limit
-* No Free-tier watermark
-* No fixed output height limit
-* Batch video and image-folder workflows
-* Advanced keyframes, scene detection, and advanced stereo tuning
-* Advanced encoding and depth inference controls
-* VR, VR180, and passive interlaced output
-* Live 3D
-* Full Depth Blender frame-folder and video workflows
-* Threaded FPS processing
-* Real-ESRGAN upscaling
-* High FPS multipliers
-* 4K output workflows
-* Job queue support
-* Expanded official Pro model list
-* Individual professional/commercial use of VisionDepth3D software features and rendered outputs
-
-VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It does not grant ownership of third-party AI models or override the original licenses of third-party models, libraries, or tools.
+Team, studio, company-wide, resale, redistribution, hosted-service, or custom business use may require separate written permission or licensing.
 
 ---
 
@@ -185,7 +146,9 @@ VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It d
   <em>3D Generator Tab</em>
 </p>
 
-- **GPU-accelerated stereo warping** using per-pixel, depth-aware parallax shifting.
+- **Multiple stereo rendering methods**, including:
+  - **Subpixel Z-Splat Renderer (New in v5.1)** for more advanced depth-aware stereo projection, smoother subpixel displacement, and improved handling around depth boundaries and occlusions.
+  - **Classic Stereo Warp** using GPU-accelerated per-pixel, depth-aware parallax shifting.
 - Built on the [**VisionDepth3D Method**](VisionDepth3D_Method.md), including:
   - Depth shaping and pop controls
   - Subject-anchored convergence
@@ -193,6 +156,13 @@ VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It d
   - Edge-aware masking and feathering
   - Floating-window edge protection
   - Occlusion healing and edge repair
+- **Simple 3D Assistant** with ready-to-use styles and adjustable controls for:
+  - 3D strength
+  - Foreground pop-out
+  - Viewing comfort
+  - Stereo stability
+  - Screen depth
+  - Subject screen plane
 - **Live preview and diagnostics**:
   - Anaglyph preview
   - Side-by-side preview
@@ -212,16 +182,25 @@ VisionDepth3D Pro grants access to VisionDepth3D desktop software features. It d
   <em>Depth Estimation Tab</em>
 </p>
 
-VisionDepth3D includes a flexible AI depth engine for generating depth maps from images, videos, and frame folders.
+VisionDepth3D includes a flexible AI depth pipeline for generating, refining, and preparing depth maps for stereoscopic 3D rendering.
 
-- Official Free and Pro model filtering through `config/model_registry.json`
-- One-click model switching with local caching
-- PyTorch, TorchHub, Diffusers, and ONNXRuntime backends
-- Image and video depth generation
-- Optional high-precision depth output when supported
-- Built-in preview modes and colormaps
-- Depth normalization tools to reduce depth breathing and flicker
-- Resolution handling, shape checks, codec probing, and safe fallbacks
+- **Multiple AI depth models**, including:
+  - Depth Anything V1
+  - Depth Anything V2
+  - Distill Any Depth
+  - Video Depth Anything
+  - Depth Anything 3 (DA3)
+- **One-click model switching** with automatic local model caching
+- Support for **PyTorch, TorchHub, Diffusers, and ONNXRuntime** inference backends
+- **Image, video, and frame-folder depth generation**
+- **Video-aware depth estimation** for improved temporal consistency across moving footage
+- **Depth normalization and temporal stabilization** to reduce:
+  - Depth breathing
+  - Flicker
+  - Sudden depth-range changes
+  - Frame-to-frame instability
+- **Built-in depth previews and colormaps** for inspecting generated depth before rendering
+- Automatic **resolution matching, shape validation, codec probing, and safe fallbacks**
 
 ---
 
@@ -233,17 +212,24 @@ VisionDepth3D includes a flexible AI depth engine for generating depth maps from
   <em>Depth Blender Tab</em>
 </p>
 
-- Blend two depth sources into one cleaner depth map or depth video.
-- Pair two PNG frame folders or two depth videos.
-- Live preview and scrubber.
-- Edge-focused blend controls.
-- CLAHE contrast shaping.
-- Bilateral edge-preserving denoise.
-- Normalization back to base for consistent depth scale.
+VisionDepth3D includes a dedicated depth fusion workflow for combining two independently generated depth sources into a cleaner and more balanced final depth map.
+
+- **Blend two depth sources** into a single refined depth map or depth video.
+- Supports:
+  - Two depth video sources
+  - Two PNG depth-frame folders
+- **Adjustable blend weighting** for controlling how much influence each depth source contributes.
+- **Live preview and frame scrubber** for comparing the blended result before processing.
+- **Edge-focused blending controls** to preserve important object boundaries and depth transitions.
+- **CLAHE contrast shaping** for improving local depth separation and recovering flatter regions.
+- **Bilateral edge-preserving denoise** for smoothing noisy depth while retaining important structure.
+- **Depth normalization** to keep the blended result aligned with the original depth scale.
+- Helps combine the strengths of different AI depth models while reducing weaknesses or inconsistencies from any single model.
+- Output can be used directly as the depth source for the **3D Generator / Stereo Composer**.
 
 ---
 
-# FPS / Upscale Enhancer (RIFE + Real-ESRGAN)
+# FPS / Upscale Enhancer (RIFE + AI Super-Resolution)
 
 <p align="center">
   <img width="700" height="400" alt="FPS / Upscale Enhancer Tab" src="https://github.com/user-attachments/assets/7df0c7ee-c710-42a6-860b-5d2822936db1" />
@@ -251,13 +237,36 @@ VisionDepth3D includes a flexible AI depth engine for generating depth maps from
   <em>FPS / Upscale Enhancer Tab</em>
 </p>
 
-- RIFE interpolation through ONNX.
-- 2×, 4×, and 8× FPS generation.
-- Real-ESRGAN upscaling through ONNX.
-- Optional FP16 acceleration where supported.
-- Merged and threaded processing modes.
-- Scene splitting for long videos.
-- Progress, FPS, ETA, logs, and safe cancel handling.
+VisionDepth3D v5.1 introduces a major overhaul of the FPS and upscaling pipeline, with faster RIFE interpolation, expanded AI super-resolution support, improved batching, and more control over performance and output quality.
+
+- **Modern RIFE frame interpolation**, including:
+  - RIFE 4.25 Lite for faster high-resolution and VR processing
+  - RIFE 4.25 for higher-quality interpolation
+  - Legacy RIFE ONNX models for compatibility
+- **2×, 4×, and 8× FPS generation**
+- Adjustable **RIFE backend, scale, precision, and timestep batching**
+- Automatic high-resolution RIFE scaling for large Full-SBS and multi-megapixel sources
+- **AI Super-Resolution pipeline** with:
+  - RealESR
+  - Real-ESRGAN
+  - BSRGAN
+  - Automatic fast and quality model selection
+- Automatic discovery of compatible local **ONNX super-resolution models**, including SPAN-style exports
+- **Scale-aware SR processing** that can automatically choose an appropriate model and input resolution for the requested output
+- Adjustable:
+  - Upscale backend
+  - FP16 / FP32 precision
+  - Batch size
+  - Input resolution percentage
+  - AI blending
+- Built-in **SR benchmarking** for testing the selected model and runtime settings
+- **Single-video and batch-folder workflows**
+- Built-in **scene detection and scene extraction** for processing longer videos in manageable sections
+- Optional **merged and accelerated RIFE + SR processing** when both stages are enabled
+- **VR-optimized final merge** with constant-frame-rate output options for smoother headset playback
+- Automatic output naming for RIFE and upscale passes
+- Original audio preservation and flexible FFmpeg encoding
+- Detailed **progress, FPS, ETA, profiling, logs, pause/resume, and safe cancellation**
 
 ---
 
@@ -288,13 +297,15 @@ The Live 3D tab is a realtime stereo sandbox for testing depth models, stereo co
 
 # Smart GUI + Workflow
 
+VisionDepth3D is built as a complete local desktop workflow, with tools designed to keep long renders and multi-stage processing manageable.
+
 - Multi-tab desktop interface
-- Persistent settings
-- Pause, resume, and cancel for long GPU jobs
+- Persistent project and processing settings
+- Pause, resume, and cancel controls for long-running jobs
 - Multi-language UI support
-- Hardware encoding options
-- Queue-oriented workflows
-- Local/private processing
+- CPU and hardware encoding options
+- Batch and queue-oriented workflows
+- Local/private processing without uploading source media to the cloud
 
 ---
 
