@@ -2242,6 +2242,20 @@
     }
     @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } *,*::before,*::after { animation:none !important; transition:none !important; } }
 
+
+    /* Workflow order: enhance, generate depth, optionally blend, render stereo. */
+    .hero-workflow-card .pipeline { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .hero-workflow-card .pipe-node:last-child { grid-column:auto; }
+    .visual-graph.workflow-flow { display:grid; gap:24px; min-height:0; padding:20px; overflow:visible; }
+    .flow-step { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; position:relative; padding:18px; border:1px solid #38c9ff55; border-radius:6px; background:#080f20; }
+    .flow-step:not(:last-child)::after { content:'↓'; position:absolute; bottom:-25px; left:32px; height:24px; line-height:24px; color:#5de4ff; font-size:20px; }
+    .flow-step.optional { border-style:dashed; border-color:#d766ff88; }
+    .flow-number { color:#73eaff; font-weight:800; font-size:14px; }
+    .flow-step strong { font-size:16px; }
+    .flow-step p,.blend-note { color:var(--muted); font-size:14px; line-height:1.55; }
+    .flow-step p { margin-top:7px; }
+    @media(max-width:900px) { .hero-workflow-card .pipeline { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media(max-width:560px) { .hero-workflow-card .pipeline { grid-template-columns:1fr; } .visual-graph.workflow-flow { padding:12px; } .flow-step { padding:14px; grid-template-columns:26px minmax(0,1fr); gap:8px; } }
   </style>
 </head>
 <body>
@@ -2349,31 +2363,10 @@
         <div class="glass-card hero-workflow-card">
           <div class="mini-label">Core processing pipeline</div>
           <div class="pipeline">
-            <div class="pipe-node">
-              <div class="pipe-step">01</div>
-              <div class="pipe-title">Input Video</div>
-              <div class="pipe-text">Load film, video, or source media into the workspace.</div>
-            </div>
-            <div class="pipe-node">
-              <div class="pipe-step">02</div>
-              <div class="pipe-title">Depth Analysis</div>
-              <div class="pipe-text">Estimate scene depth with AI-powered model support.</div>
-            </div>
-            <div class="pipe-node">
-              <div class="pipe-step">03</div>
-              <div class="pipe-title">Stereo Generation</div>
-              <div class="pipe-text">Build left and right eye views using depth-driven parallax.</div>
-            </div>
-            <div class="pipe-node">
-              <div class="pipe-step">04</div>
-              <div class="pipe-title">Enhancement</div>
-              <div class="pipe-text">Refine output with interpolation, blending, and upscale tools.</div>
-            </div>
-            <div class="pipe-node">
-              <div class="pipe-step">05</div>
-              <div class="pipe-title">3D Output</div>
-              <div class="pipe-text">Export for displays, headsets, collectors, and immersive playback.</div>
-            </div>
+            <div class="pipe-node"><div class="pipe-step">01</div><div class="pipe-title">Upscale &amp; Enhancement</div><div class="pipe-text">Prepare your source video before depth generation.</div></div>
+            <div class="pipe-node"><div class="pipe-step">02</div><div class="pipe-title">Depth Generation</div><div class="pipe-text">Generate a depth map with your chosen AI model.</div></div>
+            <div class="pipe-node"><div class="pipe-step">03</div><div class="pipe-title">Depth Blending (Optional)</div><div class="pipe-text">Optionally generate a second map with a different model and blend the two.</div></div>
+            <div class="pipe-node"><div class="pipe-step">04</div><div class="pipe-title">Final 3D Output</div><div class="pipe-text">Generate stereo views from the video and final depth map, then export in 3D.</div></div>
           </div>
         </div>
 
@@ -2564,7 +2557,7 @@
           <span class="eyebrow">How it works</span>
           <h2 class="title-lg">A refined pipeline from <span class="text-gradient">2D source to immersive 3D output</span></h2>
           <p class="lead">
-            VisionDepth3D follows a clear production flow designed for users who want modern AI-assisted depth processing without losing access to practical rendering and enhancement controls.
+            Prepare and enhance your video first, generate depth, optionally blend maps from different models, then render your final 3D output.
           </p>
         </div>
 
@@ -2572,45 +2565,10 @@
           <div class="workflow-panel reveal">
             <div class="workflow-left">
               <div class="workflow-stage">
-                <div class="stage-item">
-                  <div class="stage-num">01</div>
-                  <div class="stage-content">
-                    <h3>Input Video</h3>
-                    <p>Start with a film, episode, clip, or source sequence and prepare it inside a desktop workflow built for local media processing.</p>
-                  </div>
-                </div>
-
-                <div class="stage-item">
-                  <div class="stage-num">02</div>
-                  <div class="stage-content">
-                    <h3>Depth Analysis</h3>
-                    <p>Generate or import depth data using supported AI models, custom weights, or blended maps for more precise scene structure.</p>
-                  </div>
-                </div>
-
-                <div class="stage-item">
-                  <div class="stage-num">03</div>
-                  <div class="stage-content">
-                    <h3>Stereo Generation</h3>
-                    <p>Build left and right eye imagery through depth-driven stereo warping, parallax control, and scene-aware adjustments.</p>
-                  </div>
-                </div>
-
-                <div class="stage-item">
-                  <div class="stage-num">04</div>
-                  <div class="stage-content">
-                    <h3>Enhancement</h3>
-                    <p>Refine the result with interpolation, edge recovery, upscaling, floating window adjustments, and output-specific tuning.</p>
-                  </div>
-                </div>
-
-                <div class="stage-item">
-                  <div class="stage-num">05</div>
-                  <div class="stage-content">
-                    <h3>Final 3D Output</h3>
-                    <p>Export to formats suitable for stereo displays, collectors, desktop playback, anaglyph viewing, interlaced screens, or VR-oriented presentation.</p>
-                  </div>
-                </div>
+                <div class="stage-item"><div class="stage-num">01</div><div class="stage-content"><h3>Upscale &amp; Enhancement</h3><p>Load your source video and upscale or enhance it first, before generating depth maps.</p></div></div>
+                <div class="stage-item"><div class="stage-num">02</div><div class="stage-content"><h3>Depth Generation</h3><p>Generate a depth map from the prepared video using your chosen AI model.</p></div></div>
+                <div class="stage-item"><div class="stage-num">03</div><div class="stage-content"><h3>Depth Blending (Optional)</h3><p>For a blended result, generate a second depth map from the same prepared video using a different model. Combine the two maps in Depth Blender before stereo generation. Skip this step to use a single map.</p></div></div>
+                <div class="stage-item"><div class="stage-num">04</div><div class="stage-content"><h3>Final 3D Output</h3><p>Use the prepared video with your selected or blended depth map to generate left and right eye views, adjust the stereo settings, and export your final 3D video.</p></div></div>
               </div>
             </div>
           </div>
@@ -2620,44 +2578,13 @@
               <div class="process-visual">
                 <div class="mini-label">Pipeline visualization</div>
 
-					<div class="visual-graph">
-					  <svg class="pipeline-svg" viewBox="0 0 1000 560" preserveAspectRatio="none" aria-hidden="true">
-						<!-- Source Media -> Upscale -->
-						<path class="pipeline-path" d="M202 118 H798" />
-						<circle class="pipeline-node-dot" cx="202" cy="118" r="4" />
-						<circle class="pipeline-node-dot" cx="798" cy="118" r="4" />
-
-						<!-- Upscale -> Depth Engine -->
-						<path class="pipeline-path" d="M798 118 V280 H202 V442" />
-						<circle class="pipeline-node-dot" cx="798" cy="280" r="4" />
-						<circle class="pipeline-node-dot" cx="202" cy="280" r="4" />
-						<circle class="pipeline-node-dot" cx="202" cy="442" r="4" />
-
-						<!-- Depth Engine -> Stereo Build -->
-						<path class="pipeline-path" d="M202 442 H798" />
-						<circle class="pipeline-node-dot" cx="798" cy="442" r="4" />
-					  </svg>
-
-					  <div class="node one">
-						<strong>2D Source</strong>
-						<span>2D video, film files, clips, and archive footage enter the conversion workflow.</span>
-					  </div>
-
-					  <div class="node two">
-						<strong>Upscale</strong>
-						<span>Source material is enhanced for stronger detail and a cleaner visual foundation.</span>
-					  </div>
-
-					  <div class="node three">
-						<strong>Depth Engine</strong>
-						<span>AI depth workflows analyze scene structure and generate refined depth information.</span>
-					  </div>
-
-					  <div class="node four">
-						<strong>3D Stereo Gen</strong>
-						<span>Processed media is converted into immersive stereoscopic output with export-ready results.</span>
-					  </div>
-					</div>
+					<div class="visual-graph workflow-flow" aria-label="Upscale and enhancement, depth generation, optional depth blending, final 3D output">
+                  <div class="flow-step"><span class="flow-number">01</span><div><strong>Upscale &amp; Enhancement</strong><p>Prepare your source video before depth generation.</p></div></div>
+                  <div class="flow-step"><span class="flow-number">02</span><div><strong>Depth Generation</strong><p>Generate a depth map with your chosen AI model.</p></div></div>
+                  <div class="flow-step optional"><span class="flow-number">03</span><div><strong>Depth Blending (Optional)</strong><p>Optionally generate a second map with a different model and blend the two.</p></div></div>
+                  <div class="flow-step"><span class="flow-number">04</span><div><strong>Final 3D Output</strong><p>Generate stereo views from the video and final depth map, then export in 3D.</p></div></div>
+                </div>
+                <p class="blend-note">Using one depth map? Go straight from depth generation to final 3D output.</p>
                 <div class="visual-metrics">
                   <div class="metric">
                     <b>Half SBS</b>
