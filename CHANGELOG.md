@@ -1,6 +1,6 @@
 # VisionDepth3D v5.3
 
-**Unreleased · CUDA build**
+**Unreleased · CUDA - DirectML Build**
 
 Live 3D gains Half-SBS output for compatible displays and players. The Depth Engine can load supported local models and process a folder of videos. The Hybrid 3D Engine gives you finer control over where subjects sit relative to the screen.
 
